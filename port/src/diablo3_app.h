@@ -12,9 +12,15 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
+#include "window_features.h"
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+#include "features/pc_features.h"
+#ifdef __linux__
+#include <rex/system/gpu_plugin.h>
+#endif
+#endif
 #ifdef __linux__
 #include <rex/ui/keybinds.h>
-#include "window_features.h"
 #endif
 
 class Diablo3App : public rex::ReXApp {
@@ -35,17 +41,35 @@ class Diablo3App : public rex::ReXApp {
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) || defined(SOULS_ENABLE_EXTRA_FEATURES)
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#ifdef __linux__
     config.gpu_plugin = "xenos";
+#else
+    (void)config;
+#endif
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+#ifdef __linux__
+    // GPU cvars are registered by the plugin, before its presentation/setup.
+    config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
+    if (!config.graphics) {
+      REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
+    }
+#endif
+    d3::features::ApplySavedRenderScale(user_data_root());
+#endif
   }
+#endif
+#ifdef __linux__
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
   }
+#endif
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     title_ = CreateDiabloWindowTitle(drawer, window());
   }
   void OnShutdown() override { title_.reset(); }
+#ifdef __linux__
   void OnKeyDown(rex::ui::KeyEvent& event) override {
     if (event.virtual_key() == rex::ui::VirtualKey::kF11) {
       if (!event.prev_state()) window()->SetFullscreen(!window()->IsFullscreen());
@@ -94,8 +118,6 @@ class Diablo3App : public rex::ReXApp {
       REXLOG_ERROR("Failed to register cache: volume");
     }
   }
-#ifdef __linux__
  private:
   std::unique_ptr<rex::ui::ImGuiDialog> title_;
-#endif
 };

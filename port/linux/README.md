@@ -56,6 +56,11 @@ the SDK may fall back when a device lacks fragment shader interlock.
 Press F11 to toggle fullscreen. The title bar shows guest swaps per second and
 render/window dimensions.
 
+An [optional extra-features build](../extra-features.md) adds an in-game resolution
+scale setting, PC wording for the autosave warning, and ` + Extras` on the
+launch-screen version label. Use `--extra-features`
+when building and launching to opt in; the normal build keeps these disabled.
+
 To compare the experimental faster host render-target path with FSI, use
 `--render_target_path_vulkan=host`. Check lighting, textures and effects as well
 as FPS; this path previously produced incorrect graphics. Use

@@ -1,5 +1,7 @@
 import argparse
 import pathlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,18 @@ from run_linux import launch_command
 
 
 class LinuxToolsTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("clang++") or shutil.which("c++"), "C++ compiler required")
+    def test_game_exit_runs_on_ui_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = pathlib.Path(directory) / "linux-exit-test"
+            compiler = shutil.which("clang++") or shutil.which("c++")
+            subprocess.run([compiler, "-std=c++23", "-Wall", "-Wextra", "-Werror",
+                            f"-I{ROOT / 'tests/fixtures/exit'}",
+                            str(ROOT / "tests/linux_exit.cpp"),
+                            str(ROOT / "port/src/linux_exit.cpp"),
+                            "-o", str(executable)], check=True)
+            subprocess.run([str(executable)], check=True)
+
     def test_guest_patches_across_shards_and_repeat_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

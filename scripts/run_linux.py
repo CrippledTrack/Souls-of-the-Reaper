@@ -17,6 +17,14 @@ def option_value(extra, name, default):
     return default
 
 
+def saved_render_scale(state):
+    try:
+        value = int((state / "pc-render-scale.txt").read_text(encoding="utf-8").strip())
+        return value if 1 <= value <= 3 else None
+    except (OSError, ValueError):
+        return None
+
+
 def launch_command(args, extra):
     if args.probe or args.render_smoke:
         name = "d3-gpu-probe" if args.probe else "d3-render-smoke"
@@ -33,7 +41,16 @@ def launch_command(args, extra):
         "--render_target_path_vulkan": "fsi",
     }
     overrides = {arg.split("=", 1)[0] for arg in extra if arg.startswith("--")}
-    return [str(ROOT / "port/out/build/linux-amd64-relwithdebinfo/diablo3"),
+    extras = getattr(args, "extra_features", False)
+    use_saved = option_value(extra, "--pc_use_saved_render_scale", "true").lower() not in {"false", "0"}
+    if extras and overrides.intersection({"--resolution_scale", "--draw_resolution_scale_x", "--draw_resolution_scale_y"}):
+        defaults["--pc_use_saved_render_scale"] = "false"
+    if extras and use_saved and not overrides.intersection({"--resolution_scale", "--draw_resolution_scale_x", "--draw_resolution_scale_y"}):
+        scale = saved_render_scale(state)
+        if scale is not None:
+            defaults["--resolution_scale"] = scale
+    name = "linux-amd64-extras-relwithdebinfo" if extras else "linux-amd64-relwithdebinfo"
+    return [str(ROOT / "port/out/build" / name / "diablo3"),
             *(f"{key}={value}" for key, value in defaults.items() if key not in overrides), *extra]
 
 
@@ -42,13 +59,16 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--probe", action="store_true")
     mode.add_argument("--render-smoke", action="store_true")
+    mode.add_argument("--extra-features", action="store_true",
+                      help="Run the optional PC menu settings build and read its saved render scale")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,
                         default=pathlib.Path(os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share") / "souls-of-the-reaper")
     args, extra = parser.parse_known_args()
     command = launch_command(args, extra)
     if not pathlib.Path(command[0]).is_file():
-        parser.error("Executable missing; run scripts/build_linux.py" + (" --probe" if args.probe or args.render_smoke else ""))
+        flag = " --probe" if args.probe or args.render_smoke else " --extra-features" if args.extra_features else ""
+        parser.error("Executable missing; run scripts/build_linux.py" + flag)
     if not (args.probe or args.render_smoke):
         game = pathlib.Path(option_value(extra, "--game_data_root", str(args.game_dir.resolve())))
         if not game.is_absolute():

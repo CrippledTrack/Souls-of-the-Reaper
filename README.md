@@ -30,6 +30,11 @@ python3 scripts/run_linux.py --game-dir /path/to/extracted/disc
 See [Linux build, diagnostics and integration notes](port/linux/README.md) for
 requirements, reuse of an existing SDK, saves, and GPU selection.
 
+An [optional PC features build](port/extra-features.md) adds a saved
+resolution-scale setting to Options > Video, PC wording to the autosave
+warning, and ` + Extras` to the launch-screen version label. Use
+`--extra-features` on Linux or `-ExtraFeatures` on Windows to opt in.
+
 ### Windows
 
 #### Requirements
@@ -44,6 +49,10 @@ requirements, reuse of an existing SDK, saves, and GPU selection.
   - A valid Diablo III RoS save in `Documents\diablo3\<xuid>\394F07D4\00000001\d3save\`
 
 #### Steps
+
+For the optional modified-game build, add `-ExtraFeatures` to the build command
+in step 3. Launch it with `pwsh -File scripts\run_windows.ps1 -ExtraFeatures`.
+See [optional game features](port/extra-features.md) for details.
 
 **1. Apply SDK patches**
 ```powershell
@@ -124,6 +133,10 @@ The generated code needs two game-specific fixes after codegen. On Windows, run 
 
 - **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Replaced with host `ppc_setjmp`/`ppc_longjmp`.
 - **Main-menu exit fix** (`sub_82632E00`) — redirects the game's "leave session, return to title screen" routine (reached from the main-menu B → confirm dialog → A/Aceptar flow) to close the game instead, like a normal PC game's Exit option.
+
+  On Linux the close is queued on the UI thread. SDL closes synchronously;
+  closing from a guest thread would terminate that thread during shutdown
+  before the application reaches its final process-exit step.
 
 ### Game exe icon (optional, cosmetic)
 

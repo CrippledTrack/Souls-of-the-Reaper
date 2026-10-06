@@ -63,12 +63,16 @@ def main():
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-linux")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--probe", action="store_true", help="Build asset-free GPU and rendering diagnostics")
+    parser.add_argument("--extra-features", action="store_true",
+                        help="Build optional PC menu settings and autosave wording in a separate directory")
     parser.add_argument("--skip-codegen", action="store_true", help="Reuse previously generated Linux sources")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cmake", default="cmake")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    if args.probe and args.extra_features:
+        parser.error("--probe and --extra-features cannot be combined")
     for name in ("sdk_source", "sdk_prefix", "game_dir"):
         setattr(args, name, getattr(args, name).resolve())
     cmake = shutil.which(args.cmake)
@@ -94,10 +98,16 @@ def main():
                 local_manifest.write_text(manifest, encoding="utf-8")
                 run(args.sdk_prefix / "bin/rexglue", "codegen", local_manifest)
             patch_generated(ROOT / "port/generated/linux")
-            source, build = ROOT / "port", ROOT / "port/out/build/linux-amd64-relwithdebinfo"
+            name = "linux-amd64-extras-relwithdebinfo" if args.extra_features else "linux-amd64-relwithdebinfo"
+            source, build = ROOT / "port", ROOT / "port/out/build" / name
+        feature_options = [] if args.probe else [
+            f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}"]
+        if args.extra_features:
+            feature_options.append(f"-DSOULS_BASE_XEX={xex}")
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_CXX_COMPILER=clang++",
-            "-DCMAKE_CXX_FLAGS=-march=x86-64-v2", f"-DCMAKE_PREFIX_PATH={args.sdk_prefix}")
+            "-DCMAKE_CXX_FLAGS=-march=x86-64-v2", f"-DCMAKE_PREFIX_PATH={args.sdk_prefix}",
+            *feature_options)
         run(cmake, "--build", build, "--parallel", args.jobs)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Linux build failed: {error}\n")
