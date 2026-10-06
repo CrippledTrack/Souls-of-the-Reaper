@@ -18,6 +18,61 @@ from stage_title_update import verify_patch_source
 
 
 class LinuxToolsTests(unittest.TestCase):
+    def test_explicit_window_mode_overrides_saved_preference(self):
+        args = argparse.Namespace(probe=False, render_smoke=False, extra_features=True,
+                                  game_dir=ROOT / "game", state_dir=pathlib.Path("/tmp/window-state"))
+        for extra in (["--fullscreen=true"], ["--fullscreen", "false"]):
+            command = launch_command(args, extra)
+            self.assertIn("--pc_use_saved_window_mode=false", command)
+            self.assertEqual(extra, command[-len(extra):])
+        args.extra_features = False
+        self.assertNotIn("--pc_use_saved_window_mode=false",
+                         launch_command(args, ["--fullscreen=true"]))
+
+    @unittest.skipUnless(shutil.which("clang++") or shutil.which("c++"), "C++ compiler required")
+    def test_window_mode_persistence(self):
+        harness = r"""
+#include "features/pc_features_logic.h"
+#include <cassert>
+int main(int argc, char** argv) {
+  assert(argc == 2);
+  const auto path = std::filesystem::path(argv[1]) / "state/pc-window-mode.txt";
+  using namespace d3::features;
+  assert(ReadWindowMode(path, 2) == 2);
+  for (int mode : {1, 2, 1}) {
+    SaveWindowMode(path, mode);
+    assert(ReadWindowMode(path, 0) == mode);
+  }
+  bool failed = false;
+  try { SaveWindowMode(path, 3); }
+  catch (const std::invalid_argument&) { failed = true; }
+  assert(failed && ReadWindowMode(path, 0) == 1);
+  for (const auto text : {"", "0", "3", "-1", "2 garbage"}) {
+    std::ofstream(path) << text;
+    assert(ReadWindowMode(path, 2) == 2);
+  }
+  std::filesystem::remove(path);
+  std::filesystem::create_directory(path);
+  std::ofstream(path / "preserve") << "keep";
+  failed = false;
+  try { SaveWindowMode(path, 2); }
+  catch (const std::exception&) { failed = true; }
+  assert(failed && std::filesystem::exists(path / "preserve"));
+  assert(!std::filesystem::exists(path.string() + ".tmp"));
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "window-mode.cpp"
+            source.write_text(harness)
+            executable = root / "window-mode-test"
+            compiler = shutil.which("clang++") or shutil.which("c++")
+            subprocess.run([compiler, "-std=c++23", "-Wall", "-Wextra", "-Werror",
+                            f"-I{ROOT / 'port/src'}", str(source),
+                            str(ROOT / "port/src/features/pc_features_storage.cpp"),
+                            "-o", str(executable)], check=True)
+            subprocess.run([str(executable), str(root)], check=True)
+
     @unittest.skipUnless(shutil.which("clang++") or shutil.which("c++"), "C++ compiler required")
     def test_game_exit_runs_on_ui_thread(self):
         with tempfile.TemporaryDirectory() as directory:

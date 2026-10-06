@@ -15,7 +15,9 @@ param(
     [string]$GameDir = (Join-Path $PSScriptRoot '..\game'),
     [string]$UserDataRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'diablo3'),
     [ValidateSet(1, 2, 3)]
-    [int]$ResScale = 1
+    [int]$ResScale = 1,
+    [ValidateSet("Windowed", "Borderless")]
+    [string]$WindowMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +62,11 @@ if ($TitleUpdate) { $arguments += @('--update_data_root', (ConvertTo-QuotedArgum
 if ($PSBoundParameters.ContainsKey('ResScale')) {
     $arguments += @("--draw_resolution_scale_x=$ResScale", "--draw_resolution_scale_y=$ResScale")
     if ($ExtraFeatures) { $arguments += '--pc_use_saved_render_scale=false' }
+}
+if ($PSBoundParameters.ContainsKey('WindowMode')) {
+    $fullscreen = if ($WindowMode -eq 'Borderless') { 'true' } else { 'false' }
+    $arguments += "--fullscreen=$fullscreen"
+    if ($ExtraFeatures) { $arguments += '--pc_use_saved_window_mode=false' }
 }
 $process = Start-Process -FilePath $exe -WorkingDirectory $buildDir -ArgumentList $arguments -PassThru -Wait
 exit $process.ExitCode

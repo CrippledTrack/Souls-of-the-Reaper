@@ -7,6 +7,10 @@ verified USA TU2 build:
 - An Options > Video left/right selector, `Render resolution (restart required)`,
   using the same native control as volume and region. Choose `1x`, `2x` or
   `3x`; the selection is saved immediately.
+- An Options > Video `Window mode` selector with `Windowed` and
+  `Borderless fullscreen` choices. Changes are saved and applied on the UI
+  thread without restarting. F11 toggles the current mode without changing
+  the saved preference.
 - The startup autosave warning replaces English `Xbox 360 console`,
   `Xbox 360 Console`, `Xbox 360` and `Xbox360` wording with `PC`.
   Other localized wording is preserved.
@@ -112,6 +116,29 @@ The autosave override changes the temporary guest string returned by the
 existing localization function, using the game's string-assignment API.
 It applies only to `ConsoleUI:AutosaveWarningScreenText_XBox360`. Game assets
 and console save contents are untouched.
+
+## Window mode
+
+Optional builds save the menu preference as `pc-window-mode.txt` in the resolved
+user-data directory (`1` for windowed, `2` for borderless fullscreen). Missing or
+invalid files keep the launch mode. A failed save restores the previous menu
+selection. Normal builds do not read or write this preference.
+
+The menu uses action ID 101 and the same audited native selector hooks as render
+scale. Guest callbacks save and queue changes; the window dialog applies them on
+the UI thread. The current mode is synchronized with F11 when initializing the
+selector. Fullscreen uses the SDK's borderless window mode; there is no separate
+exclusive-fullscreen choice.
+
+On Linux, explicit `--fullscreen=true` or `--fullscreen=false` passed through
+`run_linux.py --extra-features` overrides the saved preference for that launch.
+On Windows, use `run_windows.ps1 -ExtraFeatures -WindowMode Windowed` or
+`-WindowMode Borderless`. Direct executable launches can override the preference
+with `--pc_use_saved_window_mode=false --fullscreen=true` (or `false`).
+
+Headless tests cover both selector labels and counts, changes, failed-save
+rollback, invalid indices, persistence, and Linux launch overrides. Desktop
+switching and Windows runtime validation remain pending.
 
 ## Base-disc address audit
 

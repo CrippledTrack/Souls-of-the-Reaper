@@ -38,6 +38,10 @@ DECLARE_REX_FUNC(sub_8246C4B0);
 
 namespace {
 constexpr uint32_t kRenderOption = 100;
+constexpr uint32_t kWindowOption = 101;
+bool window_save_failed = false;
+constexpr std::string_view kWindowKey = "D3PC:WindowMode";
+constexpr std::string_view kWindowTooltipKey = "D3PC:WindowModeTooltip";
 #ifdef SOULS_TITLE_UPDATE_2
 constexpr uint32_t kOptionsOwner = 0x8330340C;
 constexpr uint32_t kSelectorTextPath = 0x82080A1C;
@@ -191,54 +195,63 @@ extern "C" void sub_826FD808(PPCContext &ctx, uint8_t *base) {
   const auto frame = ctx.r1.u32 - 512;
   REX_STORE_U32(frame, ctx.r1.u32);
   ctx.r1.u64 = frame;
-  ctx.r3.u64 = frame + 96;
-  sub_826FBD68(ctx, base);
-  ConstructText(ctx, base, frame + 160, kRenderKey, false);
-  ConstructText(ctx, base, frame + 176, kTooltipKey, false);
-  ctx.r3.u64 = frame + 96;
-  ctx.r4.u64 = 1; // Native left/right selector used by volume and region.
-  ctx.r5.u64 = frame + 160;
-  ctx.r6.u64 = frame + 176;
-  ctx.r7.u64 = kRenderOption;
-  sub_826FBE30(ctx, base);
-  ctx.r3.u64 = owner + 128; // Video options vector.
-  ctx.r4.u64 = frame + 96;
-  sub_82700AD8(ctx, base); // Copies and destroys the temporary descriptor.
+  for (const auto option : {kRenderOption, kWindowOption}) {
+    ctx.r3.u64 = frame + 96;
+    sub_826FBD68(ctx, base);
+    ConstructText(ctx, base, frame + 160,
+                  option == kRenderOption ? kRenderKey : kWindowKey, false);
+    ConstructText(ctx, base, frame + 176,
+                  option == kRenderOption ? kTooltipKey : kWindowTooltipKey, false);
+    ctx.r3.u64 = frame + 96;
+    ctx.r4.u64 = 1; // Native left/right selector.
+    ctx.r5.u64 = frame + 160;
+    ctx.r6.u64 = frame + 176;
+    ctx.r7.u64 = option;
+    sub_826FBE30(ctx, base);
+    ctx.r3.u64 = owner + 128;
+    ctx.r4.u64 = frame + 96;
+    sub_82700AD8(ctx, base);
+  }
   // The constructor consumes both key strings, and insertion consumes the
   // temporary descriptor. Do not destroy those temporaries a second time.
   ctx = saved;
-  REXLOG_INFO("PC settings: render resolution added to Video options");
+  REXLOG_INFO("PC settings: render resolution and window mode added to Video options");
 }
 
 // Selector model: option ID at +4, count in vtable slot 0.
 extern "C" void sub_826FBFF0(PPCContext &ctx, uint8_t *base) {
-  if (REX_LOAD_U32(ctx.r3.u32 + 4) == kRenderOption) {
-    ctx.r3.u64 = 3;
+  const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
+  if (option == kRenderOption || option == kWindowOption) {
+    ctx.r3.u64 = option == kRenderOption ? 3 : 2;
     return;
   }
   __imp__sub_826FBFF0(ctx, base);
 }
 
 extern "C" void sub_826FC030(PPCContext &ctx, uint8_t *base) {
-  if (REX_LOAD_U32(ctx.r3.u32 + 4) != kRenderOption) {
+  const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
+  if (option != kRenderOption && option != kWindowOption) {
     __imp__sub_826FC030(ctx, base);
     return;
   }
   const auto saved = ctx;
   ctx.r3 = saved.r4; // Resolved native selector control.
-  ctx.r4.u64 = settings().selected - 1;
+  ctx.r4.u64 = (option == kRenderOption ? settings().selected
+                  : d3::features::SelectedWindowMode()) - 1;
   ctx.r5.u64 = 0; // Initialize without firing the change callback.
   sub_82749C10(ctx, base);
   ctx = saved;
 }
 
 extern "C" void sub_826FC798(PPCContext &ctx, uint8_t *base) {
-  const bool render = REX_LOAD_U32(ctx.r3.u32 + 4) == kRenderOption;
+  const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
+  const bool render = option == kRenderOption;
+  const bool window = option == kWindowOption;
   const auto row = ctx.r5.u32;
   const auto index = ctx.r6.u32;
   // Preserve the game's selection highlighting and normal row setup.
   __imp__sub_826FC798(ctx, base);
-  if (!render || index >= 3)
+  if ((!render && !window) || index >= (render ? 3u : 2u))
     return;
   const auto saved = ctx;
   const auto frame = ctx.r1.u32 - 256;
@@ -252,7 +265,8 @@ extern "C" void sub_826FC798(PPCContext &ctx, uint8_t *base) {
   sub_8246C4B0(ctx, base);
   const auto label = ctx.r3.u32;
   const auto setter = REX_LOAD_U32(REX_LOAD_U32(label) + 132);
-  const auto text = std::to_string(index + 1) + "x";
+  const std::string text = render ? std::to_string(index + 1) + "x"
+      : std::string(d3::features::WindowModeLabel(index + 1));
   for (uint32_t i = 0; i <= text.size(); ++i)
     REX_STORE_U8(frame + 112 + i, i == text.size() ? 0 : text[i]);
   ctx.r3.u64 = label;
@@ -264,7 +278,8 @@ extern "C" void sub_826FC798(PPCContext &ctx, uint8_t *base) {
 
 extern "C" void sub_826FCE80(PPCContext &ctx, uint8_t *base) {
   const auto descriptor = CurrentDescriptor(base);
-  if (!descriptor || REX_LOAD_U32(descriptor + 32) != kRenderOption) {
+  const auto option = descriptor ? REX_LOAD_U32(descriptor + 32) : 0;
+  if (option != kRenderOption && option != kWindowOption) {
     __imp__sub_826FCE80(ctx, base);
     return;
   }
@@ -272,11 +287,14 @@ extern "C" void sub_826FCE80(PPCContext &ctx, uint8_t *base) {
   sub_8246C520(ctx, base);
   const auto control = ctx.r3.u32;
   const auto index = REX_LOAD_U32(control + 472);
-  if (index < 3)
+  if (option == kRenderOption && index < 3)
     settings().select(static_cast<int>(index) + 1);
+  else if (option == kWindowOption && index < 2)
+    window_save_failed = !d3::features::SelectWindowMode(static_cast<int>(index) + 1);
   // Restore the last saved value if saving failed, without another callback.
   ctx.r3.u64 = control;
-  ctx.r4.u64 = settings().selected - 1;
+  ctx.r4.u64 = (option == kRenderOption ? settings().selected
+                  : d3::features::SelectedWindowMode()) - 1;
   ctx.r5.u64 = 0;
   sub_82749C10(ctx, base);
   const auto owner = REX_LOAD_U32(kOptionsOwner);
@@ -288,6 +306,17 @@ extern "C" void sub_826FCE80(PPCContext &ctx, uint8_t *base) {
 extern "C" void sub_8282F0F0(PPCContext &ctx, uint8_t *base) {
   const auto name = ReadText(base, ctx.r4.u32, 64);
   const auto destination = ctx.r3.u32;
+  if (name == kWindowKey || name == kWindowTooltipKey) {
+    const auto saved = ctx;
+    const std::string text = name == kWindowKey ? "Window mode"
+        : std::string(window_save_failed ? "Could not save setting. " : "") +
+          "Choose Windowed or Borderless fullscreen. Applies immediately. "
+          "F11 toggles the current mode without changing the saved preference.";
+    ConstructText(ctx, base, destination, text, false);
+    ctx = saved;
+    ctx.r3.u64 = destination;
+    return;
+  }
   if (name == kRenderKey || name == kTooltipKey) {
     const auto saved = ctx;
     ConstructText(

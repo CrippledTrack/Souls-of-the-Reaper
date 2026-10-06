@@ -64,6 +64,9 @@ class Diablo3App : public rex::ReXApp {
   }
 #endif
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+    d3::features::InitializeWindowMode(*window(), user_data_root());
+#endif
     title_ = CreateDiabloWindowTitle(drawer, window());
   }
   void OnShutdown() override { title_.reset(); }

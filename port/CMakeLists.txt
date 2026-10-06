@@ -92,7 +92,7 @@ if(SOULS_ENABLE_EXTRA_FEATURES)
         src/features/pc_features_startup.cpp
         src/features/pc_features_storage.cpp)
     target_compile_definitions(diablo3 PRIVATE SOULS_ENABLE_EXTRA_FEATURES=1)
-    message(STATUS "Optional PC features enabled: render resolution menu, PC autosave wording and Extras version label")
+    message(STATUS "Optional PC features enabled: render resolution and window mode menus, PC autosave wording and Extras version label")
 endif()
 
 # When building the SDK from source (REXSDK_DIR -> add_subdirectory), rexglue_configure_target

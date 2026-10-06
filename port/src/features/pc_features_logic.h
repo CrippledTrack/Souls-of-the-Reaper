@@ -17,6 +17,15 @@ inline int ReadRenderScale(const std::filesystem::path &path, int fallback) {
   return file.eof() ? value : fallback;
 }
 
+inline int ReadWindowMode(const std::filesystem::path &path, int fallback) {
+  const auto value = ReadRenderScale(path, 0);
+  return value == 1 || value == 2 ? value : fallback;
+}
+
+inline std::string_view WindowModeLabel(int mode) {
+  return mode == 1 ? "Windowed" : "Borderless fullscreen";
+}
+
 void ReplaceRenderScaleFile(const std::filesystem::path &temporary,
                             const std::filesystem::path &destination);
 
@@ -39,6 +48,12 @@ inline void SaveRenderScale(const std::filesystem::path &path, int value) {
     std::filesystem::remove(temporary, ignored);
     throw;
   }
+}
+
+inline void SaveWindowMode(const std::filesystem::path &path, int mode) {
+  if (mode != 1 && mode != 2)
+    throw std::invalid_argument("Invalid window mode");
+  SaveRenderScale(path, mode);
 }
 
 inline std::string PcAutosaveText(std::string_view localized) {

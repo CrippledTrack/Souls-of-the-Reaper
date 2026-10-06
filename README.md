@@ -34,7 +34,7 @@ See [Linux build, diagnostics and integration notes](port/linux/README.md) for
 requirements, reuse of an existing SDK, saves, and GPU selection.
 
 An [optional PC features build](port/extra-features.md) adds a saved
-resolution-scale setting to Options > Video, PC wording to the autosave
+resolution-scale setting and live window-mode selector to Options > Video, PC wording to the autosave
 warning, and ` + Extras` to the launch-screen version label. Use
 `--extra-features` on Linux or `-ExtraFeatures` on Windows to opt in.
 

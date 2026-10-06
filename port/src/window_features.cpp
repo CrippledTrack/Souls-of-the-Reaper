@@ -9,6 +9,9 @@
 #include <tlhelp32.h>
 #endif
 #include "window_features.h"
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+#include "features/pc_features.h"
+#endif
 #ifdef SOULS_TITLE_UPDATE_2
 #include "generated/tu2/diablo3_pch.h"
 #elif defined(_WIN32)
@@ -71,6 +74,9 @@ public:
 
 protected:
   void OnDraw(ImGuiIO &) override {
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+    d3::features::UpdateWindowMode(*window_);
+#endif
     const auto now = std::chrono::steady_clock::now();
     const double elapsed =
         std::chrono::duration<double>(now - previous_).count();

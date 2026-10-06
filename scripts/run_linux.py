@@ -46,6 +46,8 @@ def launch_command(args, extra):
     }
     overrides = {arg.split("=", 1)[0] for arg in extra if arg.startswith("--")}
     extras = getattr(args, "extra_features", False)
+    if extras and "--fullscreen" in overrides:
+        defaults["--pc_use_saved_window_mode"] = "false"
     use_saved = option_value(extra, "--pc_use_saved_render_scale", "true").lower() not in {"false", "0"}
     if extras and overrides.intersection({"--resolution_scale", "--draw_resolution_scale_x", "--draw_resolution_scale_y"}):
         defaults["--pc_use_saved_render_scale"] = "false"
