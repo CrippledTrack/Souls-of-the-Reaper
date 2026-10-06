@@ -6,13 +6,20 @@ project(diablo3 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(generated/rexglue.cmake)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(linux/rexglue.cmake)
+else()
+    include(generated/rexglue.cmake)
+endif()
 
 # Sources
 set(DIABLO3_SOURCES
     src/main.cpp
     src/kernel_overrides.cpp
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND DIABLO3_SOURCES src/window_features.cpp src/linux_exit.cpp)
+endif()
 
 if(WIN32)
     add_executable(diablo3 WIN32 ${DIABLO3_SOURCES})

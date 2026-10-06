@@ -2,7 +2,7 @@
 
 Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE.
 
-**Status:** Playable and stable (RelWithDebInfo / -O2). Two render paths: ROV (faithful, 60fps) and RTV (fast, up to 240fps with lighting and artifacts fixed).
+**Windows status:** Playable and stable (RelWithDebInfo / -O2). Two render paths: ROV (faithful, 60fps) and RTV (fast, up to 240fps with lighting and artifacts fixed). **Linux:** experimental Vulkan integration; see the Linux build notes below.
 
 ---
 
@@ -14,7 +14,25 @@ Download the latest release from the [Releases](../../releases) page, extract th
 
 ## Option B — Build from source
 
-### Requirements
+### Linux (experimental Vulkan path)
+
+The Linux integration shares this port's game application and imports the
+ReXGlue/Vulkan recomp work, including texture-color and object-lifetime fixes,
+audited function entries, GPU diagnostics, fullscreen and frame telemetry.
+It uses a separately pinned SDK and the unmodified USA Ultimate Evil Edition
+base disc. Combined Linux gameplay still needs validation.
+
+```sh
+python3 scripts/build_linux.py --build-sdk --game-dir /path/to/extracted/disc
+python3 scripts/run_linux.py --game-dir /path/to/extracted/disc
+```
+
+See [Linux build, diagnostics and integration notes](port/linux/README.md) for
+requirements, reuse of an existing SDK, saves, and GPU selection.
+
+### Windows
+
+#### Requirements
 
 - Windows 10/11 x64
 - Visual Studio 2022 Community (CMake 3.25+, Ninja, MSVC headers)
@@ -25,7 +43,7 @@ Download the latest release from the [Releases](../../releases) page, extract th
   - `game/CPKs/` — all CPK archives from the disc (7.4 GB)
   - A valid Diablo III RoS save in `Documents\diablo3\<xuid>\394F07D4\00000001\d3save\`
 
-### Steps
+#### Steps
 
 **1. Apply SDK patches**
 ```powershell
@@ -102,7 +120,7 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 
 ### Hand patches to generated code (re-apply after every codegen)
 
-`port/generated/` is rebuilt from scratch by the codegen step, which wipes two fixes it can't produce on its own. Run `port\apply_generated_patches.ps1` after every codegen (see step 2 above) to reapply both:
+The generated code needs two game-specific fixes after codegen. On Windows, run `port\apply_generated_patches.ps1` after every codegen (see step 2 above). The Linux build script applies the equivalent patches automatically in `port/generated/linux/`:
 
 - **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Replaced with host `ppc_setjmp`/`ppc_longjmp`.
 - **Main-menu exit fix** (`sub_82632E00`) — redirects the game's "leave session, return to title screen" routine (reached from the main-menu B → confirm dialog → A/Aceptar flow) to close the game instead, like a normal PC game's Exit option.

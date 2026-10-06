@@ -1,0 +1,10 @@
+# Base disc only: function addresses were audited against the hash in build_linux.py.
+[project]
+name = "diablo3"
+sdk_version = "0.10.0"
+game_root = "../../game"
+
+[entrypoint]
+file_path = "../../game/Default.xex"
+out_directory_path = "../generated/linux"
+includes = ["config/thunks.toml", "config/callbacks.toml", "config/leaf-functions.toml"]

@@ -12,6 +12,10 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
+#ifdef __linux__
+#include <rex/ui/keybinds.h>
+#include "window_features.h"
+#endif
 
 class Diablo3App : public rex::ReXApp {
  public:
@@ -27,7 +31,30 @@ class Diablo3App : public rex::ReXApp {
   // ...]"). GetName() ("diablo3") is untouched on purpose - it also names the
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
+#ifndef __linux__
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
+#endif
+
+#ifdef __linux__
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    config.gpu_plugin = "xenos";
+  }
+  void OnLoadXexImage(std::string& xex_image) override {
+    xex_image = "game:\\Default.xex";
+  }
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    title_ = CreateDiabloWindowTitle(drawer, window());
+  }
+  void OnShutdown() override { title_.reset(); }
+  void OnKeyDown(rex::ui::KeyEvent& event) override {
+    if (event.virtual_key() == rex::ui::VirtualKey::kF11) {
+      if (!event.prev_state()) window()->SetFullscreen(!window()->IsFullscreen());
+      event.set_handled(true);
+      return;
+    }
+    rex::ui::ProcessKeyEvent(event);
+  }
+#endif
 
   // FATX cache device setup.
   // Diablo mounts cache:\ as a FATX volume by reading \Device\Harddisk0\Partition0
@@ -67,4 +94,8 @@ class Diablo3App : public rex::ReXApp {
       REXLOG_ERROR("Failed to register cache: volume");
     }
   }
+#ifdef __linux__
+ private:
+  std::unique_ptr<rex::ui::ImGuiDialog> title_;
+#endif
 };

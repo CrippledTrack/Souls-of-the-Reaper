@@ -9,6 +9,9 @@ sdk-bin/
 # Build outputs
 port/out/
 port/generated/
+port/linux/local_manifest.toml
+port/linux/generated/
+__pycache__/
 port/ttd/
 
 # Third-party tools
