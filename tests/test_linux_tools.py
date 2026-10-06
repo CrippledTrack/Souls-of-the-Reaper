@@ -1,15 +1,20 @@
 import argparse
+import hashlib
+import struct
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import codegen_title_update
 from apply_generated_patches import patch_generated
 from run_linux import launch_command
+from stage_title_update import verify_patch_source
 
 
 class LinuxToolsTests(unittest.TestCase):
@@ -152,6 +157,154 @@ int main() {
         command = launch_command(args, ["--user_data_root", "custom-state"])
         self.assertIn(f"--cache_root={ROOT / 'custom-state/cache'}", command)
         self.assertIn(f"--log_file={ROOT / 'custom-state/diablo3.log'}", command)
+
+
+class TitleUpdateTests(unittest.TestCase):
+    def inputs(self):
+        base = bytearray(0x500)
+        patch = bytearray(0x100)
+        for data, option in ((base, 0x40006), (patch, 0x5FF)):
+            data[:4] = b"XEX2"
+            struct.pack_into(">I", data, 20, 1)
+            struct.pack_into(">II", data, 24, option, 0x80)
+        struct.pack_into(">I", base, 16, 0x100)
+        struct.pack_into(">IIII", base, 0x80, 0x38E299CD, 2, 2, 0x394F07D4)
+        base[0x108:0x208] = bytes(range(256))
+        struct.pack_into(">III", patch, 0x80, 0x4C, 0x202, 2)
+        patch[0x8C:0xA0] = hashlib.sha1(base[0x108:0x208]).digest()
+        return base, patch
+
+    def test_digest_uses_rsa_signature(self):
+        base, patch = self.inputs()
+        # The old checker used this unrelated security-header field.
+        base[0x264:0x278] = b"\xEE" * 20
+        verify_patch_source(base, patch)
+        base[0x108] ^= 1
+        with self.assertRaisesRegex(ValueError, "signature"):
+            verify_patch_source(base, patch)
+
+    def test_wrong_identity_and_versions_rejected(self):
+        for offset in (0x80, 0x84, 0x8C):
+            base, patch = self.inputs()
+            struct.pack_into(">I", base, offset, 0)
+            with self.assertRaisesRegex(ValueError, "versions"):
+                verify_patch_source(base, patch)
+        for offset in (0x84, 0x88):
+            base, patch = self.inputs()
+            struct.pack_into(">I", patch, offset, 6)
+            with self.assertRaisesRegex(ValueError, "versions"):
+                verify_patch_source(base, patch)
+
+    def test_truncated_xex_rejected(self):
+        base, patch = self.inputs()
+        for broken_base, broken_patch in ((base[:12], patch), (base, patch[:48])):
+            with self.assertRaises(ValueError):
+                verify_patch_source(broken_base, broken_patch)
+
+    def test_tu2_hooks_and_repeat_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for index, symbol in enumerate(("sub_83161AD0", "sub_83161DA0", "sub_826374E8")):
+                (root / f"diablo3_recomp.{index}.cpp").write_text(
+                    f"DEFINE_REX_FUNC({symbol}) {{\n  // original\n}}\n")
+            patch_generated(root, "tu2")
+            first = {p: p.read_bytes() for p in root.iterdir()}
+            patch_generated(root, "tu2")
+            self.assertEqual(first, {p: p.read_bytes() for p in root.iterdir()})
+            text = "".join(p.read_text() for p in root.iterdir())
+            self.assertIn("ppc_setjmp", text)
+            self.assertIn("ppc_longjmp", text)
+            self.assertIn("D3RequestTitleUpdateExit();", text)
+            self.assertNotIn("sub_831583B0", text)
+
+    def test_tu2_extra_features_select_separate_binary_and_saved_scale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = pathlib.Path(directory)
+            (state / "pc-render-scale.txt").write_text("2\n")
+            args = argparse.Namespace(probe=False, render_smoke=False, extra_features=True,
+                                      title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
+                                      state_dir=state)
+            command = launch_command(args, ["--vulkan_device=1"])
+            self.assertTrue(command[0].endswith("linux-amd64-tu2-extras-relwithdebinfo/diablo3"))
+            self.assertIn("--resolution_scale=2", command)
+            self.assertIn("--update_data_root=/tmp/tu2-disc", command)
+            self.assertIn("--vulkan_device=1", command)
+            command = launch_command(args, ["--draw_resolution_scale_x=3"])
+            self.assertNotIn("--resolution_scale=2", command)
+            self.assertIn("--pc_use_saved_render_scale=false", command)
+            args.extra_features = False
+            command = launch_command(args, [])
+            self.assertNotIn("--resolution_scale=2", command)
+            self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+
+    def test_tu2_never_patches_base_symbols(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "diablo3_recomp.0.cpp"
+            original = "DEFINE_REX_FUNC(sub_831583B0) {\n}\n"
+            path.write_text(original)
+            with self.assertRaises(ValueError):
+                patch_generated(root, "tu2")
+            self.assertEqual(original, path.read_text())
+
+    def test_shared_tu2_codegen_rejects_wrong_executable_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "Default.xex").write_bytes(b"wrong executable")
+            with mock.patch.object(codegen_title_update.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, "verified USA TU2"):
+                    codegen_title_update.generate_tu2(root, "rexglue.exe")
+                run.assert_not_called()
+
+    def test_shared_tu2_codegen_checks_stamp_before_patching(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            game = root / "game"
+            game.mkdir()
+            data = b"test executable"
+            (game / "Default.xex").write_bytes(data)
+            digest = hashlib.sha256(data).hexdigest()
+            generated = root / "port/generated/tu2"
+            generated.mkdir(parents=True)
+            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "TU2_SHA256", digest), mock.patch.object(codegen_title_update, "patch_generated") as patch:
+                with self.assertRaisesRegex(ValueError, "missing or stale"):
+                    codegen_title_update.generate_tu2(game, "rexglue.exe", True)
+                patch.assert_not_called()
+                (generated / "source-xex.sha256").write_text(digest)
+                self.assertEqual(codegen_title_update.generate_tu2(game, "rexglue.exe", True), generated)
+                patch.assert_called_once_with(generated, "tu2")
+
+    def test_failed_tu2_regeneration_invalidates_existing_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            game = root / "game"
+            game.mkdir()
+            data = b"test executable"
+            (game / "Default.xex").write_bytes(data)
+            digest = hashlib.sha256(data).hexdigest()
+            generated = root / "port/generated/tu2"
+            generated.mkdir(parents=True)
+            stamp = generated / "source-xex.sha256"
+            stamp.write_text(digest)
+            manifest = root / "port/title_updates/tu2"
+            manifest.mkdir(parents=True)
+            (manifest / "diablo3_manifest.toml").write_text('game_root = "../../../game-tu2"')
+            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "TU2_SHA256", digest), mock.patch.object(codegen_title_update.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "rexglue")), mock.patch.object(codegen_title_update, "patch_generated") as patch:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    codegen_title_update.generate_tu2(game, "rexglue.exe")
+                self.assertFalse(stamp.exists())
+                patch.assert_not_called()
+
+    def test_tu2_launch_selects_separate_binary(self):
+        args = argparse.Namespace(probe=False, render_smoke=False, extra_features=False,
+                                  title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
+                                  state_dir=pathlib.Path("/tmp/tu2-state"))
+        command = launch_command(args, [])
+        self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+        self.assertIn("--game_data_root=/tmp/tu2-disc", command)
+        self.assertIn("--user_data_root=/tmp/tu2-state", command)
+        self.assertIn("--update_data_root=/tmp/tu2-disc", command)
+
 
 
 if __name__ == "__main__":

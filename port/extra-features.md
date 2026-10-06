@@ -1,6 +1,7 @@
 # Optional PC features
 
-The extra-features build modifies the base game on Windows and Linux:
+The extra-features build modifies the base game on Windows and Linux, and the
+verified USA TU2 build:
 
 - The press-button launch screen appends ` + Extras` to the original version.
 - An Options > Video left/right selector, `Render resolution (restart required)`,
@@ -12,7 +13,7 @@ The extra-features build modifies the base game on Windows and Linux:
 
 These features are disabled by default. CMake's `SOULS_ENABLE_EXTRA_FEATURES`
 option defaults to `OFF`; the extra hooks are compiled and linked only when
-it is `ON`. Both platforms use the same audited base-disc guest hooks. Normal
+it is `ON`. The base disc and TU2 use separate audited address maps with shared hook logic. Normal
 builds retain their existing game menus, autosave wording and version label.
 
 ## Windows
@@ -40,7 +41,7 @@ script or launch the optional executable directly to test modified builds.
 After installing the Linux SDK and generating the base-disc sources:
 
 ```sh
-python3 scripts/build_linux.py --extra-features --skip-codegen \
+python3 scripts/build_linux.py --extra-features \
   --game-dir /path/to/extracted/disc
 python3 scripts/run_linux.py --extra-features \
   --game-dir /path/to/extracted/disc --vulkan_device=1
@@ -62,6 +63,27 @@ Both Linux launch modes use the existing user-data directory selected by
 `pc-render-scale.txt` there and supplies `--resolution_scale=N` at startup.
 The normal launcher ignores this file. A missing optional executable produces
 an error rather than launching the normal build.
+
+### Linux TU2
+
+Use the staged TU2 executable and assets with both flags:
+
+```sh
+python3 scripts/build_linux.py --title-update tu2 --extra-features \
+  --sdk-prefix /path/to/rexglue-install \
+  --game-dir /path/to/updated-tu2-disc \
+  --cmake /path/to/cmake
+python3 scripts/run_linux.py --title-update tu2 --extra-features --vulkan_device=1 \
+  --game-dir /path/to/updated-tu2-disc
+```
+
+The optional binary is `port/out/build/linux-amd64-tu2-extras-relwithdebinfo/diablo3`.
+It shares TU2 generated sources and the TU2 user-data directory with the normal
+TU2 build. The normal build ignores the saved render-scale file. For direct
+CMake builds, enable both `SOULS_TITLE_UPDATE_2` and `SOULS_ENABLE_EXTRA_FEATURES`
+and set `SOULS_BASE_XEX` to the patched TU2 `Default.xex`. Its required SHA-256 is
+`447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f`.
+Windows TU2 uses the same shared codegen and hooks; Windows build/runtime validation is pending.
 
 ## Saved settings and game behavior
 
@@ -91,34 +113,31 @@ existing localization function, using the game's string-assignment API.
 It applies only to `ConsoleUI:AutosaveWarningScreenText_XBox360`. Game assets
 and console save contents are untouched.
 
-## Base-disc adaptation
+## Base-disc address audit
 
-The previous implementation targeted the experimental TU6 executable. This
-integration uses the unmodified USA Ultimate Evil Edition executable with
+The base-disc hooks use the unmodified USA Ultimate Evil Edition executable with
 SHA-256 `cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef`,
 validated by CMake for optional builds on both platforms. Regenerate Windows
 sources from this same base disc before enabling the hooks.
 
-The original options initialization, localization and vector helper
-instruction sequences were compared across both images, allowing relocated
-call targets and data addresses. The base-disc generated calls confirm the
-string and descriptor helpers used here.
+The base-disc generated calls confirm the string and descriptor helpers used
+here. The TU2 address audit below records the corresponding updated functions.
 
-| Purpose | Previous address | Base-disc address |
-| --- | --- | --- |
-| Options initialization | `0x82703EF0` | `0x826FD808` |
-| Selector choice count | — | `0x826FBFF0` |
-| Selector initialization | — | `0x826FC030` |
-| Selector value label | — | `0x826FC798` |
-| Selector change handling | — | `0x826FCE80` |
-| Localization | `0x82835EE0` | `0x8282F0F0` |
-| Descriptor initialization | `0x82702450` | `0x826FBD68` |
-| Descriptor construction | `0x82702518` | `0x826FBE30` |
-| Video vector insertion | `0x827071C0` | `0x82700AD8` |
-| String construction | `0x82CE2E40` | `0x82CDAD58` |
-| String assignment | `0x82CE31D8` | `0x82CDB0F0` |
-| String buffer access | `0x82CE1608` | `0x82CD9520` |
-| String destruction | `0x82CE2100` | `0x82CDA018` |
+| Purpose | Base-disc address |
+| --- | --- |
+| Options initialization | `0x826FD808` |
+| Selector choice count | `0x826FBFF0` |
+| Selector initialization | `0x826FC030` |
+| Selector value label | `0x826FC798` |
+| Selector change handling | `0x826FCE80` |
+| Localization | `0x8282F0F0` |
+| Descriptor initialization | `0x826FBD68` |
+| Descriptor construction | `0x826FBE30` |
+| Video vector insertion | `0x82700AD8` |
+| String construction | `0x82CDAD58` |
+| String assignment | `0x82CDB0F0` |
+| String buffer access | `0x82CD9520` |
+| String destruction | `0x82CDA018` |
 
 The Video vector remains at owner + 128. The descriptor action ID is at +32;
 ID 100 selects the added row. The base-disc options owner pointer is at
@@ -151,6 +170,27 @@ with the `%s` format at `0x82003ED0`. That call supplies the build string to
 It preserves the returned guest context, checks buffer capacity, and leaves
 other formatting calls and the game's actual version data untouched.
 
+## TU2 address audit
+
+[`pc_features_tu2.h`](src/features/pc_features_tu2.h) remaps guest functions for
+TU2 only. [`extra-features-audit.json`](title_updates/tu2/extra-features-audit.json)
+records the instruction-context matches, corroborating generated call sites,
+and the unchanged descriptor/control layouts.
+
+| Purpose | Base disc | TU2 |
+| --- | --- | --- |
+| Options initialization | `0x826FD808` | `0x82703EF0` |
+| Selector count / initialization | `0x826FBFF0` / `0x826FC030` | `0x827026D8` / `0x82702718` |
+| Selector label / change | `0x826FC798` / `0x826FCE80` | `0x82702E80` / `0x82703568` |
+| Localization | `0x8282F0F0` | `0x82835EE0` |
+| Options owner | `0x83302514` | `0x8330340C` |
+| Selector text path | `0x8207F9A4` | `0x82080A1C` |
+| Start-screen formatting return | `0x8247C004` | `0x8247E340` |
+
+The formatter and `%s` string remain at `0x823BD130` and `0x82003ED0`.
+CMake validates the selected executable hash and all seven hooks plus their
+helper mappings before enabling the feature source.
+
 ## Validation
 
 ```sh
@@ -159,9 +199,10 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 Tests cover save/load and failure handling, autosave wording, invalid settings,
 command-line precedence, custom user-data directories and normal-build
-isolation. The native logic test requires a C++23 compiler. Live menu layout,
-label refresh, autosave wording and a relaunch at the saved scale still need
-verification in a desktop game session.
+isolation. The native logic test requires a C++23 compiler. Desktop visual checks and a relaunch at a newly saved scale remain to be
+verified. The TU2 device-1 runtime log confirms the option was added, saved 2×
+was applied at startup, PC autosave wording was used, and a selection of 1×
+was saved during a clean 97-second run.
 
 An SDK integration test verifies applying the saved scale after GPU cvar
 registration, explicit override handling and invalid-setting fallback. It needs
@@ -180,3 +221,7 @@ options, and bounds checks for the active descriptor using simulated helpers.
 
 The same CMake test project supports the Windows SDK. Native Windows
 compilation and desktop visual checks require a Windows development machine.
+
+To run those SDK tests against TU2 generated hooks, configure a separate test
+build with `-DSOULS_TEST_TITLE_UPDATE_2=ON`. Both variants test the version suffix
+and English autosave wording in addition to selector behavior.

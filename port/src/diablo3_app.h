@@ -15,7 +15,7 @@
 #include "window_features.h"
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
-#ifdef __linux__
+#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
 #include <rex/system/gpu_plugin.h>
 #endif
 #endif
@@ -35,19 +35,19 @@ class Diablo3App : public rex::ReXApp {
   // ...]"). GetName() ("diablo3") is untouched on purpose - it also names the
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
-#ifndef __linux__
+#if !defined(__linux__) && !defined(SOULS_TITLE_UPDATE_2)
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
-#if defined(__linux__) || defined(SOULS_ENABLE_EXTRA_FEATURES)
+#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2) || defined(SOULS_ENABLE_EXTRA_FEATURES)
   void OnPreSetup(rex::RuntimeConfig& config) override {
-#ifdef __linux__
+#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
     config.gpu_plugin = "xenos";
 #else
     (void)config;
 #endif
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
-#ifdef __linux__
+#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
     // GPU cvars are registered by the plugin, before its presentation/setup.
     config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
     if (!config.graphics) {
@@ -58,7 +58,7 @@ class Diablo3App : public rex::ReXApp {
 #endif
   }
 #endif
-#ifdef __linux__
+#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
   }

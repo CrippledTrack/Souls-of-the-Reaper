@@ -8,9 +8,10 @@ import shutil
 import subprocess
 
 from apply_generated_patches import patch_generated
+from codegen_title_update import generate_tu2
+from title_updates import DISC_SHA256, TU2_SHA256
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-DISC_SHA256 = "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef"
 PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
            "rexglue-object-reference.patch", "rexglue-keyboard.patch")
 
@@ -62,6 +63,7 @@ def main():
     parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / "tools/rexglue-sdk-linux")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-linux")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
+    parser.add_argument("--title-update", choices=["tu2"], help="Build the verified USA TU2 executable separately")
     parser.add_argument("--probe", action="store_true", help="Build asset-free GPU and rendering diagnostics")
     parser.add_argument("--extra-features", action="store_true",
                         help="Build optional PC menu settings and autosave wording in a separate directory")
@@ -71,6 +73,8 @@ def main():
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    if args.title_update and args.probe:
+        parser.error("--title-update cannot be combined with --probe")
     if args.probe and args.extra_features:
         parser.error("--probe and --extra-features cannot be combined")
     for name in ("sdk_source", "sdk_prefix", "game_dir"):
@@ -87,21 +91,34 @@ def main():
             source, build = ROOT / "port/probe", ROOT / "port/out/build/linux-probe"
         else:
             xex = args.game_dir / "Default.xex"
-            if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != DISC_SHA256:
-                raise ValueError("Default.xex missing or base-disc SHA-256 mismatch; Linux function hints require the unmodified USA Ultimate Evil Edition disc")
-            if not args.skip_codegen:
-                manifest = (ROOT / "port/linux/diablo3_manifest.toml").read_text()
+            expected = TU2_SHA256 if args.title_update else DISC_SHA256
+            if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
+                raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
+            variant = "tu2" if args.title_update else "linux"
+            generated = ROOT / "port/generated" / variant
+            if args.title_update:
+                generate_tu2(args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
+            elif not args.skip_codegen:
+                manifest_dir = ROOT / "port/linux"
+                game_placeholder = "../../game"
+                manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
                 # JSON strings also encode paths safely as TOML basic strings.
-                manifest = manifest.replace('"../../game"', json.dumps(str(args.game_dir), ensure_ascii=False))
-                manifest = manifest.replace('"../../game/Default.xex"', json.dumps(str(xex), ensure_ascii=False))
-                local_manifest = ROOT / "port/linux/local_manifest.toml"
+                manifest = manifest.replace(json.dumps(game_placeholder), json.dumps(str(args.game_dir), ensure_ascii=False))
+                manifest = manifest.replace(json.dumps(game_placeholder + "/Default.xex"), json.dumps(str(xex), ensure_ascii=False))
+                local_manifest = manifest_dir / "local_manifest.toml"
                 local_manifest.write_text(manifest, encoding="utf-8")
                 run(args.sdk_prefix / "bin/rexglue", "codegen", local_manifest)
-            patch_generated(ROOT / "port/generated/linux")
+                generated.mkdir(parents=True, exist_ok=True)
+                (generated / "source-xex.sha256").write_text(expected + "\n")
+            if not args.title_update:
+                patch_generated(generated)
             name = "linux-amd64-extras-relwithdebinfo" if args.extra_features else "linux-amd64-relwithdebinfo"
+            if args.title_update:
+                name = "linux-amd64-tu2-extras-relwithdebinfo" if args.extra_features else "linux-amd64-tu2-relwithdebinfo"
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [
-            f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}"]
+            f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
+            f"-DSOULS_TITLE_UPDATE_2={'ON' if args.title_update else 'OFF'}"]
         if args.extra_features:
             feature_options.append(f"-DSOULS_BASE_XEX={xex}")
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",

@@ -1,0 +1,65 @@
+{
+  "title_update": "USA TU2, executable 0x202",
+  "patched_executable_sha256": "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f",
+  "source_compatibility_verified": true,
+  "asset_hashes_verified": 4,
+  "codegen_validation": "passed with TU2-specific hints",
+  "native_build": "passed; RelWithDebInfo",
+  "python_and_native_regression_tests": 23,
+  "vulkan_device": 1,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+  "extended_runtime_check": {
+    "configured_seconds": 120,
+    "observed_seconds": 52.4,
+    "result": "window closed cleanly before timeout",
+    "guest_draws_and_swaps_observed": true,
+    "unhandled_guest_faults_observed": false
+  },
+  "limitations": [
+    "Full gameplay and save/load behavior have not been systematically validated.",
+    "Runtime validation used the existing external investigation SDK installation, with the Linux keyboard patch applied.",
+    "Windows TU2 is configured but has not been built or runtime-tested on Windows."
+  ],
+  "extra_features": {
+    "native_build": "passed",
+    "regression_tests": 24,
+    "sdk_startup_and_hook_tests": {
+      "base_disc": 2,
+      "tu2": 2
+    },
+    "wrong_executable_guard": "verified",
+    "normal_tu2_hook_isolation": "verified",
+    "address_audit": "extra-features-audit.json",
+    "runtime_check": {
+      "configured_seconds": 120,
+      "observed_seconds": 97.0,
+      "exit_code": 0,
+      "result": "window closed cleanly before timeout",
+      "vulkan_device": 1,
+      "saved_2x_scale_applied_at_startup": true,
+      "video_resolution_option_added": true,
+      "pc_autosave_wording_observed": true,
+      "selected_1x_scale_saved_to_file": true,
+      "unhandled_guest_faults_observed": false,
+      "desktop_relaunch_at_newly_saved_scale": "not performed; startup application covered by SDK tests"
+    }
+  },
+  "platform_independent_configuration": {
+    "shared_codegen": "scripts/codegen_title_update.py",
+    "shared_guest_sources": "port/generated/tu2",
+    "windows_build_and_launcher": "configured; native Windows validation pending",
+    "regression_tests": 26,
+    "linux_extras_build": "passed",
+    "linux_sdk_tests": 2,
+    "desktop_runtime_after_refactor": "not repeated; previous runtime observations retained above"
+  },
+  "commit_preparation_checks": {
+    "regression_tests": 27,
+    "sdk_tests": {
+      "base_disc": 2,
+      "tu2": 2
+    },
+    "whitespace_check": "passed",
+    "windows_native_validation": "not performed"
+  }
+}

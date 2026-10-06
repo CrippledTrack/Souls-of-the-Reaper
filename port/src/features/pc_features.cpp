@@ -1,12 +1,15 @@
-// Optional base-disc hooks, adapted from the previous PC settings integration.
+// Optional PC hooks shared by the base disc and verified USA TU2.
 // See port/extra-features.md for the executable and address audit.
-#ifdef _WIN32
+#ifdef SOULS_TITLE_UPDATE_2
+#include "generated/tu2/diablo3_pch.h"
+#elif defined(_WIN32)
 #include "generated/default/diablo3_pch.h"
 #else
 #include "generated/linux/diablo3_pch.h"
 #endif
 #include "pc_features.h"
 #include "pc_features_logic.h"
+#include "pc_features_tu2.h"
 
 #include <rex/cvar.h>
 #include <rex/runtime.h>
@@ -35,10 +38,18 @@ DECLARE_REX_FUNC(sub_8246C4B0);
 
 namespace {
 constexpr uint32_t kRenderOption = 100;
+#ifdef SOULS_TITLE_UPDATE_2
+constexpr uint32_t kOptionsOwner = 0x8330340C;
+constexpr uint32_t kSelectorTextPath = 0x82080A1C;
+constexpr uint32_t kVersionCallReturn = 0x8247E340;
+#else
 constexpr uint32_t kOptionsOwner = 0x83302514;
+constexpr uint32_t kVersionCallReturn = 0x8247C004;
 // Original sub_826FC798: lis r11,-32248; addi r5,r11,-1628.
 // The negative displacement borrows from the high half (0x82080000).
 constexpr uint32_t kSelectorTextPath = 0x82080000u - 1628;
+#endif
+constexpr uint32_t kVersionFormat = 0x82003ED0;
 constexpr std::string_view kRenderKey = "D3PC:RenderResolution";
 constexpr std::string_view kTooltipKey = "D3PC:RenderResolutionTooltip";
 constexpr std::string_view kAutosaveKey =
@@ -157,7 +168,7 @@ uint32_t CurrentDescriptor(uint8_t *base) {
 // before passing it to Root.NormalLayer.ConsoleStart_main.LayoutRoot.Version.
 // Match that call site and its "%s" format; all other formatting stays intact.
 extern "C" void sub_823BD130(PPCContext &ctx, uint8_t *base) {
-  const bool start_version = ctx.lr == 0x8247C004 && ctx.r4.u32 == 0x82003ED0;
+  const bool start_version = ctx.lr == kVersionCallReturn && ctx.r4.u32 == kVersionFormat;
   const auto destination = ctx.r3.u32;
   __imp__sub_823BD130(ctx, base);
   if (!start_version)

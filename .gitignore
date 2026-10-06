@@ -86,3 +86,8 @@ HANDOFF_*.md
 video_script.md
 IDIOMAS_Y_REGIONES.md
 cosas por hacer.txt
+
+# Isolated TU2 assets and local codegen paths
+game-tu2/
+port/title_updates/tu2/local_manifest.toml
+port/title_updates/tu2/generated/

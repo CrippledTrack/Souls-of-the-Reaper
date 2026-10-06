@@ -9,10 +9,14 @@
 #include <tlhelp32.h>
 #endif
 #include "window_features.h"
-#ifdef _WIN32
+#ifdef SOULS_TITLE_UPDATE_2
+#include "generated/tu2/diablo3_pch.h"
+#elif defined(_WIN32)
 #include "generated/default/diablo3_pch.h"
 #else
 #include "generated/linux/diablo3_pch.h"
+#endif
+#ifndef _WIN32
 #include <dlfcn.h>
 #endif
 #include <algorithm>

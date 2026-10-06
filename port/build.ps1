@@ -12,11 +12,15 @@
 #   -Precompiled          : uses the prebuilt binary in ..\sdk-bin\win-amd64.
 #                           Fast, no runtime symbols.
 #
-# Usage: pwsh -File port/build.ps1 [-Config Debug|Release|RelWithDebInfo] [-ExtraFeatures] [-Precompiled] [-Clean]
+# Usage: pwsh -File port/build.ps1 [-Config Debug|Release|RelWithDebInfo] [-TitleUpdate tu2 -GameDir path] [-ExtraFeatures] [-Precompiled] [-Clean]
 param(
     [ValidateSet('Debug','Release','RelWithDebInfo')]
     [string]$Config = 'Debug',
     [switch]$Precompiled,   # use sdk-bin prebuilt instead of building from source
+    [ValidateSet("tu2")]
+    [string]$TitleUpdate,
+    [string]$Rexglue, # optional path to the matching SDK codegen executable
+    [string]$GameDir = (Join-Path $PSScriptRoot "..\game"),
     [switch]$ExtraFeatures, # opt into the in-game resolution setting and PC autosave wording
     [switch]$Clean          # wipe the build directory (force a clean reconfigure)
 )
@@ -40,16 +44,29 @@ $env:PATH = "$llvm;$vsCmake;$vsNinja;$env:PATH"
 $presetMap = @{ 'Debug' = 'win-amd64-debug'; 'Release' = 'win-amd64-release'; 'RelWithDebInfo' = 'win-amd64-relwithdebinfo' }
 $preset = $presetMap[$Config]
 $buildName = if ($ExtraFeatures) { "win-amd64-extras-$($Config.ToLowerInvariant())" } else { $preset }
+if ($TitleUpdate) {
+    $variant = if ($ExtraFeatures) { 'tu2-extras' } else { 'tu2' }
+    $buildName = "win-amd64-$variant-$($Config.ToLowerInvariant())"
+}
 $buildDir = "$PSScriptRoot\out\build\$buildName"
 $featureMode = if ($ExtraFeatures) { 'ON' } else { 'OFF' }
 $configureArgs = @('--preset', $preset, '-S', $PSScriptRoot, '-B', $buildDir,
     '-D', "SOULS_ENABLE_EXTRA_FEATURES=$featureMode")
-if ($ExtraFeatures) {
-    $baseXex = Join-Path $PSScriptRoot '..\game\Default.xex'
+$tuMode = if ($TitleUpdate) { 'ON' } else { 'OFF' }
+$configureArgs += @('-D', "SOULS_TITLE_UPDATE_2=$tuMode")
+if ($ExtraFeatures -or $TitleUpdate) {
+    $baseXex = Join-Path $GameDir 'Default.xex'
     if (-not (Test-Path -LiteralPath $baseXex)) {
-        throw 'Extra features require game\Default.xex from the unmodified USA Ultimate Evil Edition base disc.'
+        throw 'GameDir must contain the executable matching the selected base-disc/TU2 build.'
     }
     $configureArgs += @('-D', "SOULS_BASE_XEX=$baseXex")
+}
+
+if ($TitleUpdate) {
+    # Use the same validated codegen and guest patches as Linux.
+    $codegen = if ($Rexglue) { $Rexglue } elseif ($Precompiled) { Join-Path $sdkBin 'bin\rexglue.exe' } else { Join-Path $sdkSource 'out\win-amd64\rexglue.exe' }
+    python "$PSScriptRoot\..\scripts\codegen_title_update.py" --game-dir $GameDir --rexglue $codegen
+    if ($LASTEXITCODE -ne 0) { throw "TU2 codegen failed ($LASTEXITCODE)" }
 }
 
 # If the SDK mode changes from the previous build, a clean reconfigure is required

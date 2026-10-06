@@ -4,9 +4,16 @@ This path combines the shared Souls of the Reaper application and cache/kernel
 overrides with the ReXGlue Vulkan work from the D3 recompilation investigation. It targets
 the unmodified USA Ultimate Evil Edition base disc, with executable SHA-256
 `cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef`.
-It does not import the separate handwritten decomp repository or experimental
-mismatched TU6 executable. Linux gameplay with this combined host still needs
-validation; the Windows playable-status claim does not apply to Linux.
+Linux gameplay validation is still limited; the Windows playable-status claim
+does not apply to Linux.
+
+## Title updates
+
+A separate [verified USA TU2 setup](../title_updates/tu2/README.md) stages the updated executable
+and assets, with dedicated codegen, binary and user-data paths. Use
+`--title-update tu2` with the staged `--game-dir` to build or launch it.
+The default remains the unmodified base disc. Add `--extra-features` for TU2
+PC menu features; Windows uses the same TU2 guest configuration.
 
 ## Build and run
 
