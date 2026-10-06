@@ -11,9 +11,10 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import import_ps3_save
 import codegen_title_update
 from apply_generated_patches import patch_generated
-from run_linux import launch_command
+from run_linux import launch_command, prepare_ps3_import
 from stage_title_update import verify_patch_source
 
 
@@ -360,6 +361,123 @@ class TitleUpdateTests(unittest.TestCase):
         self.assertIn("--user_data_root=/tmp/tu2-state", command)
         self.assertIn("--update_data_root=/tmp/tu2-disc", command)
 
+
+
+
+class Ps3SaveImportTests(unittest.TestCase):
+    @staticmethod
+    def varint(value):
+        result = bytearray()
+        while value > 127:
+            result.append((value & 127) | 128)
+            value >>= 7
+        result.append(value)
+        return bytes(result)
+
+    @classmethod
+    def integer(cls, number, value):
+        return cls.varint(number << 3) + cls.varint(value)
+
+    @classmethod
+    def message(cls, number, value):
+        return cls.varint((number << 3) | 2) + cls.varint(len(value)) + value
+
+    @staticmethod
+    def encrypt(data):
+        state = 0x305F92D82EC9A01B
+        result = bytearray()
+        for plain in data:
+            result.append(plain ^ (state & 255))
+            state = (((state ^ plain) << 56) | (state >> 8)) & 0xFFFFFFFFFFFFFFFF
+        return bytes(result)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        entity = self.integer(1, 123) + self.integer(2, 0xDA93EB8A4006B788)
+        digest = self.integer(1, 905) + self.message(2, entity)
+        hero = (self.integer(1, 905) + self.message(2, digest) +
+                self.message(3, self.integer(1, 1)) + self.message(123, b"unknown field"))
+        account = self.integer(1, 108) + self.message(2, self.integer(1, 1))
+        profile = self.message(1, self.integer(1, 1))
+        index = self.message(1, self.message(1, entity))
+        for name, data in {"ACCOUNT.DAT": account, "PROFILE.DAT": profile,
+                           "HEROES.IDX": index, "4006B788.HRO": hero}.items():
+            (self.source / name).write_bytes(self.encrypt(data))
+        (self.source / "PREFS.DAT").write_bytes(b"platform preferences")
+        self.before = {p.name: p.read_bytes() for p in self.source.iterdir()}
+
+    def test_import_preserves_payloads_and_source(self):
+        output = self.root / "new-state"
+        report = import_ps3_save.import_save(self.source, output, import_ps3_save.DEFAULT_XUID)
+        package = pathlib.Path(report["destination_package"])
+        self.assertEqual(self.before["ACCOUNT.DAT"], (package / "account.dat").read_bytes())
+        self.assertEqual(self.before["4006B788.HRO"],
+                         (package / "heroes/da93eb8a4006b788.dat").read_bytes())
+        self.assertFalse((package / "prefs.dat").exists())
+        self.assertTrue((output / "import-report.json").is_file())
+        self.assertFalse(report["runtime_validated"])
+        self.assertEqual(self.before, {p.name: p.read_bytes() for p in self.source.iterdir()})
+        # Compare against the output as an Xbox reference on a second inspection.
+        _, compared, _ = import_ps3_save.inspect_source(self.source, package)
+        self.assertTrue(compared["known_tu2_versions_match"])
+
+    def test_launch_imports_once_and_preserves_subsequent_saves(self):
+        output = self.root / "launch-state"
+        self.assertEqual(prepare_ps3_import(self.source, output), "Imported PS3 save")
+        account = output / import_ps3_save.DEFAULT_XUID / "394F07D4/00000001/d3save/account.dat"
+        account.write_bytes(b"subsequent game save")
+        self.assertEqual(prepare_ps3_import(self.source, output), "Reusing imported PS3 save")
+        self.assertEqual(account.read_bytes(), b"subsequent game save")
+        with self.assertRaises(import_ps3_save.SaveError):
+            prepare_ps3_import(self.root / "different-source", output)
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        with self.assertRaises(import_ps3_save.SaveError):
+            prepare_ps3_import(self.source, unrelated)
+
+    def test_existing_output_is_never_overwritten(self):
+        output = self.root / "existing"
+        output.mkdir()
+        (output / "keep").write_bytes(b"existing save")
+        with self.assertRaises(FileExistsError):
+            import_ps3_save.import_save(self.source, output, import_ps3_save.DEFAULT_XUID)
+        self.assertEqual((output / "keep").read_bytes(), b"existing save")
+
+    def test_output_cannot_overlap_source(self):
+        for output in (self.source, self.source / "new", self.root):
+            with self.subTest(output=output), self.assertRaises(import_ps3_save.SaveError):
+                import_ps3_save.import_save(self.source, output, import_ps3_save.DEFAULT_XUID)
+        self.assertEqual(self.before, {p.name: p.read_bytes() for p in self.source.iterdir()})
+
+    def test_index_mismatch_rejects_import(self):
+        (self.source / "HEROES.IDX").write_bytes(self.encrypt(
+            self.message(1, self.message(1, self.integer(1, 123) + self.integer(2, 456)))))
+        with self.assertRaises(import_ps3_save.SaveError):
+            import_ps3_save.import_save(self.source, self.root / "output", import_ps3_save.DEFAULT_XUID)
+        self.assertFalse((self.root / "output").exists())
+
+    def test_unknown_version_inspects_but_does_not_import(self):
+        account = self.integer(1, 109) + self.message(2, self.integer(1, 1))
+        (self.source / "ACCOUNT.DAT").write_bytes(self.encrypt(account))
+        _, report, _ = import_ps3_save.inspect_source(self.source)
+        self.assertFalse(report["known_tu2_versions_match"])
+        with self.assertRaises(import_ps3_save.SaveError):
+            import_ps3_save.import_save(self.source, self.root / "output", import_ps3_save.DEFAULT_XUID)
+
+    def test_corrupt_wire_data_and_symlinks_are_rejected(self):
+        for data in (b"", b"\x08\x80", b"\x12\xff\x7f", b"\x00", b"\x0f"):
+            with self.subTest(data=data), self.assertRaises(import_ps3_save.SaveError):
+                import_ps3_save.fields(data)
+        (self.source / "4006B788.HRO").unlink()
+        external = self.root / "external"
+        external.write_bytes(self.before["4006B788.HRO"])
+        (self.source / "4006B788.HRO").symlink_to(external)
+        with self.assertRaises(import_ps3_save.SaveError):
+            import_ps3_save.inspect_source(self.source)
 
 
 if __name__ == "__main__":

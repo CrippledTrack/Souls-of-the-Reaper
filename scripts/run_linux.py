@@ -2,6 +2,7 @@
 """Launch the Linux base-disc port or its asset-free Vulkan diagnostics."""
 import argparse
 import hashlib
+import json
 import os
 import pathlib
 import subprocess
@@ -9,6 +10,29 @@ import subprocess
 from title_updates import DISC_SHA256, TU2_SHA256
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def prepare_ps3_import(source, state):
+    from import_ps3_save import DEFAULT_XUID, SaveError, import_save
+
+    source, state = source.resolve(), state.resolve()
+    if source == state or source in state.parents or state in source.parents:
+        raise SaveError("Imported state must be separate from the PS3 source")
+    if not state.exists():
+        import_save(source, state, DEFAULT_XUID)
+        return "Imported PS3 save"
+    try:
+        report = json.loads((state / "import-report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SaveError("Existing state has no valid PS3 import report; choose a new --state-dir") from error
+    if (not isinstance(report, dict) or report.get("format") != "souls-ps3-import-v1"
+            or report.get("source") != str(source) or report.get("xuid") != DEFAULT_XUID):
+        raise SaveError("Existing state belongs to a different import; choose a new --state-dir")
+    package = state / DEFAULT_XUID / "394F07D4/00000001/d3save"
+    if not (package / "account.dat").is_file() or not (package / "profile.dat").is_file() or not (package / "heroes").is_dir():
+        raise SaveError("Imported state is incomplete; choose a new --state-dir")
+    # Subsequent game saves belong to the player. Never re-copy source payloads.
+    return "Reusing imported PS3 save"
 
 
 def option_value(extra, name, default):
@@ -75,14 +99,21 @@ def main():
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,
                         help="Override the user data directory (TU2 uses a separate default)")
+    parser.add_argument("--import-ps3-save", type=pathlib.Path,
+                        help="Import a PS3 save once into a separate TU2 state, then reuse it")
     args, extra = parser.parse_known_args()
+    if args.import_ps3_save and (args.title_update != "tu2" or args.probe or args.render_smoke):
+        parser.error("--import-ps3-save requires --title-update tu2 and a game launch")
     if args.title_update:
         if args.probe or args.render_smoke:
             parser.error("--title-update cannot be combined with diagnostic modes")
 
     if args.state_dir is None:
         data_home = pathlib.Path(os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share")
-        args.state_dir = data_home / ("souls-of-the-reaper-tu2" if args.title_update else "souls-of-the-reaper")
+        name = "souls-of-the-reaper-tu2" if args.title_update else "souls-of-the-reaper"
+        if args.import_ps3_save:
+            name += "-ps3-import"
+        args.state_dir = data_home / name
     command = launch_command(args, extra)
     if not pathlib.Path(command[0]).is_file():
         flag = " --probe" if args.probe or args.render_smoke else ((" --title-update tu2" if args.title_update else "") + (" --extra-features" if args.extra_features else ""))
@@ -100,6 +131,13 @@ def main():
         if not state.is_absolute():
             state = ROOT / state
         try:
+            if args.import_ps3_save:
+                from import_ps3_save import SaveError
+                try:
+                    result = prepare_ps3_import(args.import_ps3_save, state)
+                except (OSError, SaveError) as error:
+                    parser.exit(1, f"PS3 import failed: {error}\n")
+                print(f"{result}: {state.resolve()}", flush=True)
             state.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             parser.exit(1, f"Cannot create user data directory: {error}\n")
