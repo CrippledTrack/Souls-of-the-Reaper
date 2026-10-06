@@ -91,3 +91,10 @@ cosas por hacer.txt
 game-tu2/
 port/title_updates/tu2/local_manifest.toml
 port/title_updates/tu2/generated/
+
+# Tauri launcher build outputs
+launcher/tauri/node_modules/
+launcher/tauri/dist/
+launcher/tauri/src-tauri/target/
+launcher/tauri/src-tauri/icons/
+launcher/tauri/src-tauri/gen/

@@ -1,0 +1,14 @@
+{
+  "name": "souls-of-the-reaper-launcher",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "prepare-ui": "node prepare-ui.mjs && tauri icon icon.svg --output src-tauri/icons",
+    "dev": "npm run prepare-ui && tauri dev",
+    "build": "npm run prepare-ui && tauri build --no-bundle",
+    "test": "node --test bridge.test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
