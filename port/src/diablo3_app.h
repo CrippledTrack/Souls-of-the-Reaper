@@ -19,9 +19,7 @@
 #include <rex/system/gpu_plugin.h>
 #endif
 #endif
-#ifdef __linux__
 #include <rex/ui/keybinds.h>
-#endif
 
 class Diablo3App : public rex::ReXApp {
  public:
@@ -69,7 +67,6 @@ class Diablo3App : public rex::ReXApp {
     title_ = CreateDiabloWindowTitle(drawer, window());
   }
   void OnShutdown() override { title_.reset(); }
-#ifdef __linux__
   void OnKeyDown(rex::ui::KeyEvent& event) override {
     if (event.virtual_key() == rex::ui::VirtualKey::kF11) {
       if (!event.prev_state()) window()->SetFullscreen(!window()->IsFullscreen());
@@ -78,7 +75,6 @@ class Diablo3App : public rex::ReXApp {
     }
     rex::ui::ProcessKeyEvent(event);
   }
-#endif
 
   // FATX cache device setup.
   // Diablo mounts cache:\ as a FATX volume by reading \Device\Harddisk0\Partition0

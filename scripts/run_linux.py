@@ -39,6 +39,7 @@ def launch_command(args, extra):
         "--cache_root": state / "cache",
         "--log_file": state / "diablo3.log",
         "--render_target_path_vulkan": "fsi",
+        "--mnk_mode": "true",
     }
     overrides = {arg.split("=", 1)[0] for arg in extra if arg.startswith("--")}
     extras = getattr(args, "extra_features", False)

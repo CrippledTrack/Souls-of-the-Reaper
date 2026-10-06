@@ -25,6 +25,63 @@ class LinuxToolsTests(unittest.TestCase):
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
 
+    @unittest.skipUnless(shutil.which("clang++") or shutil.which("c++"), "C++ compiler required")
+    def test_shared_fullscreen_handler(self):
+        source = (ROOT / "port/src/diablo3_app.h").read_text()
+        start = source.index("  void OnKeyDown(")
+        end = source.index("\n  }", start) + len("\n  }")
+        handler = source[start:end].replace(" override", "")
+        harness = r"""
+#include <cassert>
+namespace rex::ui {
+enum class VirtualKey { kF11, kF4 };
+struct KeyEvent {
+  VirtualKey key;
+  bool repeat = false, handled = false;
+  VirtualKey virtual_key() const { return key; }
+  bool prev_state() const { return repeat; }
+  void set_handled(bool value) { handled = value; }
+};
+int dispatched = 0;
+void ProcessKeyEvent(KeyEvent&) { ++dispatched; }
+}
+struct Window {
+  bool fullscreen = false;
+  int toggles = 0;
+  bool IsFullscreen() const { return fullscreen; }
+  void SetFullscreen(bool value) { fullscreen = value; ++toggles; }
+};
+struct App {
+  Window win;
+  Window* window() { return &win; }
+HANDLER
+};
+int main() {
+  App app;
+  rex::ui::KeyEvent press{rex::ui::VirtualKey::kF11};
+  app.OnKeyDown(press);
+  assert(app.win.fullscreen && press.handled && app.win.toggles == 1);
+  rex::ui::KeyEvent repeat{rex::ui::VirtualKey::kF11, true};
+  app.OnKeyDown(repeat);
+  assert(app.win.fullscreen && repeat.handled && app.win.toggles == 1);
+  app.OnKeyDown(press);
+  assert(!app.win.fullscreen && app.win.toggles == 2);
+  rex::ui::KeyEvent other{rex::ui::VirtualKey::kF4};
+  app.OnKeyDown(other);
+  assert(!other.handled && rex::ui::dispatched == 1);
+}
+""".replace("HANDLER", handler)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)
+            (path / "fullscreen.cpp").write_text(harness)
+            compiler = shutil.which("clang++") or shutil.which("c++")
+            for platform in ("linux", "windows"):
+                executable = path / platform
+                subprocess.run([compiler, "-std=c++23", "-Wall", "-Wextra", "-Werror",
+                                "-D__linux__" if platform == "linux" else "-D_WIN32",
+                                str(path / "fullscreen.cpp"), "-o", str(executable)], check=True)
+                subprocess.run([str(executable)], check=True)
+
     def test_guest_patches_across_shards_and_repeat_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -70,6 +127,18 @@ class LinuxToolsTests(unittest.TestCase):
         self.assertNotIn("--render_target_path_vulkan=fsi", command)
         self.assertEqual(["--log_file"], [x for x in command if x.startswith("--log_file")])
         self.assertIn("--user_data_root=/tmp/sotr-state", command)
+
+    def test_keyboard_enabled_and_can_be_disabled(self):
+        args = argparse.Namespace(probe=False, render_smoke=False,
+                                  game_dir=ROOT / "game", state_dir=ROOT / "state")
+        self.assertIn("--mnk_mode=true", launch_command(args, []))
+        for extra in (["--mnk_mode=false"], ["--mnk_mode", "false"]):
+            command = launch_command(args, extra)
+            self.assertNotIn("--mnk_mode=true", command)
+            self.assertEqual(extra, command[-len(extra):])
+        command = launch_command(args, ["--mnk_mouse=true", "--keybind_a=Return"])
+        self.assertIn("--mnk_mouse=true", command)
+        self.assertIn("--keybind_a=Return", command)
 
     def test_diagnostics_do_not_mount_game_or_saves(self):
         args = argparse.Namespace(probe=True, render_smoke=False)

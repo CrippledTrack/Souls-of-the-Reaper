@@ -12,7 +12,7 @@ from apply_generated_patches import patch_generated
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DISC_SHA256 = "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef"
 PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
-           "rexglue-object-reference.patch")
+           "rexglue-object-reference.patch", "rexglue-keyboard.patch")
 
 
 def run(*args):

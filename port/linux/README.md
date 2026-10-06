@@ -53,8 +53,34 @@ and caches default to `$XDG_DATA_HOME/souls-of-the-reaper` (or
 Launch options are forwarded to ReXGlue, and explicit options override defaults.
 Linux requires the exact filename `Default.xex`. The launcher uses Vulkan FSI;
 the SDK may fall back when a device lacks fragment shader interlock.
-Press F11 to toggle fullscreen. The title bar shows guest swaps per second and
+Press F11 to toggle fullscreen (the same shared handler is used on Windows). The title bar shows guest swaps per second and
 render/window dimensions.
+
+## Keyboard and mouse
+
+Keyboard controller emulation is enabled by default. WASD moves; arrows control
+D-pad; Space/Enter = A, Shift = B, J/U = X/Y, O/K = LB/RB, H/L = LT/RT,
+Tab/I = inventory, and Escape = pause. C/V press the left/right stick, and
+Numpad 8/2/4/6 drives the right stick for dodging (Num Lock enabled).
+Press F4 to edit and save bindings in the SDK settings overlay.
+
+The keyboard shares player 1 with the first gamepad. Linux uses the SDK's
+stable device-slot assignment, rather than Windows' first-input player assignment.
+Mouse input is disabled by default; opt in with:
+
+```sh
+python3 scripts/run_linux.py --mnk_mouse=true
+```
+
+This enables mouse right-stick movement, left/right clicks = RT/LT, and middle
+click = right-stick press. Mouse capture is released when focus is lost or a
+UI dialog captures input. Use `--mnk_mode=false` for gamepad-only input.
+Existing saved `keybind_*` values are preserved; update them through F4 if an
+older SDK layout was saved. The launcher enables keyboard input even if an old
+config disabled it; an explicit `--mnk_mode=false` overrides the launcher.
+
+Rebuild the SDK with `--build-sdk` to install the keyboard patch. If supplying
+an existing `--sdk-prefix`, it must also include `rexglue-keyboard.patch`.
 
 An [optional extra-features build](../extra-features.md) adds an in-game resolution
 scale setting, PC wording for the autosave warning, and ` + Extras` on the
@@ -85,6 +111,9 @@ and `scripts/check_texture_exponents.py`; consult their `--help` output.
 
 ## Imported work and adaptations
 
+- `patches/linux/rexglue-keyboard.patch`: enables the game keyboard layout, supports
+  Shift alongside movement, emits controller keystrokes for menus, gates mouse
+  clicks behind mouse mode, and suppresses gameplay input while typing in dialogs.
 - `patches/linux/rexglue-registration.patch`: faster bulk function registration
   and gap cleanup; `tests/rexglue_registration.cpp` compares against original
   behavior and runs during SDK builds.
