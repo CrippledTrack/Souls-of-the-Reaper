@@ -175,6 +175,10 @@ pub struct Settings {
     pub user_data_root_tu2: String,
     /// Linux only; -1 lets the SDK choose.
     pub vulkan_device: i32,
+    /// Last inputs of the Build panel (scripts/build_client.py).
+    pub build_iso: String,
+    pub build_title_update: String,
+    pub build_cmake: String,
     pub ui_state: serde_json::Value,
 }
 
@@ -186,6 +190,9 @@ impl Default for Settings {
             user_data_root: String::new(),
             user_data_root_tu2: String::new(),
             vulkan_device: -1,
+            build_iso: String::new(),
+            build_title_update: String::new(),
+            build_cmake: String::new(),
             ui_state: serde_json::Value::Null,
         }
     }
@@ -239,6 +246,14 @@ fn choose(setting: &str, default: &Path) -> PathBuf {
     } else {
         PathBuf::from(setting.trim())
     }
+}
+
+/// Base and TU2 game folders: settings, then defaults.
+pub fn game_folders(settings: &Settings, defaults: &Defaults) -> (PathBuf, PathBuf) {
+    (
+        choose(&settings.game_dir, &defaults.game_dir),
+        choose(&settings.game_dir_tu2, &defaults.game_dir_tu2),
+    )
 }
 
 /// Game and save folders for `build`: settings, then the release pairing,
@@ -305,6 +320,60 @@ pub fn validate_game_dir(build: &Build, game: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Build ids scripts/build_client.py accepts; they match discovered build ids.
+pub const BUILD_VARIANTS: [&str; 4] = ["base", "extras", "tu2", "tu2-extras"];
+
+/// Inputs of the Build panel.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildRequest {
+    pub iso: String,
+    pub title_update: String,
+    pub variants: Vec<String>,
+    pub cmake: String,
+}
+
+/// Arguments for scripts/build_client.py, writing into the launcher's game
+/// folders. Windows only prepares the folders: compiling there is not
+/// automated yet.
+pub fn build_client_arguments(
+    platform: Platform,
+    repo: &Path,
+    request: &BuildRequest,
+    game: &Path,
+    game_tu2: &Path,
+) -> Result<Vec<String>, String> {
+    let mut args = vec![
+        repo.join("scripts/build_client.py").display().to_string(),
+        format!("--game-dir={}", game.display()),
+        format!("--game-dir-tu2={}", game_tu2.display()),
+    ];
+    for (flag, value) in [
+        ("--iso", &request.iso),
+        ("--title-update", &request.title_update),
+        ("--cmake", &request.cmake),
+    ] {
+        if !value.trim().is_empty() {
+            args.push(format!("{flag}={}", value.trim()));
+        }
+    }
+    if let Some(bad) = request
+        .variants
+        .iter()
+        .find(|v| !BUILD_VARIANTS.contains(&v.as_str()))
+    {
+        return Err(format!("Unknown build {bad}."));
+    }
+    match platform {
+        Platform::Windows => args.push("--data-only".into()),
+        Platform::Linux if request.variants.is_empty() => {
+            return Err("Choose at least one build.".into())
+        }
+        Platform::Linux => args.push(format!("--variants={}", request.variants.join(","))),
+    }
+    Ok(args)
 }
 
 /// Choices from the launcher menu (buildLaunchConfig in the HTML).
@@ -418,6 +487,50 @@ mod tests {
             rtp: "rtv".into(),
             vk_path: "fsi".into(),
         }
+    }
+
+    fn request(variants: &[&str]) -> BuildRequest {
+        BuildRequest {
+            iso: " /isos/d3 usa.iso ".into(),
+            title_update: String::new(),
+            variants: variants.iter().map(|v| v.to_string()).collect(),
+            cmake: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_arguments_target_launcher_game_folders() {
+        let args = build_client_arguments(
+            Platform::Linux,
+            Path::new("/repo"),
+            &request(&["base", "tu2-extras"]),
+            Path::new("/g/base"),
+            Path::new("/g/tu2"),
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            [
+                "/repo/scripts/build_client.py",
+                "--game-dir=/g/base",
+                "--game-dir-tu2=/g/tu2",
+                "--iso=/isos/d3 usa.iso",
+                "--variants=base,tu2-extras",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_arguments_reject_unknown_or_missing_builds() {
+        let folders = (Path::new("/g"), Path::new("/t"));
+        let run = |platform, variants: &[&str]| {
+            build_client_arguments(platform, Path::new("/r"), &request(variants), folders.0, folders.1)
+        };
+        assert!(run(Platform::Linux, &[]).is_err());
+        assert!(run(Platform::Linux, &["base;rm"]).is_err());
+        let windows = run(Platform::Windows, &[]).unwrap();
+        assert!(windows.contains(&"--data-only".to_string()));
+        assert!(!windows.iter().any(|a| a.starts_with("--variants")));
     }
 
     fn build(tu2: bool, extras: bool) -> Build {

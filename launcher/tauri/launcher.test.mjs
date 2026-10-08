@@ -26,19 +26,24 @@ function page(html, globals) {
   return { dom, doc, rows, row, click, next };
 }
 
-function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved = { res: -1, display: -1 }, failLaunch = false } = {}) {
+function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved = { res: -1, display: -1 }, failLaunch = false,
+  canBuild = true, responses = {} } = {}) {
   const calls = [];
+  const listeners = {};
   const invoke = async (command, args) => {
     calls.push({ command, args });
     if (command === 'launch_game' && failLaunch) throw 'Default.xex does not match';
+    if (command in responses) return responses[command](args);
   };
+  const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
-    __TAURI__: { core: { invoke } },
-    LAUNCHER_CAPS: { platform, builds, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game-tu2', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
+    __TAURI__: { core: { invoke }, event: { listen } },
+    LAUNCHER_CAPS: { platform, builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game-tu2', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
     LAUNCHER_SETTINGS: { gameDir: '', gameDirTu2: '', userDataRoot: '', userDataRootTu2: '', vulkanDevice: -1, ...settings },
     SAVED_STATE: saved,
   });
-  return { ...p, calls };
+  const emit = (event, payload) => listeners[event]({ payload });
+  return { ...p, calls, emit };
 }
 
 test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => {
@@ -124,9 +129,73 @@ test('Launch settings show defaults and save a blank Vulkan device as automatic'
 });
 
 test('Missing builds hide the selector and explain where to look', () => {
-  const { rows, doc } = tauriPage({ builds: [] });
+  const { rows, doc } = tauriPage({ builds: [], canBuild: false });
   assert.equal(rows()[0].label, 'Render Path');
   assert.match(doc.getElementById('launchStatus').textContent, /No game build found/);
+  assert.equal(doc.getElementById('buildPanel').hidden, true);
+  assert.equal(doc.getElementById('openBuild').hidden, true, 'release installs cannot build');
+});
+
+test('A source checkout without builds opens the Build panel', () => {
+  const { doc } = tauriPage({ builds: [], settings: { buildIso: '/isos/d3.iso' } });
+  assert.equal(doc.getElementById('buildPanel').hidden, false);
+  assert.equal(doc.getElementById('buildIso').value, '/isos/d3.iso');
+  assert.match(doc.getElementById('launchStatus').textContent, /Build it from your disc image/);
+});
+
+test('Building streams progress, saves inputs and adds the new build to Game Version', async () => {
+  let finish;
+  const { doc, click, row, rows, calls, emit } = tauriPage({
+    builds: [],
+    responses: {
+      pick_file: ({ kind }) => (kind === 'titleUpdate' ? '/isos/tu00000002_00000000' : null),
+      start_build: () => new Promise(resolve => { finish = resolve; }),
+    },
+  });
+  doc.getElementById('buildIso').value = ' /isos/d3.iso ';
+  click(doc.querySelector('[data-pick="titleUpdate"]'));
+  await tick();
+  assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/tu00000002_00000000');
+  assert.equal(doc.querySelector('#buildVariants input[value="tu2"]').checked, true, 'choosing a title update selects TU2');
+  click(doc.getElementById('startBuild'));
+  await tick();
+  const { request, settings } = calls.find(c => c.command === 'start_build').args;
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['base', 'tu2'] });
+  assert.equal(settings.buildIso, '/isos/d3.iso');
+  assert.equal(doc.getElementById('playBtn').disabled, true);
+  assert.equal(doc.getElementById('cancelBuild').hidden, false);
+  emit('build-output', '::step::2/5::Extract title update');
+  emit('build-output', 'CPKs/Patch.cpk: 3,774,503 bytes');
+  assert.equal(doc.getElementById('buildStep').textContent, 'Step 2 of 5: Extract title update…');
+  assert.equal(doc.getElementById('buildLog').textContent, 'CPKs/Patch.cpk: 3,774,503 bytes');
+  finish(BUILDS);
+  await tick(); await tick();
+  assert.equal(doc.getElementById('playBtn').disabled, false);
+  assert.equal(doc.getElementById('cancelBuild').hidden, true);
+  assert.equal(rows()[0].label, 'Game Version');
+  assert.equal(row('Game Version').value, 'Base');
+  assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras/);
+  assert.equal(doc.getElementById('launchStatus').textContent, '');
+});
+
+test('Build failures and cancellation are reported in the panel', async () => {
+  const { doc, click, calls } = tauriPage({ responses: { start_build: async () => { throw 'Build failed: wrong disc'; } } });
+  click(doc.getElementById('setupBtn'));
+  click(doc.getElementById('openBuild'));
+  assert.equal(doc.getElementById('setup').hidden, true);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(doc.getElementById('buildStep').textContent, 'Build failed: wrong disc');
+  assert.equal(doc.getElementById('startBuild').hidden, false);
+  click(doc.getElementById('cancelBuild'));
+  assert.ok(calls.some(c => c.command === 'cancel_build'));
+});
+
+test('Windows prepares game folders without compile options', () => {
+  const { doc } = tauriPage({ platform: 'windows', builds: [] });
+  assert.equal(doc.getElementById('buildVariants').hidden, true);
+  assert.equal(doc.getElementById('cmakeLabel').hidden, true);
+  assert.equal(doc.getElementById('startBuild').textContent, 'Prepare');
 });
 
 test('Cancelled settings edits are not used by Play', async () => {

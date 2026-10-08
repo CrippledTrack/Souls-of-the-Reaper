@@ -50,14 +50,28 @@ The optional binary is `linux-amd64-tu2-extras-relwithdebinfo/diablo3` under
 
 ## Reproduce staging
 
+`scripts/build_client.py --iso ... --title-update tu00000002_00000000` runs
+every step below. It is the same as the launcher's Build panel.
+
 The old external `d3-patch` wrapper compared `digestSource` with the unrelated
 `headerDigest` field. The correct comparison is SHA-1 of the base executable's
 256-byte RSA signature. The fix is tracked in
-[`patches/d3-patch-signature.patch`](../../../patches/d3-patch-signature.patch)
-and has been applied and rebuilt in the local investigation project.
+[`patches/d3-patch-signature.patch`](../../../patches/d3-patch-signature.patch).
+The corrected source is now in [`scripts/d3-patch`](../../../scripts/d3-patch).
+`build_client.py` builds it against the XenonRecomp revision pinned in
+`xenonrecomp.lock.json`, into `tools/d3-patch/`.
 No mismatch override is used for TU2.
 
-For another copy of the staged assets, choose a new output directory:
+`scripts/extract_update.py` extracts the STFS package. It checks each block's
+SHA-1 and writes `update-manifest.json`:
+
+```sh
+python3 scripts/extract_update.py tu00000002_00000000 /path/to/extracted-update
+```
+
+For another copy of the staged assets, choose a new output directory. Base
+files are hardlinked when possible; replaced files are unlinked first, so the
+base disc is never modified:
 
 ```sh
 python3 scripts/stage_title_update.py \

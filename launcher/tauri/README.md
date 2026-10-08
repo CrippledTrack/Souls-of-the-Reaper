@@ -31,6 +31,37 @@ Options are passed as command-line arguments; `diablo3.toml` and F4 keybinds
 are never modified. Launch rules mirror `scripts/run_linux.py` and
 `scripts/run_windows.ps1`.
 
+## Build the game
+
+In a source checkout, **Build from disc image…** (in ⚙) runs
+[`scripts/build_client.py`](../../scripts/build_client.py). The panel also opens
+by itself when no build is found. Choose:
+
+- the USA Ultimate Evil Edition disc image (ISO);
+- optionally, the USA Title Update 2 package (`tu00000002_00000000`);
+- which builds to compile: Base, Base + Extras, TU2, TU2 + Extras.
+
+The script writes into the game folders from Launch settings (`game/` and
+`game-tu2/` by default). It runs these steps and skips any that are already done:
+
+1. Check the disc's `Default.xex` before copying anything, then extract the disc.
+2. Extract the title update, build the `d3-patch` tool and stage TU2. Unchanged
+   disc files are hardlinked when both folders share a filesystem.
+3. Build the pinned ReXGlue SDK once (`tools/`).
+4. Generate code and compile each selected build. Generated code is reused for
+   later builds of the same executable.
+
+Progress and output appear in the panel. **Cancel build** stops the script and
+the compilers it started, and so does closing the launcher; running it again
+continues where it stopped. When the build finishes, Game Version lists the new
+builds.
+
+Requirements: Python 3, git, CMake 3.25+ (choose its path in the panel if it
+is not on `PATH`), Ninja, Clang, and the SDK's Linux development packages.
+Allow about 15 GiB of free space for a first build with TU2. On Windows the panel only
+prepares the game folders; compile with the README steps. A release install
+has no sources, so the panel is not shown there.
+
 ## Launch settings (⚙)
 
 Game and save folders for base and TU2 builds, plus the Vulkan device on Linux.
@@ -87,3 +118,5 @@ Rust tests cover both platforms' arguments on any host.
   `Launcher.ps1`; use the in-game F4 menu.
 - The installer and `setup.ps1` still package and start `Launcher.ps1`'s
   `SoulsOfTheReaper.exe`.
+- Building needs a source checkout and Python. Compiling is automated only on
+  Linux, and only the USA disc and USA TU2 are accepted.

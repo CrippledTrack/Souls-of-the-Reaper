@@ -12,7 +12,9 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import import_ps3_save
+import build_client
 import codegen_title_update
+import stage_title_update
 from apply_generated_patches import patch_generated
 from run_linux import launch_command, prepare_ps3_import
 from stage_title_update import verify_patch_source
@@ -478,6 +480,90 @@ class Ps3SaveImportTests(unittest.TestCase):
         (self.source / "4006B788.HRO").symlink_to(external)
         with self.assertRaises(import_ps3_save.SaveError):
             import_ps3_save.inspect_source(self.source)
+
+
+class BuildClientTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+
+    def args(self, **overrides):
+        values = dict(iso=None, title_update=None, variants=["base"], data_only=False,
+                      game_dir=self.root / "game", game_dir_tu2=self.root / "game-tu2",
+                      sdk_source=self.root / "sdk", sdk_prefix=self.root / "prefix", patcher=None,
+                      cmake="cmake", jobs=2, regenerate=False)
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_staging_never_writes_through_hardlinks_to_the_base_disc(self):
+        base, update, output = self.root / "base", self.root / "update", self.root / "out/tu2"
+        (base / "CPKs").mkdir(parents=True)
+        (base / "Default.xex").write_bytes(b"base")
+        (base / "CPKs/Common.cpk").write_bytes(b"common")
+        files = []
+        for name in ("Default.xexp", "CPKs/Patch.cpk", "CPKs/Patch2.cpk",
+                     "CPKs/enUS_Patch.cpk", "CPKs/enUS_Patch2.cpk"):
+            (update / name).parent.mkdir(parents=True, exist_ok=True)
+            (update / name).write_bytes(name.encode())
+            files.append(dict(path=name, size=len(name), sha256=hashlib.sha256(name.encode()).hexdigest()))
+        (update / "update-manifest.json").write_text(build_client.json.dumps(dict(
+            sha256="pkg", title_id="394F07D4", media_id="38E299CD", version=2,
+            block_hashes_verified=True, files=files)))
+        patcher = self.root / "patch.sh"
+        patcher.write_text('#!/bin/sh\nprintf patched > "$3"\n')
+        patcher.chmod(0o755)
+        sha = lambda data: hashlib.sha256(data).hexdigest()
+        with mock.patch.multiple(stage_title_update, DISC_SHA256=sha(b"base"), TU2_SHA256=sha(b"patched"),
+                                 TU2_PACKAGE_SHA256="pkg", verify_patch_source=mock.DEFAULT):
+            stage_title_update.stage(base, update, output, patcher)
+        self.assertEqual((base / "Default.xex").read_bytes(), b"base")
+        self.assertEqual((output / "Default.xex").read_bytes(), b"patched")
+        self.assertEqual((output / "CPKs/Patch.cpk").read_bytes(), b"CPKs/Patch.cpk")
+        self.assertFalse((base / "CPKs/Patch.cpk").exists())
+        self.assertTrue((output / "CPKs/Common.cpk").samefile(base / "CPKs/Common.cpk"))
+
+    def test_wrong_disc_is_rejected_before_extracting(self):
+        iso = self.root / "other.iso"
+        iso.write_bytes(b"x")
+        with mock.patch.object(build_client.extract_disc, "file_sha256", return_value="0" * 64), \
+                mock.patch.object(build_client.extract_disc, "extract") as extract:
+            with self.assertRaisesRegex(build_client.BuildError, "not the USA"):
+                build_client.plan(self.args(iso=iso, data_only=True))
+            extract.assert_not_called()
+        with self.assertRaisesRegex(build_client.BuildError, "choose your disc image"):
+            build_client.plan(self.args(data_only=True))
+
+    def test_incomplete_tu2_folder_is_never_replaced(self):
+        (self.root / "game-tu2").mkdir()
+        with mock.patch.object(build_client, "base_ready", return_value=True):
+            with self.assertRaisesRegex(build_client.BuildError, "move it aside"):
+                build_client.plan(self.args(variants=["tu2"], title_update=self.root / "tu"))
+            (self.root / "game-tu2").rmdir()
+            with self.assertRaisesRegex(build_client.BuildError, "Title Update 2 package"):
+                build_client.plan(self.args(variants=["tu2"]))
+
+    def test_finished_steps_are_skipped_and_codegen_is_reused(self):
+        (self.root / "game").mkdir()
+        (self.root / "prefix/bin").mkdir(parents=True)
+        (self.root / "prefix/bin/rexglue").touch()
+        args = self.args(variants=["base", "tu2-extras"])
+        with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, tu2_ready=mock.DEFAULT,
+                                 missing_tools=mock.DEFAULT) as mocks:
+            mocks["base_ready"].return_value = mocks["tu2_ready"].return_value = True
+            mocks["missing_tools"].return_value = []
+            steps = build_client.plan(args)
+        self.assertEqual([title for title, _ in steps],
+                         ["Build Base (codegen and compile)", "Build TU2 + Extras (codegen and compile)"])
+        for regenerate, stamped in ((False, True), (True, True), (False, False)):
+            args.regenerate = regenerate
+            with mock.patch.object(build_client, "stamp_matches", return_value=stamped), \
+                    mock.patch.object(build_client, "run") as run:
+                build_client.build_variant(args, "tu2-extras")
+            command = [str(arg) for arg in run.call_args.args]
+            self.assertIn("--extra-features", command)
+            self.assertEqual(command[command.index("--title-update") + 1], "tu2")
+            self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
 
 
 if __name__ == "__main__":

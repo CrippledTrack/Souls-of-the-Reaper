@@ -107,6 +107,8 @@ def main():
                 manifest = manifest.replace(json.dumps(game_placeholder + "/Default.xex"), json.dumps(str(xex), ensure_ascii=False))
                 local_manifest = manifest_dir / "local_manifest.toml"
                 local_manifest.write_text(manifest, encoding="utf-8")
+                # An interrupted regeneration must not leave a valid reuse stamp.
+                (generated / "source-xex.sha256").unlink(missing_ok=True)
                 run(args.sdk_prefix / "bin/rexglue", "codegen", local_manifest)
                 generated.mkdir(parents=True, exist_ok=True)
                 (generated / "source-xex.sha256").write_text(expected + "\n")

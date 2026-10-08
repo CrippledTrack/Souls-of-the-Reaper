@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -44,6 +45,14 @@ def verify_patch_source(base, patch):
         raise ValueError("Patch source signature SHA-1 mismatch")
 
 
+def link_or_copy(source, target):
+    """Hardlink unchanged disc files; the staged folder is only read by the game."""
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
 def stage(base_dir, update_dir, output, patcher):
     if output.exists():
         raise ValueError("Output already exists; choose a new staging directory")
@@ -75,12 +84,15 @@ def stage(base_dir, update_dir, output, patcher):
         if patched_hash != TU2_SHA256:
             raise ValueError("Patched executable SHA-256 mismatch; no game directory staged")
         staged = work / "disc"
-        shutil.copytree(base_dir, staged)
+        shutil.copytree(base_dir, staged, copy_function=link_or_copy)
+        # Unlink first: writing through a hardlink would modify the base disc.
+        (staged / "Default.xex").unlink()
         shutil.copy2(patched, staged / "Default.xex")
         for entry in entries:
             if entry["path"] != "Default.xexp":
                 target = staged / entry["path"]
                 target.parent.mkdir(parents=True, exist_ok=True)
+                target.unlink(missing_ok=True)
                 shutil.copy2(update_dir / entry["path"], target)
         record = dict(manifest, source_mismatch_allowed=False, compatibility_verified=True,
                       base_executable_sha256=DISC_SHA256, patched_executable_sha256=patched_hash)

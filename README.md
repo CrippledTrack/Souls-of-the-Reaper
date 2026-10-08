@@ -14,6 +14,13 @@ Download the latest release from the [Releases](../../releases) page, extract th
 
 ## Option B — Build from source
 
+On Linux, one command builds everything from your own disc image (and,
+optionally, the USA Title Update 2 package). The launcher's Build panel runs the same script:
+
+```sh
+python3 scripts/build_client.py --iso /path/to/disc.iso [--title-update /path/to/tu00000002_00000000]
+```
+
 The matching USA TU2 can also be built separately; see the
 [title update setup](port/title_updates/tu2/README.md).
 

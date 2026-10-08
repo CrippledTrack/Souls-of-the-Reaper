@@ -2,22 +2,33 @@
 
 mod launch;
 
-use launch::{Build, Defaults, GameOptions, Platform, Settings};
+use launch::{Build, BuildRequest, Defaults, GameOptions, Platform, Settings};
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     fs,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::DialogExt;
 
-/// Builds and folder defaults, resolved once at startup.
+/// Folder defaults resolved at startup; builds are found again after the
+/// Build panel finishes.
 struct Host {
     platform: Platform,
-    builds: Vec<Build>,
+    builds: Mutex<Vec<Build>>,
     defaults: Defaults,
     settings_file: PathBuf,
+    launcher_dir: PathBuf,
+    search: Vec<PathBuf>,
+    /// Source checkout, needed to build the game.
+    repo: Option<PathBuf>,
+    /// Process id of the running scripts/build_client.py.
+    build_pid: Mutex<Option<u32>>,
 }
 
 /// Injected ahead of the page scripts as window.LAUNCHER_CAPS.
@@ -27,6 +38,7 @@ struct Caps<'a> {
     platform: &'static str,
     builds: &'a [Build],
     defaults: &'a Defaults,
+    can_build: bool,
 }
 
 fn load_settings(path: &Path) -> Settings {
@@ -72,12 +84,15 @@ async fn launch_game(
     settings: Settings,
     options: GameOptions,
 ) -> Result<(), String> {
-    let build = match &options.build {
-        Some(id) => host.builds.iter().find(|b| &b.id == id),
-        None => host.builds.first(),
-    }
-    .ok_or("No game build found. Build the game or place the launcher next to diablo3.")?
-    .clone();
+    let build = {
+        let builds = host.builds.lock().unwrap();
+        match &options.build {
+            Some(id) => builds.iter().find(|b| &b.id == id),
+            None => builds.first(),
+        }
+        .ok_or("No game build found. Build the game or place the launcher next to diablo3.")?
+        .clone()
+    };
     let (game, user) = launch::folders_for(&build, &settings, &host.defaults);
     let game =
         fs::canonicalize(&game).map_err(|e| format!("Game folder {}: {e}", game.display()))?;
@@ -126,6 +141,159 @@ async fn launch_game(
     window.close().map_err(|e| e.to_string())
 }
 
+fn python() -> Command {
+    Command::new(if cfg!(target_os = "windows") { "python" } else { "python3" })
+}
+
+/// Stops the build script and the CMake/Ninja/compiler processes it started.
+fn stop_build(host: &Host) {
+    let Some(pid) = host.build_pid.lock().unwrap().take() else {
+        return;
+    };
+    #[cfg(unix)]
+    unsafe {
+        // The script leads its own process group (see start_build).
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+    }
+}
+
+/// Sends each output line to the page as a build-output event and keeps the
+/// last lines for the error message.
+fn forward_output(
+    app: tauri::AppHandle,
+    stream: impl Read + Send + 'static,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut buffer = Vec::new();
+        while reader.read_until(b'\n', &mut buffer).is_ok_and(|n| n > 0) {
+            let line = String::from_utf8_lossy(&buffer).trim_end().to_string();
+            buffer.clear();
+            let _ = app.emit("build-output", &line);
+            let mut tail = tail.lock().unwrap();
+            if tail.len() == 20 {
+                tail.pop_front();
+            }
+            tail.push_back(line);
+        }
+    })
+}
+
+/// Runs scripts/build_client.py into the launcher's game folders, streaming
+/// its output, and returns the builds found afterwards.
+#[tauri::command]
+async fn start_build(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, Host>,
+    settings: Settings,
+    request: BuildRequest,
+) -> Result<Vec<Build>, String> {
+    let repo = host
+        .repo
+        .clone()
+        .ok_or("Building needs the Souls of the Reaper source checkout.")?;
+    let (game, game_tu2) = launch::game_folders(&settings, &host.defaults);
+    let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_tu2)?;
+    write_settings(&host.settings_file, &settings)?;
+
+    let mut command = python();
+    command
+        .args(&args)
+        .current_dir(&repo)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = {
+        let mut running = host.build_pid.lock().unwrap();
+        if running.is_some() {
+            return Err("A build is already running.".into());
+        }
+        let child = command
+            .spawn()
+            .map_err(|e| format!("Unable to start Python 3: {e}. Install Python 3 to build the game."))?;
+        *running = Some(child.id());
+        child
+    };
+    let tail = Arc::new(Mutex::new(VecDeque::new()));
+    let readers = [
+        forward_output(app.clone(), child.stdout.take().unwrap(), tail.clone()),
+        forward_output(app.clone(), child.stderr.take().unwrap(), tail.clone()),
+    ];
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let status = child.wait();
+        for reader in readers {
+            let _ = reader.join();
+        }
+        status
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string());
+    let cancelled = host.build_pid.lock().unwrap().take().is_none();
+    if cancelled {
+        return Err("Build cancelled. Run it again to continue where it stopped.".into());
+    }
+    if !status?.success() {
+        let tail = tail.lock().unwrap();
+        let reason = tail
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("Build failed:"))
+            .or(tail.back())
+            .cloned()
+            .unwrap_or_else(|| "Build failed.".into());
+        return Err(reason);
+    }
+    let builds = launch::discover_builds(host.platform, &host.launcher_dir, &host.search);
+    *host.builds.lock().unwrap() = builds.clone();
+    Ok(builds)
+}
+
+#[tauri::command]
+fn cancel_build(host: tauri::State<Host>) {
+    stop_build(&host);
+}
+
+/// Native file picker for the Build panel; None when dismissed.
+#[tauri::command]
+async fn pick_file(app: tauri::AppHandle, kind: String) -> Result<Option<String>, String> {
+    let dialog = app.dialog().file();
+    let dialog = match kind.as_str() {
+        "iso" => dialog
+            .set_title("Select the Diablo III disc image")
+            .add_filter("Xbox 360 disc image", &["iso", "xiso"]),
+        "titleUpdate" => dialog.set_title("Select the Title Update 2 package (tu00000002_00000000)"),
+        "cmake" => dialog.set_title("Select the CMake executable"),
+        _ => return Err("Unknown file type.".into()),
+    };
+    let picked = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_file())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string()))
+}
+
 #[tauri::command]
 fn window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -146,9 +314,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut search = vec![launcher_dir.clone()];
     search.extend(std::env::current_dir().ok());
     let builds = launch::discover_builds(platform, &launcher_dir, &search);
+    let repo = launch::repository_root(&search);
     // Source checkouts keep game folders at the repository root; installs
     // keep them beside the launcher.
-    let base = launch::repository_root(&search)
+    let base = repo
+        .clone()
         .filter(|_| !builds.iter().any(|b| b.game_dir.is_some()))
         .unwrap_or_else(|| launcher_dir.clone());
     let user_base = match platform {
@@ -167,6 +337,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         platform: platform.name(),
         builds: &builds,
         defaults: &defaults,
+        can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file()),
     };
     let init = format!(
         "window.LAUNCHER_CAPS={};window.LAUNCHER_SETTINGS={};window.SAVED_STATE={};",
@@ -176,9 +347,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     );
     app.manage(Host {
         platform,
-        builds,
+        builds: Mutex::new(builds),
         defaults,
         settings_file,
+        launcher_dir,
+        search,
+        repo,
+        build_pid: Mutex::new(None),
     });
     // Sized to the v6 design's 500px stage (aspect 1088/1445), like Launcher.ps1.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -194,12 +369,22 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(setup)
         .invoke_handler(tauri::generate_handler![
             save_settings,
             launch_game,
+            start_build,
+            cancel_build,
+            pick_file,
             window_action
         ])
-        .run(tauri::generate_context!())
-        .expect("Unable to run launcher");
+        .build(tauri::generate_context!())
+        .expect("Unable to run launcher")
+        .run(|app, event| {
+            // Closing the launcher also stops a running build.
+            if let (RunEvent::Exit, Some(host)) = (event, app.try_state::<Host>()) {
+                stop_build(&host);
+            }
+        });
 }

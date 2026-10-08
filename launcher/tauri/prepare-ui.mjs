@@ -17,27 +17,38 @@ const panelStyle = `<style>
   .wico-gear{width:auto;height:auto;font:12px/1 var(--data)}
   #launchStatus{position:absolute;left:8%;right:8%;bottom:1.6%;z-index:6;min-height:12px;
     font:10px/1.3 var(--data);color:var(--bone);text-align:center;text-shadow:0 1px 3px #000;pointer-events:none}
-  #setup{position:absolute;inset:44px 18px 18px;z-index:8;overflow-y:auto;padding:14px 16px;
+  .panel{position:absolute;inset:44px 18px 18px;z-index:8;overflow-y:auto;padding:14px 16px;
     background:rgba(8,6,5,.97);border:1px solid rgba(122,106,76,.35);box-shadow:0 6px 18px rgba(0,0,0,.55);
     font:11px/1.4 var(--data);color:var(--bone)}
-  #setup[hidden]{display:none}
-  #setup h2{margin:0 0 8px;font:400 13px var(--disp);letter-spacing:.08em;text-transform:uppercase;color:#e2d7bd}
-  #setup label{display:block;margin:9px 0;color:var(--bone-dim)}
-  #setup label[hidden]{display:none}
-  #setup input{display:block;width:100%;margin-top:4px;padding:6px 7px;background:rgba(39,33,28,.8);
+  .panel[hidden]{display:none}
+  .panel h2{margin:0 0 8px;font:400 13px var(--disp);letter-spacing:.08em;text-transform:uppercase;color:#e2d7bd}
+  .panel label{display:block;margin:9px 0;color:var(--bone-dim)}
+  .panel label[hidden]{display:none}
+  .panel input{display:block;width:100%;margin-top:4px;padding:6px 7px;background:rgba(39,33,28,.8);
     border:1px solid rgba(122,106,76,.45);color:#e2d7bd;font:11px var(--data)}
-  #setup input::placeholder{color:var(--muted)}
-  #setup pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-all;color:var(--muted);font:10px/1.4 var(--data)}
-  #setup .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
-  #setup button{padding:6px 14px;background:rgba(46,30,24,.9);color:#e9dcbf;border:1px solid rgba(158,43,28,.55);
+  .panel input::placeholder{color:var(--muted)}
+  .panel pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-all;color:var(--muted);font:10px/1.4 var(--data)}
+  .panel .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+  .panel button{padding:6px 14px;background:rgba(46,30,24,.9);color:#e9dcbf;border:1px solid rgba(158,43,28,.55);
     cursor:pointer;font:11px var(--data)}
-  #setup button:hover{border-color:var(--crimson-hi)}
+  .panel button:hover{border-color:var(--crimson-hi)}
+  .panel .pick{display:flex;gap:6px;margin-top:4px}
+  .panel .pick input{margin-top:0}
+  .panel .pick button{padding:0 9px}
+  .panel fieldset{margin:9px 0;padding:6px 8px;border:1px solid rgba(122,106,76,.35);color:var(--bone-dim)}
+  .panel fieldset[hidden]{display:none}
+  .panel fieldset label{display:inline-flex;align-items:center;gap:5px;margin:3px 12px 3px 0;color:var(--bone)}
+  .panel fieldset input{display:inline;width:auto;margin:0}
+  .panel button:disabled{opacity:.45;cursor:default}
+  #buildStep{min-height:14px;margin:8px 0 4px;color:#e2d7bd}
+  #buildLog{max-height:150px;overflow-y:auto;padding:6px;background:rgba(0,0,0,.35)}
+  #buildLog:empty{display:none}
 </style>`;
 
 inject('<div class="stage">', `${panelStyle}
 <div class="stage">
   <div id="launchStatus" role="status" aria-live="polite"></div>
-  <section id="setup" hidden aria-label="Launch settings">
+  <section id="setup" class="panel" hidden aria-label="Launch settings">
     <h2>Launch settings</h2>
     <label>Game folder<input id="gameDir" type="text" spellcheck="false"></label>
     <label>TU2 game folder<input id="gameDirTu2" type="text" spellcheck="false"></label>
@@ -46,7 +57,21 @@ inject('<div class="stage">', `${panelStyle}
     <label id="deviceLabel">Vulkan device (blank = automatic)<input id="vulkanDevice" type="number" min="0" max="32"></label>
     <label>Builds found<pre id="buildList"></pre></label>
     <p>Empty fields use the folder shown. TU2 needs a staged TU2 game folder and keeps separate saves. Use the in-game F4 menu for key bindings.</p>
-    <div class="acts"><button id="cancelSetup" type="button">Cancel</button><button id="saveSetup" type="button">Save</button></div>
+    <div class="acts"><button id="openBuild" type="button" hidden>Build from disc image…</button><button id="cancelSetup" type="button">Cancel</button><button id="saveSetup" type="button">Save</button></div>
+  </section>
+  <section id="buildPanel" class="panel" hidden aria-label="Build the game">
+    <h2>Build the game</h2>
+    <p id="buildIntro">Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update 2 package for TU2 builds. The first build takes a while; later builds reuse finished steps.</p>
+    <label>Disc image (ISO)<span class="pick"><input id="buildIso" type="text" spellcheck="false"><button type="button" data-pick="iso" aria-label="Browse for disc image">…</button></span></label>
+    <label>Title Update 2 package (optional)<span class="pick"><input id="buildTitleUpdate" type="text" spellcheck="false" placeholder="tu00000002_00000000"><button type="button" data-pick="titleUpdate" aria-label="Browse for title update">…</button></span></label>
+    <fieldset id="buildVariants"><legend>Builds</legend>
+      <label><input type="checkbox" value="base" checked>Base</label><label><input type="checkbox" value="extras">Base + Extras</label>
+      <label><input type="checkbox" value="tu2">TU2</label><label><input type="checkbox" value="tu2-extras">TU2 + Extras</label>
+    </fieldset>
+    <label id="cmakeLabel">CMake 3.25+ (blank = from PATH)<span class="pick"><input id="buildCmake" type="text" spellcheck="false"><button type="button" data-pick="cmake" aria-label="Browse for CMake">…</button></span></label>
+    <div id="buildStep" role="status" aria-live="polite"></div>
+    <pre id="buildLog"></pre>
+    <div class="acts"><button id="closeBuild" type="button">Close</button><button id="cancelBuild" type="button" hidden>Cancel build</button><button id="startBuild" type="button">Build</button></div>
   </section>`);
 inject('<button id="winClose"', '<button id="setupBtn" class="wbtn" type="button" aria-label="Launch settings" title="Launch settings"><span class="wico wico-gear">⚙</span></button>\n    <button id="winClose"');
 inject('</script>', `</script>\n<script>\n${bridge}</script>`);

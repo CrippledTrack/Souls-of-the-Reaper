@@ -21,6 +21,21 @@ Requirements: Linux x86-64, Python 3, Clang 18+, CMake 3.25+, Ninja, the SDK's
 Linux development dependencies, and a Vulkan driver. The CPU baseline is
 x86-64-v2. Use `--cmake /path/to/cmake` if CMake is not on PATH.
 
+The simplest route is one command from your disc image (the
+[launcher](../../launcher/tauri/README.md#build-the-game) runs the same script):
+
+```sh
+python3 scripts/build_client.py --iso /path/to/disc.iso \
+  [--title-update /path/to/tu00000002_00000000] [--variants base,extras,tu2,tu2-extras]
+```
+
+It checks the disc, extracts it to `game/`, optionally stages TU2 in
+`game-tu2/`, builds the pinned SDK, and compiles the selected builds. Finished
+steps are skipped, so you can run it again after an interruption. Use `--check`
+to validate the inputs and list the remaining steps.
+
+The individual steps remain available:
+
 ```sh
 # Optional extraction from your disc dump (existing files are verified).
 python3 scripts/extract_disc.py /path/to/disc.iso game
