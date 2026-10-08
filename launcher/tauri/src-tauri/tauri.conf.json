@@ -3,11 +3,16 @@
   "productName": "Souls of the Reaper Launcher",
   "version": "0.1.0",
   "identifier": "org.soulsofthereaper.launcher",
-  "build": { "frontendDist": "../dist" },
+  "build": {
+    "frontendDist": "../dist"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "label": "main", "title": "Souls of the Reaper", "width": 860, "height": 900, "minWidth": 720, "minHeight": 700, "decorations": true }],
-    "security": { "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src ipc: http://ipc.localhost" }
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src ipc: http://ipc.localhost"
+    }
   },
-  "bundle": { "active": false }
+  "bundle": {
+    "active": false
+  }
 }

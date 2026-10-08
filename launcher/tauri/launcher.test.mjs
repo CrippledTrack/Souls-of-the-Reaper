@@ -1,0 +1,140 @@
+// Runs the shared launcher page in jsdom: as Launcher.ps1 loads it (no host
+// capabilities) and as the Tauri build (dist/index.html, from prepare-ui.mjs).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+
+const legacyHtml = readFileSync(new URL('../v6_borderless_final.html', import.meta.url), 'utf8');
+const tauriHtml = readFileSync(new URL('./dist/index.html', import.meta.url), 'utf8');
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+const BUILDS = [
+  { id: 'base', label: 'Base', tu2: false, extras: false, executable: '/r/linux-amd64-relwithdebinfo/diablo3' },
+  { id: 'tu2-extras', label: 'TU2 + Extras', tu2: true, extras: true, executable: '/r/linux-amd64-tu2-extras-relwithdebinfo/diablo3' },
+];
+
+function page(html, globals) {
+  const dom = new JSDOM(html, { runScripts: 'dangerously', beforeParse: window => Object.assign(window, globals) });
+  const doc = dom.window.document;
+  const rows = () => [...doc.querySelectorAll('#menu .opt-row')].map(r => ({
+    row: r, label: r.querySelector('.opt-label').textContent, value: r.querySelector('.opt-val')?.textContent,
+  }));
+  const row = label => rows().find(r => r.label === label);
+  const click = el => el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  const next = label => click(row(label).row.querySelector('[data-a="r"]'));
+  return { dom, doc, rows, row, click, next };
+}
+
+function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved = { res: -1, display: -1 }, failLaunch = false } = {}) {
+  const calls = [];
+  const invoke = async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'launch_game' && failLaunch) throw 'Default.xex does not match';
+  };
+  const p = page(tauriHtml, {
+    __TAURI__: { core: { invoke } },
+    LAUNCHER_CAPS: { platform, builds, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game-tu2', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
+    LAUNCHER_SETTINGS: { gameDir: '', gameDirTu2: '', userDataRoot: '', userDataRootTu2: '', vulkanDevice: -1, ...settings },
+    SAVED_STATE: saved,
+  });
+  return { ...p, calls };
+}
+
+test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => {
+  const posted = [];
+  const { rows, row, click, doc } = page(legacyHtml, {
+    chrome: { webview: { postMessage: m => posted.push(JSON.parse(m)) } },
+    SAVED_STATE: { lang: 0, path: 1, fps: 1, scale: 0, res: 2, display: 1, mouse: 0 },
+  });
+  assert.deepEqual(rows().map(r => r.label),
+    ['Render Path', 'Frame Rate', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
+  assert.equal(row('Internal Resolution').value, '3×');
+  click(doc.getElementById('playBtn'));
+  const { config } = posted[0];
+  assert.equal(posted[0].type, 'play');
+  assert.equal(config.rtp, 'rtv');
+  assert.equal(config.fps, 120);
+  assert.equal(config.resScale, 3);
+  assert.equal(config.fullscreen, false);
+});
+
+test('Linux shows Vulkan rows and hides D3D12-only options', () => {
+  const { rows } = tauriPage();
+  assert.deepEqual(rows().map(r => r.label),
+    ['Game Version', 'Render Path', 'VSync', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
+  assert.equal(rows()[1].value, 'FSI');
+});
+
+test('Windows keeps the D3D12 rows and adds the build selector', () => {
+  const { rows } = tauriPage({ platform: 'windows' });
+  assert.deepEqual(rows().map(r => r.label).slice(0, 4), ['Game Version', 'Render Path', 'Frame Rate', 'Image Scaling']);
+});
+
+test('Extras builds offer In-game resolution and display; normal builds do not', () => {
+  const { row, next } = tauriPage();
+  assert.equal(row('Internal Resolution').value, '1×', 'normal build falls back to an explicit scale');
+  assert.equal(row('Display').value, 'Fullscreen');
+  next('Game Version');
+  assert.equal(row('Game Version').value, 'TU2 + Extras');
+  assert.equal(row('Internal Resolution').value, 'In-game');
+  assert.equal(row('Display').value, 'In-game');
+  next('Internal Resolution');
+  assert.equal(row('Internal Resolution').value, '1×');
+});
+
+test('Play sends the selected build, in-game choices and saved menu state', async () => {
+  const { doc, click, next, calls } = tauriPage({ settings: { gameDirTu2: '/games/tu2' } });
+  next('Game Version');
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const launch = calls.find(c => c.command === 'launch_game');
+  assert.equal(launch.args.options.build, 'tu2-extras');
+  assert.equal(launch.args.options.resScale, 0);
+  assert.equal(launch.args.options.fullscreen, null);
+  assert.equal(launch.args.options.vkPath, 'fsi');
+  assert.equal(launch.args.options.vsync, true);
+  assert.equal(launch.args.settings.gameDirTu2, '/games/tu2');
+  assert.equal(launch.args.settings.uiState.build, 'tu2-extras');
+  assert.equal(launch.args.settings.uiState.view, undefined);
+});
+
+test('Launch failures stay visible and restore the Play button', async () => {
+  const { doc, click } = tauriPage({ failLaunch: true });
+  click(doc.getElementById('playBtn'));
+  await tick();
+  assert.equal(doc.getElementById('launchStatus').textContent, 'Default.xex does not match');
+  assert.equal(doc.getElementById('playBtn').disabled, false);
+});
+
+test('Launch settings show defaults and save a blank Vulkan device as automatic', async () => {
+  const { doc, click, calls } = tauriPage();
+  click(doc.getElementById('setupBtn'));
+  assert.equal(doc.getElementById('setup').hidden, false);
+  assert.equal(doc.getElementById('gameDirTu2').placeholder, '/r/game-tu2');
+  assert.equal(doc.getElementById('vulkanDevice').value, '');
+  assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras: .*tu2-extras/);
+  doc.getElementById('userDataRoot').value = ' /saves ';
+  click(doc.getElementById('saveSetup'));
+  await tick();
+  const saved = calls.find(c => c.command === 'save_settings').args.settings;
+  assert.equal(saved.userDataRoot, '/saves');
+  assert.equal(saved.vulkanDevice, -1);
+  assert.equal(doc.getElementById('setup').hidden, true);
+});
+
+test('Missing builds hide the selector and explain where to look', () => {
+  const { rows, doc } = tauriPage({ builds: [] });
+  assert.equal(rows()[0].label, 'Render Path');
+  assert.match(doc.getElementById('launchStatus').textContent, /No game build found/);
+});
+
+test('Cancelled settings edits are not used by Play', async () => {
+  const { doc, click, calls } = tauriPage({ settings: { gameDir: '/games/base' } });
+  click(doc.getElementById('setupBtn'));
+  doc.getElementById('gameDir').value = '/typo';
+  click(doc.getElementById('cancelSetup'));
+  click(doc.getElementById('playBtn'));
+  await tick();
+  assert.equal(calls.find(c => c.command === 'launch_game').args.settings.gameDir, '/games/base');
+});

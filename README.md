@@ -17,8 +17,9 @@ Download the latest release from the [Releases](../../releases) page, extract th
 The matching USA TU2 can also be built separately; see the
 [title update setup](port/title_updates/tu2/README.md).
 
-A [Tauri launcher prototype](launcher/tauri/README.md) reuses the existing
-interface on Linux. The original PowerShell/WebView2 launcher is Windows-only.
+A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existing
+interface on Linux and Windows and selects base, extras and TU2 builds. The
+original PowerShell/WebView2 launcher remains available on Windows.
 
 ### Linux (experimental Vulkan path)
 

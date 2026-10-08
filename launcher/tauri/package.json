@@ -6,9 +6,10 @@
     "prepare-ui": "node prepare-ui.mjs && tauri icon icon.svg --output src-tauri/icons",
     "dev": "npm run prepare-ui && tauri dev",
     "build": "npm run prepare-ui && tauri build --no-bundle",
-    "test": "node --test bridge.test.mjs"
+    "test": "node prepare-ui.mjs && node --test launcher.test.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "jsdom": "^29.1.1"
   }
 }
