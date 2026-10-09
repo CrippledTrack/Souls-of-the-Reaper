@@ -1,6 +1,13 @@
 #pragma once
 #include <memory>
-#include <rex/ui/imgui_dialog.h>
 #include <rex/ui/window.h>
-std::unique_ptr<rex::ui::ImGuiDialog>
-CreateDiabloWindowTitle(rex::ui::ImGuiDrawer *drawer, rex::ui::Window *window);
+#include <rex/ui/windowed_app_context.h>
+// Keeps the window title (guest FPS, render and window size) current, applies
+// optional window-mode changes, and logs the guest frame rate every 5 s.
+// Create and destroy on the UI thread.
+class WindowTelemetry {
+public:
+  virtual ~WindowTelemetry() = default;
+};
+std::unique_ptr<WindowTelemetry>
+CreateWindowTelemetry(rex::ui::WindowedAppContext &context, rex::ui::Window *window);

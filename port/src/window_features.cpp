@@ -25,9 +25,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <iomanip>
+#include <mutex>
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <sstream>
+#include <thread>
 namespace {
 std::atomic<uint64_t> swaps{0};
 std::atomic<uint64_t> dimensions{0};
@@ -65,23 +69,63 @@ OriginalSwap ResolveOriginalSwap() {
   return reinterpret_cast<OriginalSwap>(dlsym(RTLD_NEXT, "__imp__VdSwap"));
 #endif
 }
-class Title final : public rex::ui::ImGuiDialog {
+// Title-bar status and guest frame-rate log. A ticker thread posts updates to
+// the UI thread instead of keeping an ImGui dialog open: any open dialog makes
+// the drawer repaint continuously, presenting uncapped frames.
+class WindowStatus final : public WindowTelemetry {
 public:
-  Title(rex::ui::ImGuiDrawer *drawer, rex::ui::Window *window)
-      : ImGuiDialog(drawer), window_(window) {
+  WindowStatus(rex::ui::WindowedAppContext &context, rex::ui::Window *window)
+      : context_(context), window_(window) {
     window_->SetTitle("Souls of the Reaper | Starting | " + std::string(backend));
+    ticker_ = std::thread([this] { Run(); });
+  }
+  ~WindowStatus() override {
+    // Destroyed on the UI thread, so no queued update can be running now.
+    *alive_ = false;
+    {
+      const std::lock_guard lock(mutex_);
+      stopping_ = true;
+    }
+    wake_.notify_all();
+    ticker_.join();
   }
 
-protected:
-  void OnDraw(ImGuiIO &) override {
+private:
+  void Run() {
+    using namespace std::chrono;
+    auto previous = steady_clock::now(), log_start = previous;
+    auto previous_count = swaps.load(std::memory_order_relaxed);
+    auto log_count = previous_count;
+    double log_low = -1;
+    std::unique_lock lock(mutex_);
+    while (!wake_.wait_for(lock, milliseconds(500), [this] { return stopping_; })) {
+      const auto now = steady_clock::now();
+      const auto count = swaps.load(std::memory_order_relaxed);
+      const double fps =
+          double(count - previous_count) / duration<double>(now - previous).count();
+      previous = now;
+      previous_count = count;
+      log_low = log_low < 0 ? fps : std::min(log_low, fps);
+      if (now - log_start >= seconds(5)) {
+        const double average =
+            double(count - log_count) / duration<double>(now - log_start).count();
+        REXLOG_INFO("Frame telemetry: guest {:.1f} FPS average, {:.1f} lowest 0.5 s",
+                    average, log_low);
+        log_start = now;
+        log_count = count;
+        log_low = -1;
+      }
+      context_.CallInUIThread([alive = alive_, window = window_, fps] {
+        if (*alive)
+          Update(*window, fps);
+      });
+    }
+  }
+
+  static void Update(rex::ui::Window &window, double fps) {
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
-    d3::features::UpdateWindowMode(*window_);
+    d3::features::UpdateWindowMode(window);
 #endif
-    const auto now = std::chrono::steady_clock::now();
-    const double elapsed =
-        std::chrono::duration<double>(now - previous_).count();
-    if (elapsed < 0.5)
-      return;
     // Read after setup too: optional saved settings are applied after dialogs
     // are created. Windows' older SDK only exposes the per-axis scale flags.
 #ifdef _WIN32
@@ -98,26 +142,24 @@ protected:
 #endif
     const auto scale_x = axis("draw_resolution_scale_x");
     const auto scale_y = axis("draw_resolution_scale_y");
-    const auto count = swaps.load(std::memory_order_relaxed);
     const auto size = dimensions.load(std::memory_order_relaxed);
     std::ostringstream title;
-    title << "Souls of the Reaper | " << std::fixed << std::setprecision(1)
-          << double(count - previous_count_) / elapsed << " FPS";
+    title << "Souls of the Reaper | " << std::fixed << std::setprecision(1) << fps << " FPS";
     if (size)
       title << " | Render " << (size >> 32) * scale_x << 'x'
             << uint32_t(size) * scale_y;
-    title << " | Window " << window_->GetActualPhysicalWidth() << 'x'
-          << window_->GetActualPhysicalHeight() << " | " << backend;
-    window_->SetTitle(title.str());
-    previous_ = now;
-    previous_count_ = count;
+    title << " | Window " << window.GetActualPhysicalWidth() << 'x'
+          << window.GetActualPhysicalHeight() << " | " << backend;
+    window.SetTitle(title.str());
   }
 
-private:
+  rex::ui::WindowedAppContext &context_;
   rex::ui::Window *window_;
-  std::chrono::steady_clock::time_point previous_ =
-      std::chrono::steady_clock::now();
-  uint64_t previous_count_ = 0;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  bool stopping_ = false;
+  std::thread ticker_;
 };
 } // namespace
 // Preserve the SDK import implementation while observing guest frame swaps.
@@ -133,7 +175,7 @@ extern "C" void __imp__VdSwap(PPCContext &ctx, uint8_t *base) {
   dimensions.store((uint64_t(width) << 32) | height, std::memory_order_relaxed);
   swaps.fetch_add(1, std::memory_order_relaxed);
 }
-std::unique_ptr<rex::ui::ImGuiDialog>
-CreateDiabloWindowTitle(rex::ui::ImGuiDrawer *drawer, rex::ui::Window *window) {
-  return std::make_unique<Title>(drawer, window);
+std::unique_ptr<WindowTelemetry>
+CreateWindowTelemetry(rex::ui::WindowedAppContext &context, rex::ui::Window *window) {
+  return std::make_unique<WindowStatus>(context, window);
 }

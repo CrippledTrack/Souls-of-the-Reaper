@@ -67,7 +67,8 @@ class Diablo3App : public rex::ReXApp {
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
     d3::features::InitializeWindowMode(*window(), user_data_root());
 #endif
-    title_ = CreateDiabloWindowTitle(drawer, window());
+    (void)drawer;
+    title_ = CreateWindowTelemetry(app_context(), window());
   }
   void OnShutdown() override { title_.reset(); }
   void OnKeyDown(rex::ui::KeyEvent& event) override {
@@ -118,5 +119,5 @@ class Diablo3App : public rex::ReXApp {
     }
   }
  private:
-  std::unique_ptr<rex::ui::ImGuiDialog> title_;
+  std::unique_ptr<WindowTelemetry> title_;
 };

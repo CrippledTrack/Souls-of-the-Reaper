@@ -49,6 +49,23 @@ DEFINE_REX_FUNC(sub_82632E00) {
         if symbol != exit_symbol and '#include "guest_jump.h"' not in text:
             text = '#include "guest_jump.h"\n' + text
         edits[path] = text
+    # Run the host setjmp in each caller's frame (see D3_GUEST_SETJMP): a
+    # longjmp into the returned replacement function corrupts the host stack.
+    setjmp_symbol = "sub_83161AD0" if title_update == "tu2" else "sub_831583B0"
+    call = re.compile(r"\b" + setjmp_symbol + r"\(ctx, base\);")
+    uses = 0
+    for path in directory.glob("*_recomp.*.cpp"):
+        text = edits.get(path) or path.read_text()
+        text, count = call.subn("D3_GUEST_SETJMP(ctx);", text)
+        if count:
+            if '#include "guest_jump.h"' not in text:
+                text = '#include "guest_jump.h"\n' + text
+            edits[path] = text
+        uses += text.count("D3_GUEST_SETJMP(ctx);")
+    # One use is the replacement body itself; the rest are rewritten callers.
+    sites = uses - 1
+    if sites < 1:
+        raise ValueError(f"Expected at least one call to {setjmp_symbol}")
     # Validate every anchor before modifying any file.
     for path, text in edits.items():
         if path.read_text() != text:

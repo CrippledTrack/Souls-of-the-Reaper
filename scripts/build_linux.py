@@ -13,7 +13,8 @@ from title_updates import DISC_SHA256, TU2_SHA256
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
-           "rexglue-object-reference.patch", "rexglue-keyboard.patch")
+           "rexglue-object-reference.patch", "rexglue-keyboard.patch",
+           "rexglue-wait-precision.patch", "rexglue-idle-toast.patch")
 
 
 def run(*args):

@@ -152,6 +152,8 @@ int main() {
                 (root / f"diablo3_recomp.{index}.cpp").write_text(
                     f"DEFINE_REX_FUNC({symbol}) {{\n\t// original\n}}\n"
                     "DEFINE_REX_FUNC(sub_12345678) {\n\t// preserve\n}\n")
+            caller = root / "diablo3_recomp.3.cpp"
+            caller.write_text("DEFINE_REX_FUNC(sub_82DAD168) {\n\t// preserve\n\tsub_831583B0(ctx, base);\n}\n")
             patch_generated(root)
             first = {p: p.read_bytes() for p in root.iterdir()}
             patch_generated(root)
@@ -159,6 +161,19 @@ int main() {
             for path in root.iterdir():
                 self.assertIn("// preserve", path.read_text())
             self.assertIn("ppc_longjmp", (root / "diablo3_recomp.1.cpp").read_text())
+            # The host setjmp runs in the caller, whose frame outlives the protected call.
+            self.assertIn("\tD3_GUEST_SETJMP(ctx);\n", caller.read_text())
+            self.assertTrue(caller.read_text().startswith('#include "guest_jump.h"\n'))
+
+    def test_setjmp_without_callers_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for index, symbol in enumerate(("sub_831583B0", "sub_83158680", "sub_82632E00")):
+                (root / f"diablo3_recomp.{index}.cpp").write_text(f"DEFINE_REX_FUNC({symbol}) {{\n}}\n")
+            before = {p: p.read_bytes() for p in root.iterdir()}
+            with self.assertRaisesRegex(ValueError, "at least one call"):
+                patch_generated(root)
+            self.assertEqual(before, {p: p.read_bytes() for p in root.iterdir()})
 
     def test_missing_symbol_does_not_partially_patch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -265,12 +280,15 @@ class TitleUpdateTests(unittest.TestCase):
             for index, symbol in enumerate(("sub_83161AD0", "sub_83161DA0", "sub_826374E8")):
                 (root / f"diablo3_recomp.{index}.cpp").write_text(
                     f"DEFINE_REX_FUNC({symbol}) {{\n  // original\n}}\n")
+            (root / "diablo3_recomp.3.cpp").write_text(
+                "DEFINE_REX_FUNC(sub_82DAD168) {\n\tsub_83161AD0(ctx, base);\n}\n")
             patch_generated(root, "tu2")
             first = {p: p.read_bytes() for p in root.iterdir()}
             patch_generated(root, "tu2")
             self.assertEqual(first, {p: p.read_bytes() for p in root.iterdir()})
             text = "".join(p.read_text() for p in root.iterdir())
-            self.assertIn("ppc_setjmp", text)
+            self.assertIn("D3_GUEST_SETJMP(ctx);", text)
+            self.assertNotIn("sub_83161AD0(ctx, base);", text)
             self.assertIn("ppc_longjmp", text)
             self.assertIn("D3RequestTitleUpdateExit();", text)
             self.assertNotIn("sub_831583B0", text)
