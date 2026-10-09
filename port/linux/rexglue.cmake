@@ -1,4 +1,4 @@
-# Linux uses the pinned 0.10 SDK and a separate codegen directory.
+# Linux and Windows use the pinned 0.10 SDK and the shared codegen directory.
 find_package(rexglue 0.10.0 REQUIRED CONFIG)
 set(_generated "${CMAKE_CURRENT_SOURCE_DIR}/generated/linux")
 if(NOT EXISTS "${_generated}/sources.cmake")
@@ -13,7 +13,11 @@ function(rexglue_setup_target target)
     target_link_libraries(${target}_recomp PRIVATE rex::runtime)
     rexglue_apply_target_settings(${target}_recomp)
     target_precompile_headers(${target}_recomp PRIVATE "${_generated}/diablo3_pch.h")
-    target_compile_options(${target}_recomp PRIVATE -g0)
+    if(WIN32)
+        target_compile_options(${target}_recomp PRIVATE -fasync-exceptions)
+    else()
+        target_compile_options(${target}_recomp PRIVATE -g0)
+    endif()
     target_include_directories(${target} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${_generated}")
     target_link_libraries(${target} PRIVATE ${target}_recomp rex::runtime ${CMAKE_DL_LIBS})

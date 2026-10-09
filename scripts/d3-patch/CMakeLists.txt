@@ -4,6 +4,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(D3Patch LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
+# XenonRecomp builds with the static MSVC runtime; match it so the link succeeds.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 if(NOT XENONRECOMP_DIR)
     message(FATAL_ERROR "Set XENONRECOMP_DIR to a XenonRecomp checkout with submodules")

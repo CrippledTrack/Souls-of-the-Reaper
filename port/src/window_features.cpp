@@ -14,8 +14,6 @@
 #endif
 #ifdef SOULS_TITLE_UPDATE_2
 #include "generated/tu2/diablo3_pch.h"
-#elif defined(_WIN32)
-#include "generated/default/diablo3_pch.h"
 #else
 #include "generated/linux/diablo3_pch.h"
 #endif

@@ -191,11 +191,11 @@ test('Build failures and cancellation are reported in the panel', async () => {
   assert.ok(calls.some(c => c.command === 'cancel_build'));
 });
 
-test('Windows prepares game folders without compile options', () => {
+test('Windows offers build choices and finds CMake by itself', () => {
   const { doc } = tauriPage({ platform: 'windows', builds: [] });
-  assert.equal(doc.getElementById('buildVariants').hidden, true);
+  assert.equal(doc.getElementById('buildVariants').hidden, false);
   assert.equal(doc.getElementById('cmakeLabel').hidden, true);
-  assert.equal(doc.getElementById('startBuild').textContent, 'Prepare');
+  assert.notEqual(doc.getElementById('startBuild').textContent, 'Prepare');
 });
 
 test('Cancelled settings edits are not used by Play', async () => {

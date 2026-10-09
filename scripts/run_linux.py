@@ -45,8 +45,19 @@ def option_value(extra, name, default):
 
 
 def saved_render_scale(state):
+    """Scale from pc-settings.ini, or from the bare-number file earlier builds wrote."""
+    text = None
     try:
-        value = int((state / "pc-render-scale.txt").read_text(encoding="utf-8").strip())
+        for line in (state / "pc-settings.ini").read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key == "render_scale":
+                text = value
+    except OSError:
+        pass
+    try:
+        if text is None:
+            text = (state / "pc-render-scale.txt").read_text(encoding="utf-8")
+        value = int(text.strip())
         return value if 1 <= value <= 3 else None
     except (OSError, ValueError):
         return None

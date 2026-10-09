@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 
+import build_windows
 import extract_disc
 import extract_update
 from stage_title_update import TU2_PACKAGE_SHA256, stage
@@ -28,6 +29,7 @@ TU2_CPKS = ("Patch.cpk", "Patch2.cpk", "enUS_Patch.cpk", "enUS_Patch2.cpk")
 VARIANTS = {"base": (False, False), "extras": (False, True),
             "tu2": (True, False), "tu2-extras": (True, True)}
 LABELS = {"base": "Base", "extras": "Base + Extras", "tu2": "TU2", "tu2-extras": "TU2 + Extras"}
+WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
 # Rough upper bounds measured on Linux RelWithDebInfo builds.
 SDK_BYTES, VARIANT_BYTES, CODEGEN_BYTES = 3 * GIB, 1 * GIB, GIB // 2
@@ -95,10 +97,17 @@ def missing_tools(args, compile_needed, need_patcher):
     for tool in ("ninja", "clang", "clang++"):
         if not shutil.which(tool):
             problems.append(f"{tool} was not found on PATH.")
-    if compile_needed and platform.system() != "Linux":
-        problems.append("Automated compilation is Linux-only for now; on Windows follow the README build "
-                        "steps, or use --data-only to prepare the game folders.")
+    if compile_needed and platform.system() not in ("Linux", "Windows"):
+        problems.append("Automated compilation supports Linux and Windows only; use --data-only to prepare "
+                        "the game folders.")
     return problems
+
+
+def sdk_installed(args):
+    if WINDOWS:
+        return ((args.sdk_prefix / "lib/cmake/rexglue").is_dir()
+                and (args.sdk_source / "out/win-amd64/RelWithDebInfo/rexgluerd.exe").is_file())
+    return (args.sdk_prefix / "bin/rexglue").is_file()
 
 
 def disc_bytes(iso):
@@ -155,8 +164,12 @@ def build_patcher(args):
 def build_variant(args, variant):
     tu2, extras = VARIANTS[variant]
     game = args.game_dir_tu2 if tu2 else args.game_dir
-    command = [sys.executable, SCRIPTS / "build_linux.py", "--game-dir", game, "--sdk-prefix", args.sdk_prefix,
-               "--cmake", args.cmake, "--jobs", args.jobs]
+    command = [sys.executable, SCRIPTS / ("build_windows.py" if WINDOWS else "build_linux.py"),
+               "--game-dir", game, "--sdk-prefix", args.sdk_prefix, "--jobs", args.jobs]
+    if WINDOWS:
+        command += ["--sdk-source", args.sdk_source]  # CMake, Ninja and Clang come from PATH
+    else:
+        command += ["--cmake", args.cmake]
     if tu2:
         command += ["--title-update", "tu2"]
     if extras:
@@ -174,7 +187,7 @@ def plan(args):
     need_base = not base_ready(args.game_dir)
     need_tu2 = wanted_tu2 and not tu2_ready(args.game_dir_tu2)
     compile_needed = bool(args.variants) and not args.data_only
-    need_sdk = compile_needed and not (args.sdk_prefix / "bin/rexglue").is_file()
+    need_sdk = compile_needed and not sdk_installed(args)
 
     if need_base and not args.iso:
         raise BuildError(f"No extracted disc in {args.game_dir}; choose your disc image (ISO).")
@@ -217,9 +230,12 @@ def plan(args):
             steps.append(("Build TU2 patch tool", patcher_step))
         steps.append(("Apply TU2", lambda: stage(args.game_dir, update_dir, args.game_dir_tu2, patcher[0])))
     if need_sdk:
-        import build_linux
         sdk = argparse.Namespace(sdk_source=args.sdk_source, sdk_prefix=args.sdk_prefix, jobs=args.jobs)
-        steps.append(("Build ReXGlue SDK (one-time)", lambda: build_linux.build_sdk(sdk, args.cmake)))
+        if WINDOWS:
+            steps.append(("Build ReXGlue SDK (one-time)", lambda: build_windows.build_sdk(sdk)))
+        else:
+            import build_linux
+            steps.append(("Build ReXGlue SDK (one-time)", lambda: build_linux.build_sdk(sdk, args.cmake)))
     if compile_needed:
         for variant in args.variants:
             steps.append((f"Build {LABELS[variant]} (codegen and compile)", lambda v=variant: build_variant(args, v)))
@@ -239,8 +255,9 @@ def main(argv=None):
                         help="Only prepare the game folders; do not compile")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--game-dir-tu2", type=pathlib.Path, default=ROOT / "game-tu2")
-    parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / "tools/rexglue-sdk-linux")
-    parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-linux")
+    host = "win" if WINDOWS else "linux"
+    parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / f"tools/rexglue-sdk-{host}")
+    parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / f"tools/rexglue-install-{host}")
     parser.add_argument("--patcher", type=pathlib.Path, help="Existing d3-patch executable")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
@@ -260,8 +277,11 @@ def main(argv=None):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, value.expanduser().resolve())
-    args.cmake = shutil.which(args.cmake)
     try:
+        if WINDOWS:
+            # Finds clang, CMake and Ninja in their usual install folders (Visual Studio, LLVM).
+            build_windows.add_tool_paths()
+        args.cmake = shutil.which(args.cmake)
         steps = plan(args)
         if args.check:
             for index, (title, _) in enumerate(steps, 1):

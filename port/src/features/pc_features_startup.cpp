@@ -25,7 +25,7 @@ uint64_t window_mode_revision = 0;
 namespace d3::features {
 void InitializeWindowMode(rex::ui::Window &window,
                           const std::filesystem::path &user_data_root) {
-  window_mode_path = user_data_root / "pc-window-mode.txt";
+  window_mode_path = user_data_root / kSettingsFile;
   if (rex::cvar::GetFlagByName("pc_use_saved_window_mode") == "true") {
     const auto saved = ReadWindowMode(window_mode_path, 0);
     if (saved)
@@ -77,7 +77,7 @@ void UpdateWindowMode(rex::ui::Window &window) {
 void ApplySavedRenderScale(const std::filesystem::path &user_data_root) {
   if (rex::cvar::GetFlagByName("pc_use_saved_render_scale") != "true")
     return;
-  const auto scale = ReadRenderScale(user_data_root / "pc-render-scale.txt", 0);
+  const auto scale = ReadRenderScale(user_data_root / kSettingsFile, 0);
   if (!scale)
     return;
   const auto value = std::to_string(scale);

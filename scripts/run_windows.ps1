@@ -17,7 +17,10 @@ param(
     [ValidateSet(1, 2, 3)]
     [int]$ResScale = 1,
     [ValidateSet("Windowed", "Borderless")]
-    [string]$WindowMode
+    [string]$WindowMode,
+    # ROV is the faithful path; auto/RTV render Diablo III's aliased lighting black on some GPUs.
+    [ValidateSet("rov", "rtv")]
+    [string]$RenderPath = "rov"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +60,8 @@ function ConvertTo-QuotedArgument([string]$Value) {
     return '"' + $escaped + '"'
 }
 $arguments = @('--game_data_root', (ConvertTo-QuotedArgument $game),
-    '--user_data_root', (ConvertTo-QuotedArgument $state))
+    '--user_data_root', (ConvertTo-QuotedArgument $state),
+    "--render_target_path_d3d12=$RenderPath")
 if ($TitleUpdate) { $arguments += @('--update_data_root', (ConvertTo-QuotedArgument $game)) }
 if ($PSBoundParameters.ContainsKey('ResScale')) {
     $arguments += @("--draw_resolution_scale_x=$ResScale", "--draw_resolution_scale_y=$ResScale")

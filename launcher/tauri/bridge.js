@@ -60,13 +60,10 @@
   const buildStep = document.getElementById('buildStep');
   const buildLog = document.getElementById('buildLog');
   const logLines = [];
-  const linux = caps.platform === 'linux';
-  if (!linux) {
-    // Compiling is automated on Linux only; Windows prepares game folders.
-    document.getElementById('buildVariants').hidden = true;
+  if (caps.platform === 'windows') {
+    // build_windows.py finds CMake, Ninja and Clang (Visual Studio, LLVM) by itself.
     document.getElementById('cmakeLabel').hidden = true;
-    document.getElementById('buildIntro').textContent = 'Prepares the game folders from your disc image and, optionally, the USA Title Update 2 package. Compiling from the launcher is Linux-only for now; see the README to build on Windows.';
-    document.getElementById('startBuild').textContent = 'Prepare';
+    document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update 2 package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
   }
   document.getElementById('openBuild').hidden = !caps.canBuild;
   function openBuild() {
@@ -125,7 +122,7 @@
       // The page reads CAPS.builds (its copy of LAUNCHER_CAPS) on each render.
       caps.builds = CAPS.builds = builds;
       listBuilds(); render();
-      buildStep.textContent = linux ? 'Build complete. Choose it under Game Version.' : 'Game folders are ready.';
+      buildStep.textContent = 'Build complete. Choose it under Game Version.';
       showStatus('');
     } catch (error) {
       buildStep.textContent = String(error);

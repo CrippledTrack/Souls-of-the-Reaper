@@ -336,10 +336,10 @@ pub struct BuildRequest {
 }
 
 /// Arguments for scripts/build_client.py, writing into the launcher's game
-/// folders. Windows only prepares the folders: compiling there is not
-/// automated yet.
+/// folders. The script compiles with build_linux.py or build_windows.py,
+/// whichever matches the host.
 pub fn build_client_arguments(
-    platform: Platform,
+    _platform: Platform,
     repo: &Path,
     request: &BuildRequest,
     game: &Path,
@@ -366,13 +366,10 @@ pub fn build_client_arguments(
     {
         return Err(format!("Unknown build {bad}."));
     }
-    match platform {
-        Platform::Windows => args.push("--data-only".into()),
-        Platform::Linux if request.variants.is_empty() => {
-            return Err("Choose at least one build.".into())
-        }
-        Platform::Linux => args.push(format!("--variants={}", request.variants.join(","))),
+    if request.variants.is_empty() {
+        return Err("Choose at least one build.".into());
     }
+    args.push(format!("--variants={}", request.variants.join(",")));
     Ok(args)
 }
 
@@ -508,10 +505,11 @@ mod tests {
             Path::new("/g/tu2"),
         )
         .unwrap();
+        let script = Path::new("/repo").join("scripts/build_client.py");
         assert_eq!(
             args,
             [
-                "/repo/scripts/build_client.py",
+                script.to_str().unwrap(),
                 "--game-dir=/g/base",
                 "--game-dir-tu2=/g/tu2",
                 "--iso=/isos/d3 usa.iso",
@@ -526,11 +524,13 @@ mod tests {
         let run = |platform, variants: &[&str]| {
             build_client_arguments(platform, Path::new("/r"), &request(variants), folders.0, folders.1)
         };
-        assert!(run(Platform::Linux, &[]).is_err());
-        assert!(run(Platform::Linux, &["base;rm"]).is_err());
-        let windows = run(Platform::Windows, &[]).unwrap();
-        assert!(windows.contains(&"--data-only".to_string()));
-        assert!(!windows.iter().any(|a| a.starts_with("--variants")));
+        for platform in [Platform::Linux, Platform::Windows] {
+            assert!(run(platform, &[]).is_err());
+            assert!(run(platform, &["base;rm"]).is_err());
+        }
+        let windows = run(Platform::Windows, &["base", "tu2"]).unwrap();
+        assert!(windows.contains(&"--variants=base,tu2".to_string()));
+        assert!(!windows.contains(&"--data-only".to_string()));
     }
 
     fn build(tu2: bool, extras: bool) -> Build {
@@ -558,7 +558,8 @@ mod tests {
         .unwrap();
         assert!(args.contains(&"--game_data_root=/tmp/game with spaces".into()));
         assert!(args.contains(&"--update_data_root=/tmp/game with spaces".into()));
-        assert!(args.contains(&"--log_file=/s d/diablo3.log".into()));
+        let log = Path::new("/s d").join("diablo3.log");
+        assert!(args.contains(&format!("--log_file={}", log.display())));
         let base = launch_arguments(
             Platform::Linux,
             &build(false, false),

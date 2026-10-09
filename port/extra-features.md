@@ -64,7 +64,7 @@ hook function mappings.
 
 Both Linux launch modes use the existing user-data directory selected by
 `--state-dir` or `--user_data_root`. The optional launcher reads
-`pc-render-scale.txt` there and supplies `--resolution_scale=N` at startup.
+the `render_scale` value from `pc-settings.ini` there and supplies `--resolution_scale=N` at startup.
 The normal launcher ignores this file. A missing optional executable produces
 an error rather than launching the normal build.
 
@@ -83,7 +83,7 @@ python3 scripts/run_linux.py --title-update tu2 --extra-features --vulkan_device
 
 The optional binary is `port/out/build/linux-amd64-tu2-extras-relwithdebinfo/diablo3`.
 It shares TU2 generated sources and the TU2 user-data directory with the normal
-TU2 build. The normal build ignores the saved render-scale file. For direct
+TU2 build. The normal build ignores the saved render scale. For direct
 CMake builds, enable both `SOULS_TITLE_UPDATE_2` and `SOULS_ENABLE_EXTRA_FEATURES`
 and set `SOULS_BASE_XEX` to the patched TU2 `Default.xex`. Its required SHA-256 is
 `447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f`.
@@ -119,9 +119,12 @@ and console save contents are untouched.
 
 ## Window mode
 
-Optional builds save the menu preference as `pc-window-mode.txt` in the resolved
-user-data directory (`1` for windowed, `2` for borderless fullscreen). Missing or
-invalid files keep the launch mode. A failed save restores the previous menu
+Optional builds save the menu preference as `window_mode` in `pc-settings.ini` in
+the resolved user-data directory (`1` for windowed, `2` for borderless
+fullscreen). The same file holds `render_scale` (`1` to `3`), and saving one
+setting keeps the other. Builds that wrote one file per setting
+(`pc-render-scale.txt`, `pc-window-mode.txt`) still have those values honoured
+until the setting is saved again. Missing or invalid values keep the launch mode. A failed save restores the previous menu
 selection. Normal builds do not read or write this preference.
 
 The menu uses action ID 101 and the same audited native selector hooks as render

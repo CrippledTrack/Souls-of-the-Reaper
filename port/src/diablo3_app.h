@@ -2,6 +2,9 @@
 
 #pragma once
 
+// Every host loads the Xenos GPU plugin shipped with the pinned SDK.
+#define SOULS_GPU_PLUGIN 1
+
 #include <filesystem>
 #include <memory>
 
@@ -15,7 +18,7 @@
 #include "window_features.h"
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
-#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
+#ifdef SOULS_GPU_PLUGIN
 #include <rex/system/gpu_plugin.h>
 #endif
 #endif
@@ -39,15 +42,15 @@ class Diablo3App : public rex::ReXApp {
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
-#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2) || defined(SOULS_ENABLE_EXTRA_FEATURES)
+#if defined(SOULS_GPU_PLUGIN) || defined(SOULS_ENABLE_EXTRA_FEATURES)
   void OnPreSetup(rex::RuntimeConfig& config) override {
-#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
+#ifdef SOULS_GPU_PLUGIN
     config.gpu_plugin = "xenos";
 #else
     (void)config;
 #endif
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
-#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
+#ifdef SOULS_GPU_PLUGIN
     // GPU cvars are registered by the plugin, before its presentation/setup.
     config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
     if (!config.graphics) {
@@ -58,7 +61,7 @@ class Diablo3App : public rex::ReXApp {
 #endif
   }
 #endif
-#if defined(__linux__) || defined(SOULS_TITLE_UPDATE_2)
+#ifdef SOULS_GPU_PLUGIN
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
   }

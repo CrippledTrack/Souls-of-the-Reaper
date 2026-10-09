@@ -2,8 +2,6 @@
 // See port/extra-features.md for the executable and address audit.
 #ifdef SOULS_TITLE_UPDATE_2
 #include "generated/tu2/diablo3_pch.h"
-#elif defined(_WIN32)
-#include "generated/default/diablo3_pch.h"
 #else
 #include "generated/linux/diablo3_pch.h"
 #endif
@@ -81,7 +79,7 @@ struct Settings {
     active_y = axis("draw_resolution_scale_y");
 #endif
     // Use the resolved directory when the executable is launched directly too.
-    path = rex::Runtime::instance()->user_data_root() / "pc-render-scale.txt";
+    path = rex::Runtime::instance()->user_data_root() / d3::features::kSettingsFile;
     selected = d3::features::ReadRenderScale(path, std::clamp(shared, 1, 3));
   }
 

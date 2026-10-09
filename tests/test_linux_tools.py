@@ -39,7 +39,7 @@ class LinuxToolsTests(unittest.TestCase):
 #include <cassert>
 int main(int argc, char** argv) {
   assert(argc == 2);
-  const auto path = std::filesystem::path(argv[1]) / "state/pc-window-mode.txt";
+  const auto path = std::filesystem::path(argv[1]) / "state/pc-settings.ini";
   using namespace d3::features;
   assert(ReadWindowMode(path, 2) == 2);
   for (int mode : {1, 2, 1}) {
@@ -50,10 +50,27 @@ int main(int argc, char** argv) {
   try { SaveWindowMode(path, 3); }
   catch (const std::invalid_argument&) { failed = true; }
   assert(failed && ReadWindowMode(path, 0) == 1);
-  for (const auto text : {"", "0", "3", "-1", "2 garbage"}) {
+  for (const auto text : {"", "window_mode=0", "window_mode=3", "window_mode=-1",
+                          "window_mode=2 garbage", "garbage"}) {
     std::ofstream(path) << text;
     assert(ReadWindowMode(path, 2) == 2);
   }
+  // Both settings share the file and keep each other when saved.
+  std::filesystem::remove(path);
+  SaveRenderScale(path, 3);
+  SaveWindowMode(path, 2);
+  assert(ReadRenderScale(path, 0) == 3 && ReadWindowMode(path, 0) == 2);
+  SaveRenderScale(path, 1);
+  assert(ReadRenderScale(path, 0) == 1 && ReadWindowMode(path, 0) == 2);
+  // Values from the earlier one-file-per-setting layout are still honoured.
+  std::filesystem::remove(path);
+  std::ofstream(path.parent_path() / "pc-render-scale.txt") << "2" << '\n';
+  std::ofstream(path.parent_path() / "pc-window-mode.txt") << "1" << '\n';
+  assert(ReadRenderScale(path, 0) == 2 && ReadWindowMode(path, 0) == 1);
+  SaveWindowMode(path, 2);
+  assert(ReadWindowMode(path, 0) == 2 && ReadRenderScale(path, 0) == 2);
+  std::filesystem::remove(path.parent_path() / "pc-render-scale.txt");
+  std::filesystem::remove(path.parent_path() / "pc-window-mode.txt");
   std::filesystem::remove(path);
   std::filesystem::create_directory(path);
   std::ofstream(path / "preserve") << "keep";
@@ -296,7 +313,7 @@ class TitleUpdateTests(unittest.TestCase):
     def test_tu2_extra_features_select_separate_binary_and_saved_scale(self):
         with tempfile.TemporaryDirectory() as directory:
             state = pathlib.Path(directory)
-            (state / "pc-render-scale.txt").write_text("2\n")
+            (state / "pc-settings.ini").write_text("window_mode=1\nrender_scale=2\n")
             args = argparse.Namespace(probe=False, render_smoke=False, extra_features=True,
                                       title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
                                       state_dir=state)
