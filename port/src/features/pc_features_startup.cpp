@@ -4,8 +4,14 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/window.h>
+#include <atomic>
 #include <mutex>
 #include <cstdint>
+
+REXCVAR_DEFINE_BOOL(
+    extra_features, false, "PC features",
+    "Enable the optional PC features: render resolution and window mode menus, "
+    "PC autosave wording and the Extras version label");
 
 REXCVAR_DEFINE_BOOL(
     pc_use_saved_render_scale, true, "PC features",
@@ -15,6 +21,7 @@ REXCVAR_DEFINE_BOOL(pc_use_saved_window_mode, true, "PC features",
                    "Apply the window mode saved in Video options on startup");
 
 namespace {
+std::atomic<bool> extras_enabled{false};
 std::filesystem::path window_mode_path;
 std::mutex window_mode_mutex;
 int selected_window_mode = 1;
@@ -23,8 +30,18 @@ uint64_t window_mode_revision = 0;
 }
 
 namespace d3::features {
+bool Enabled() { return extras_enabled.load(std::memory_order_relaxed); }
+
+void InitializeExtras() {
+  const bool on = rex::cvar::GetFlagByName("extra_features") == "true";
+  extras_enabled.store(on, std::memory_order_relaxed);
+  REXLOG_INFO("PC features: {}", on ? "enabled" : "disabled (pass --extra_features to enable)");
+}
+
 void InitializeWindowMode(rex::ui::Window &window,
                           const std::filesystem::path &user_data_root) {
+  if (!Enabled())
+    return;
   window_mode_path = user_data_root / kSettingsFile;
   if (rex::cvar::GetFlagByName("pc_use_saved_window_mode") == "true") {
     const auto saved = ReadWindowMode(window_mode_path, 0);
@@ -54,6 +71,8 @@ bool SelectWindowMode(int mode) {
 }
 
 void UpdateWindowMode(rex::ui::Window &window) {
+  if (!Enabled())
+    return;
   int mode;
   uint64_t revision;
   {
@@ -75,6 +94,8 @@ void UpdateWindowMode(rex::ui::Window &window) {
 }
 
 void ApplySavedRenderScale(const std::filesystem::path &user_data_root) {
+  if (!Enabled())
+    return;
   if (rex::cvar::GetFlagByName("pc_use_saved_render_scale") != "true")
     return;
   const auto scale = ReadRenderScale(user_data_root / kSettingsFile, 0);

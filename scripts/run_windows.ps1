@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Launch a Windows source build, optionally enabling the modified-game build.
+  Launch a Windows source build. -ExtraFeatures switches on the optional PC features
+  (compiled in by default); -Plain runs the build compiled without them.
 .EXAMPLE
   pwsh -File scripts/run_windows.ps1 -ExtraFeatures -Config RelWithDebInfo
 .EXAMPLE
@@ -8,6 +9,7 @@
 #>
 param(
     [switch]$ExtraFeatures,
+    [switch]$Plain,
     [ValidateSet("tu2")]
     [string]$TitleUpdate,
     [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
@@ -26,9 +28,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $suffix = $Config.ToLowerInvariant()
-$buildName = if ($ExtraFeatures) { "win-amd64-extras-$suffix" } else { "win-amd64-$suffix" }
+if ($Plain -and $ExtraFeatures) { throw '-ExtraFeatures needs the default build; drop -Plain.' }
+$buildName = if ($Plain) { "win-amd64-plain-$suffix" } else { "win-amd64-$suffix" }
 if ($TitleUpdate) {
-    $variant = if ($ExtraFeatures) { 'tu2-extras' } else { 'tu2' }
+    $variant = if ($Plain) { 'tu2-plain' } else { 'tu2' }
     $buildName = "win-amd64-$variant-$suffix"
     if (-not $PSBoundParameters.ContainsKey('UserDataRoot')) { $UserDataRoot += '-tu2' }
 }
@@ -36,17 +39,27 @@ $buildDir = Join-Path $root "port\out\build\$buildName"
 $exe = Join-Path $buildDir 'diablo3.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
     $updateFlag = if ($TitleUpdate) { " -TitleUpdate $TitleUpdate -GameDir `"$GameDir`"" } else { "" }
-    $featureFlag = if ($ExtraFeatures) { ' -ExtraFeatures' } else { '' }
+    $featureFlag = if ($Plain) { ' -Plain' } else { '' }
     throw "Executable missing. Build with: pwsh -File port/build.ps1 -Config $Config$featureFlag$updateFlag"
 }
 $game = (Resolve-Path -LiteralPath $GameDir).Path
-if (-not (Test-Path -LiteralPath (Join-Path $game 'Default.xex'))) {
-    throw 'GameDir must contain Default.xex.'
+# TU2 is either an overlay (<game>\tu2 holds the patched executable and update CPKs) or a full staged copy.
+$updateRoot = $game
+$xex = Join-Path $game 'Default.xex'
+if ($TitleUpdate -and (Test-Path -LiteralPath (Join-Path $game 'tu2\Default.xex'))) {
+    $updateRoot = Join-Path $game 'tu2'
+    $xex = Join-Path $updateRoot 'Default.xex'
+}
+if (-not (Test-Path -LiteralPath $xex)) {
+    throw 'GameDir must contain Default.xex (for TU2: build or stage TU2 first).'
 }
 if ($TitleUpdate) {
     $expected = '447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f'
-    if ((Get-FileHash -LiteralPath (Join-Path $game 'Default.xex') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
-        throw 'GameDir does not contain the verified USA TU2 executable.'
+    if ((Get-FileHash -LiteralPath $xex -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+        if ($updateRoot -eq $game) {
+            throw "TU2 is not installed in $game (there is no tu2\Default.xex). Add it with: python scripts/build_client.py --title-update <Title Update 2 package> --game-dir `"$game`" --variants tu2"
+        }
+        throw 'The executable in GameDir\tu2 is not the verified USA TU2 executable.'
     }
 }
 $state = [System.IO.Path]::GetFullPath($UserDataRoot)
@@ -62,7 +75,8 @@ function ConvertTo-QuotedArgument([string]$Value) {
 $arguments = @('--game_data_root', (ConvertTo-QuotedArgument $game),
     '--user_data_root', (ConvertTo-QuotedArgument $state),
     "--render_target_path_d3d12=$RenderPath")
-if ($TitleUpdate) { $arguments += @('--update_data_root', (ConvertTo-QuotedArgument $game)) }
+if ($ExtraFeatures) { $arguments += '--extra_features=true' }
+if ($TitleUpdate) { $arguments += @('--update_data_root', (ConvertTo-QuotedArgument $updateRoot)) }
 if ($PSBoundParameters.ContainsKey('ResScale')) {
     $arguments += @("--draw_resolution_scale_x=$ResScale", "--draw_resolution_scale_y=$ResScale")
     if ($ExtraFeatures) { $arguments += '--pc_use_saved_render_scale=false' }

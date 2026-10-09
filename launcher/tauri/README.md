@@ -9,11 +9,12 @@ through this launcher has been tested.
 ## What it offers
 
 - **Game Version** lists the builds it finds: `Base`, `Base + Extras`, `TU2`
-  and `TU2 + Extras`. A source checkout offers each built
-  `port/out/build/<platform>-amd64[-tu2][-extras]-<config>` variant
+  and `TU2 + Extras`. `+ Extras` is the same executable launched with
+  `--extra_features=true`. A source checkout offers each built
+  `port/out/build/<platform>-amd64[-tu2][-plain]-<config>` variant
   (RelWithDebInfo first, then Release and Debug). A release install uses the
   `diablo3`/`diablo3.exe` beside the launcher. Its TU2 flavour comes from
-  `game/Default.xex`; extras builds are recognised from the executable itself.
+  `game/Default.xex`; whether it carries the extras is read from the executable itself. `-plain` builds are compiled without them and only offer the plain choice.
 - **Extras builds** add an `In-game` choice for Internal Resolution and
   Display. It keeps the value saved in the game's Options > Video menu. Any
   other choice overrides it for that launch
@@ -39,14 +40,15 @@ by itself when no build is found. Choose:
 
 - the USA Ultimate Evil Edition disc image (ISO);
 - optionally, the USA Title Update 2 package (`tu00000002_00000000`);
-- which builds to compile: Base, Base + Extras, TU2, TU2 + Extras.
+- which builds to compile: Base, TU2, and optionally `(no extras)` versions compiled without the optional PC code.
 
 The script writes into the game folders from Launch settings (`game/` and
-`game-tu2/` by default). It runs these steps and skips any that are already done:
+`game/tu2/` by default; an existing `game-tu2/` is still used). It runs these steps and skips any that are already done:
 
 1. Check the disc's `Default.xex` before copying anything, then extract the disc.
-2. Extract the title update, build the `d3-patch` tool and stage TU2. Unchanged
-   disc files are hardlinked when both folders share a filesystem.
+2. Extract the title update, build the `d3-patch` tool and stage TU2 as a small
+   `tu2/` overlay inside the game folder (about 27 MB: the patched executable and
+   the update CPKs; the disc files are not copied).
 3. Build the pinned ReXGlue SDK once (`tools/`).
 4. Generate code and compile each selected build. Generated code is reused for
    later builds of the same executable.
@@ -64,13 +66,13 @@ has no sources, so the panel is not shown there.
 
 ## Launch settings (⚙)
 
-Game and save folders for base and TU2 builds, plus the Vulkan device on Linux.
+Game folder, save folders for base and TU2 builds, and the Vulkan device on Linux. TU2 has no game folder of its own: it uses the base game folder, whose `tu2/` folder holds the update (an older full `game-tu2/` copy is still used if present).
 Empty fields use these defaults:
 
 | | Game folder | Save folder |
 | --- | --- | --- |
 | Base / extras | `game/` | Linux: `$XDG_DATA_HOME/souls-of-the-reaper`; Windows: `Documents\diablo3` |
-| TU2 | `game-tu2/` | `…/souls-of-the-reaper-tu2`; Windows: `Documents\diablo3-tu2` |
+| TU2 | same as Base (`game/tu2/` overlay; or `game-tu2/` if that older full copy exists) | `…/souls-of-the-reaper-tu2`; Windows: `Documents\diablo3-tu2` |
 
 Game folders sit at the repository root for a source checkout, or beside the
 launcher for an install. Settings and the last menu choices are saved in

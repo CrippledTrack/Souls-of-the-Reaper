@@ -170,6 +170,10 @@ uint32_t CurrentDescriptor(uint8_t *base) {
 // before passing it to Root.NormalLayer.ConsoleStart_main.LayoutRoot.Version.
 // Match that call site and its "%s" format; all other formatting stays intact.
 extern "C" void sub_823BD130(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_823BD130(ctx, base);
+    return;
+  }
   const bool start_version = ctx.lr == kVersionCallReturn && ctx.r4.u32 == kVersionFormat;
   const auto destination = ctx.r3.u32;
   __imp__sub_823BD130(ctx, base);
@@ -186,7 +190,13 @@ extern "C" void sub_823BD130(PPCContext &ctx, uint8_t *base) {
 }
 
 // Strong definitions override only these weak generated aliases when linked.
+// Each hook hands straight back to the original function unless the
+// `extra_features` cvar is set, so one binary serves both modes.
 extern "C" void sub_826FD808(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_826FD808(ctx, base);
+    return;
+  }
   const auto owner = ctx.r3.u32;
   __imp__sub_826FD808(ctx, base);
   const auto saved = ctx;
@@ -218,6 +228,10 @@ extern "C" void sub_826FD808(PPCContext &ctx, uint8_t *base) {
 
 // Selector model: option ID at +4, count in vtable slot 0.
 extern "C" void sub_826FBFF0(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_826FBFF0(ctx, base);
+    return;
+  }
   const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
   if (option == kRenderOption || option == kWindowOption) {
     ctx.r3.u64 = option == kRenderOption ? 3 : 2;
@@ -227,6 +241,10 @@ extern "C" void sub_826FBFF0(PPCContext &ctx, uint8_t *base) {
 }
 
 extern "C" void sub_826FC030(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_826FC030(ctx, base);
+    return;
+  }
   const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
   if (option != kRenderOption && option != kWindowOption) {
     __imp__sub_826FC030(ctx, base);
@@ -242,6 +260,10 @@ extern "C" void sub_826FC030(PPCContext &ctx, uint8_t *base) {
 }
 
 extern "C" void sub_826FC798(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_826FC798(ctx, base);
+    return;
+  }
   const auto option = REX_LOAD_U32(ctx.r3.u32 + 4);
   const bool render = option == kRenderOption;
   const bool window = option == kWindowOption;
@@ -275,6 +297,10 @@ extern "C" void sub_826FC798(PPCContext &ctx, uint8_t *base) {
 }
 
 extern "C" void sub_826FCE80(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_826FCE80(ctx, base);
+    return;
+  }
   const auto descriptor = CurrentDescriptor(base);
   const auto option = descriptor ? REX_LOAD_U32(descriptor + 32) : 0;
   if (option != kRenderOption && option != kWindowOption) {
@@ -302,6 +328,10 @@ extern "C" void sub_826FCE80(PPCContext &ctx, uint8_t *base) {
 }
 
 extern "C" void sub_8282F0F0(PPCContext &ctx, uint8_t *base) {
+  if (!d3::features::Enabled()) {
+    __imp__sub_8282F0F0(ctx, base);
+    return;
+  }
   const auto name = ReadText(base, ctx.r4.u32, 64);
   const auto destination = ctx.r3.u32;
   if (name == kWindowKey || name == kWindowTooltipKey) {

@@ -96,9 +96,10 @@ async fn launch_game(
     let (game, user) = launch::folders_for(&build, &settings, &host.defaults);
     let game =
         fs::canonicalize(&game).map_err(|e| format!("Game folder {}: {e}", game.display()))?;
+    let game = launch::plain_path(game);
     launch::validate_game_dir(&build, &game)?;
     fs::create_dir_all(&user).map_err(|e| format!("Save folder {}: {e}", user.display()))?;
-    let user = fs::canonicalize(&user).map_err(|e| e.to_string())?;
+    let user = launch::plain_path(fs::canonicalize(&user).map_err(|e| e.to_string())?);
     let args = launch::launch_arguments(
         host.platform,
         &build,

@@ -12,7 +12,7 @@
 #   -Precompiled          : uses the prebuilt binary in ..\sdk-bin\win-amd64.
 #                           Fast, no runtime symbols.
 #
-# Usage: pwsh -File port/build.ps1 [-Config Debug|Release|RelWithDebInfo] [-TitleUpdate tu2 -GameDir path] [-ExtraFeatures] [-Precompiled] [-Clean]
+# Usage: pwsh -File port/build.ps1 [-Config Debug|Release|RelWithDebInfo] [-TitleUpdate tu2 -GameDir path] [-Plain] [-Precompiled] [-Clean]
 param(
     [ValidateSet('Debug','Release','RelWithDebInfo')]
     [string]$Config = 'Debug',
@@ -21,7 +21,7 @@ param(
     [string]$TitleUpdate,
     [string]$Rexglue, # optional path to the matching SDK codegen executable
     [string]$GameDir = (Join-Path $PSScriptRoot "..\game"),
-    [switch]$ExtraFeatures, # opt into the in-game resolution setting and PC autosave wording
+    [switch]$Plain,         # compile without the optional PC features (default builds them in; enable at launch with --extra_features)
     [switch]$Clean          # wipe the build directory (force a clean reconfigure)
 )
 # Don't use 'Stop': cmake/clang write warnings to stderr and 'Stop' would abort.
@@ -43,9 +43,10 @@ $env:PATH = "$llvm;$vsCmake;$vsNinja;$env:PATH"
 
 $presetMap = @{ 'Debug' = 'win-amd64-debug'; 'Release' = 'win-amd64-release'; 'RelWithDebInfo' = 'win-amd64-relwithdebinfo' }
 $preset = $presetMap[$Config]
-$buildName = if ($ExtraFeatures) { "win-amd64-extras-$($Config.ToLowerInvariant())" } else { $preset }
+$ExtraFeatures = -not $Plain
+$buildName = if ($Plain) { "win-amd64-plain-$($Config.ToLowerInvariant())" } else { $preset }
 if ($TitleUpdate) {
-    $variant = if ($ExtraFeatures) { 'tu2-extras' } else { 'tu2' }
+    $variant = if ($Plain) { 'tu2-plain' } else { 'tu2' }
     $buildName = "win-amd64-$variant-$($Config.ToLowerInvariant())"
 }
 $buildDir = "$PSScriptRoot\out\build\$buildName"

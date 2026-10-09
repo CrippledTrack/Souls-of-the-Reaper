@@ -19,16 +19,17 @@ import sys
 import build_windows
 import extract_disc
 import extract_update
-from stage_title_update import TU2_PACKAGE_SHA256, stage
-from title_updates import DISC_SHA256, TU2_SHA256
+from stage_title_update import TU2_PACKAGE_SHA256, stage, stage_overlay
+from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 TU2_CPKS = ("Patch.cpk", "Patch2.cpk", "enUS_Patch.cpk", "enUS_Patch2.cpk")
-# Variant id -> (title update, extra features); ids match the launcher's builds.
-VARIANTS = {"base": (False, False), "extras": (False, True),
-            "tu2": (True, False), "tu2-extras": (True, True)}
-LABELS = {"base": "Base", "extras": "Base + Extras", "tu2": "TU2", "tu2-extras": "TU2 + Extras"}
+# Variant id -> (title update, plain). Normal builds carry the optional PC features and
+# switch them on at launch with --extra_features; "plain" omits them from the executable.
+VARIANTS = {"base": (False, False), "tu2": (True, False),
+            "base-plain": (False, True), "tu2-plain": (True, True)}
+LABELS = {"base": "Base", "tu2": "TU2", "base-plain": "Base (no extras)", "tu2-plain": "TU2 (no extras)"}
 WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
 # Rough upper bounds measured on Linux RelWithDebInfo builds.
@@ -63,10 +64,16 @@ def base_ready(game_dir):
 
 
 def tu2_ready(game_dir):
-    xex = game_dir / "Default.xex"
-    return ((game_dir / "applied-update-manifest.json").is_file() and xex.is_file()
+    """True for a complete overlay (`<game>/tu2`) or a complete separately staged folder."""
+    _, update_root, xex = tu2_layout(game_dir)
+    return ((update_root / "applied-update-manifest.json").is_file() and xex.is_file()
             and sha256(xex) == TU2_SHA256
-            and all((game_dir / "CPKs" / name).is_file() for name in TU2_CPKS))
+            and all((update_root / "CPKs" / name).is_file() for name in TU2_CPKS))
+
+
+def tu2_dir(args):
+    """The folder TU2 is built and run from: --game-dir-tu2, else the base folder (overlay)."""
+    return args.game_dir_tu2 or args.game_dir
 
 
 def stamp_matches(variant_dir, expected):
@@ -162,8 +169,8 @@ def build_patcher(args):
 
 
 def build_variant(args, variant):
-    tu2, extras = VARIANTS[variant]
-    game = args.game_dir_tu2 if tu2 else args.game_dir
+    tu2, plain = VARIANTS[variant]
+    game = tu2_dir(args) if tu2 else args.game_dir
     command = [sys.executable, SCRIPTS / ("build_windows.py" if WINDOWS else "build_linux.py"),
                "--game-dir", game, "--sdk-prefix", args.sdk_prefix, "--jobs", args.jobs]
     if WINDOWS:
@@ -172,8 +179,8 @@ def build_variant(args, variant):
         command += ["--cmake", args.cmake]
     if tu2:
         command += ["--title-update", "tu2"]
-    if extras:
-        command.append("--extra-features")
+    if plain:
+        command.append("--no-extra-features")
     # Reuse sources generated earlier in this or a previous run for the same executable.
     if not args.regenerate and stamp_matches("tu2" if tu2 else "linux", TU2_SHA256 if tu2 else DISC_SHA256):
         command.append("--skip-codegen")
@@ -185,15 +192,17 @@ def plan(args):
     steps = []
     wanted_tu2 = any(VARIANTS[v][0] for v in args.variants) or (args.data_only and args.title_update)
     need_base = not base_ready(args.game_dir)
-    need_tu2 = wanted_tu2 and not tu2_ready(args.game_dir_tu2)
+    overlay = args.game_dir_tu2 is None
+    need_tu2 = wanted_tu2 and not tu2_ready(tu2_dir(args))
     compile_needed = bool(args.variants) and not args.data_only
     need_sdk = compile_needed and not sdk_installed(args)
 
     if need_base and not args.iso:
         raise BuildError(f"No extracted disc in {args.game_dir}; choose your disc image (ISO).")
     if need_tu2:
-        if args.game_dir_tu2.exists():
-            raise BuildError(f"{args.game_dir_tu2} exists but is not a complete staged TU2; "
+        incomplete = args.game_dir / "tu2" if overlay else args.game_dir_tu2
+        if incomplete.exists():
+            raise BuildError(f"{incomplete} exists but is not a complete staged TU2; "
                              "move it aside or choose another TU2 game folder.")
         if not args.title_update:
             raise BuildError("TU2 builds need the USA Title Update 2 package (tu00000002_00000000).")
@@ -209,7 +218,7 @@ def plan(args):
     disc = disc_bytes(args.iso) if need_base else sum(
         f.stat().st_size for f in args.game_dir.rglob("*") if f.is_file())
     needed = disc if need_base else 0
-    if need_tu2 and not same_filesystem(args.game_dir, args.game_dir_tu2):
+    if need_tu2 and not overlay and not same_filesystem(args.game_dir, args.game_dir_tu2):
         needed += disc
     if compile_needed:
         needed += (SDK_BYTES if need_sdk else 0) + VARIANT_BYTES * len(args.variants) + CODEGEN_BYTES * 2
@@ -228,7 +237,10 @@ def plan(args):
             def patcher_step():
                 patcher[0] = build_patcher(args)
             steps.append(("Build TU2 patch tool", patcher_step))
-        steps.append(("Apply TU2", lambda: stage(args.game_dir, update_dir, args.game_dir_tu2, patcher[0])))
+        if overlay:
+            steps.append(("Apply TU2", lambda: stage_overlay(args.game_dir, update_dir, patcher[0])))
+        else:
+            steps.append(("Apply TU2", lambda: stage(args.game_dir, update_dir, args.game_dir_tu2, patcher[0])))
     if need_sdk:
         sdk = argparse.Namespace(sdk_source=args.sdk_source, sdk_prefix=args.sdk_prefix, jobs=args.jobs)
         if WINDOWS:
@@ -249,12 +261,14 @@ def main(argv=None):
     parser.add_argument("--title-update", type=pathlib.Path, metavar="PACKAGE",
                         help="USA Title Update 2 package (tu00000002_00000000)")
     parser.add_argument("--variants", default=None,
-                        help="Comma-separated builds: base, extras, tu2, tu2-extras "
+                        help="Comma-separated builds: base, tu2, base-plain, tu2-plain "
                              "(default: base, plus tu2 when a title update is given)")
     parser.add_argument("--data-only", action="store_true",
                         help="Only prepare the game folders; do not compile")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
-    parser.add_argument("--game-dir-tu2", type=pathlib.Path, default=ROOT / "game-tu2")
+    parser.add_argument("--game-dir-tu2", type=pathlib.Path, default=None,
+                        help="Stage TU2 as a complete separate folder here. By default TU2 is a small "
+                             "tu2/ overlay inside --game-dir (an existing ./game-tu2 is still used)")
     host = "win" if WINDOWS else "linux"
     parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / f"tools/rexglue-sdk-{host}")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / f"tools/rexglue-install-{host}")
@@ -273,6 +287,9 @@ def main(argv=None):
         unknown = [v for v in args.variants if v not in VARIANTS]
         if unknown:
             parser.error(f"unknown variant(s): {', '.join(unknown)}")
+    legacy = ROOT / "game-tu2"
+    if args.game_dir_tu2 is None and legacy.exists() and tu2_ready(legacy):
+        args.game_dir_tu2 = legacy
     for name in ("iso", "title_update", "game_dir", "game_dir_tu2", "sdk_source", "sdk_prefix", "patcher"):
         value = getattr(args, name)
         if value is not None:

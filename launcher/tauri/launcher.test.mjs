@@ -38,7 +38,7 @@ function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved =
   const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
     __TAURI__: { core: { invoke }, event: { listen } },
-    LAUNCHER_CAPS: { platform, builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game-tu2', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
+    LAUNCHER_CAPS: { platform, builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
     LAUNCHER_SETTINGS: { gameDir: '', gameDirTu2: '', userDataRoot: '', userDataRootTu2: '', vulkanDevice: -1, ...settings },
     SAVED_STATE: saved,
   });
@@ -116,7 +116,7 @@ test('Launch settings show defaults and save a blank Vulkan device as automatic'
   const { doc, click, calls } = tauriPage();
   click(doc.getElementById('setupBtn'));
   assert.equal(doc.getElementById('setup').hidden, false);
-  assert.equal(doc.getElementById('gameDirTu2').placeholder, '/r/game-tu2');
+  assert.equal(doc.getElementById('gameDirTu2'), null);
   assert.equal(doc.getElementById('vulkanDevice').value, '');
   assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras: .*tu2-extras/);
   doc.getElementById('userDataRoot').value = ' /saves ';

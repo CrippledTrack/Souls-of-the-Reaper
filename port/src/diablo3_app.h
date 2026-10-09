@@ -50,20 +50,31 @@ class Diablo3App : public rex::ReXApp {
     (void)config;
 #endif
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
+    d3::features::InitializeExtras();
+    if (d3::features::Enabled()) {
 #ifdef SOULS_GPU_PLUGIN
-    // GPU cvars are registered by the plugin, before its presentation/setup.
-    config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
-    if (!config.graphics) {
-      REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
-    }
+      // GPU cvars are registered by the plugin, before its presentation/setup.
+      config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
+      if (!config.graphics) {
+        REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
+      }
 #endif
-    d3::features::ApplySavedRenderScale(user_data_root());
+      d3::features::ApplySavedRenderScale(user_data_root());
+    }
 #endif
   }
 #endif
 #ifdef SOULS_GPU_PLUGIN
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
+#ifdef SOULS_TITLE_UPDATE_2
+    // Overlay layout: the pristine disc is the game root and the patched
+    // executable sits in <game>/tu2 beside the update CPKs (mounted as update:).
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(game_data_root() / "tu2" / "Default.xex", ec)) {
+      xex_image = "game:\\tu2\\Default.xex";
+    }
+#endif
   }
 #endif
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {

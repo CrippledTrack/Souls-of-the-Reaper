@@ -53,9 +53,8 @@ def link_or_copy(source, target):
         shutil.copy2(source, target)
 
 
-def stage(base_dir, update_dir, output, patcher):
-    if output.exists():
-        raise ValueError("Output already exists; choose a new staging directory")
+def verified_update(base_dir, update_dir):
+    """Check the base executable and extracted package; return (manifest, entries)."""
     base = (base_dir / "Default.xex").read_bytes()
     if hashlib.sha256(base).hexdigest() != DISC_SHA256:
         raise ValueError("Base-disc executable SHA-256 mismatch")
@@ -74,15 +73,56 @@ def stage(base_dir, update_dir, output, patcher):
         if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
             raise ValueError(f"Update file integrity failed: {entry['path']}")
     verify_patch_source(base, (update_dir / "Default.xexp").read_bytes())
+    return manifest, entries
+
+
+def apply_patch(base_dir, update_dir, patcher, patched):
+    """Patch the base executable into `patched` and return its verified SHA-256."""
+    subprocess.run([str(patcher.resolve()), str((base_dir / "Default.xex").resolve()),
+                    str((update_dir / "Default.xexp").resolve()), str(patched)], check=True)
+    patched_hash = hashlib.sha256(patched.read_bytes()).hexdigest()
+    if patched_hash != TU2_SHA256:
+        raise ValueError("Patched executable SHA-256 mismatch; no game directory staged")
+    return patched_hash
+
+
+def write_record(target, manifest, patched_hash):
+    record = dict(manifest, source_mismatch_allowed=False, compatibility_verified=True,
+                  base_executable_sha256=DISC_SHA256, patched_executable_sha256=patched_hash)
+    (target / "applied-update-manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+
+
+def stage_overlay(base_dir, update_dir, patcher):
+    """Add `<base>/tu2` (patched executable and update CPKs, about 27 MB) beside the disc.
+
+    The disc itself is untouched and is the game root; the folder is mounted as update:.
+    """
+    output = base_dir / "tu2"
+    if output.exists():
+        raise ValueError(f"{output} already exists; move it aside first")
+    manifest, entries = verified_update(base_dir, update_dir)
+    with tempfile.TemporaryDirectory(prefix="tu2-", dir=base_dir) as directory:
+        staged = Path(directory) / "tu2"
+        (staged / "CPKs").mkdir(parents=True)
+        patched_hash = apply_patch(base_dir, update_dir, patcher, staged / "Default.xex")
+        for entry in entries:
+            if entry["path"] != "Default.xexp":
+                shutil.copy2(update_dir / entry["path"], staged / entry["path"])
+        write_record(staged, manifest, patched_hash)
+        staged.rename(output)
+    return output
+
+
+def stage(base_dir, update_dir, output, patcher):
+    """Stage a complete, separate TU2 game folder (hardlinking unchanged disc files)."""
+    if output.exists():
+        raise ValueError("Output already exists; choose a new staging directory")
+    manifest, entries = verified_update(base_dir, update_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="tu2-", dir=output.parent) as directory:
         work = Path(directory)
         patched = work / "Default.xex"
-        subprocess.run([str(patcher.resolve()), str((base_dir / "Default.xex").resolve()),
-                        str((update_dir / "Default.xexp").resolve()), str(patched)], check=True)
-        patched_hash = hashlib.sha256(patched.read_bytes()).hexdigest()
-        if patched_hash != TU2_SHA256:
-            raise ValueError("Patched executable SHA-256 mismatch; no game directory staged")
+        patched_hash = apply_patch(base_dir, update_dir, patcher, patched)
         staged = work / "disc"
         shutil.copytree(base_dir, staged, copy_function=link_or_copy)
         # Unlink first: writing through a hardlink would modify the base disc.
@@ -94,9 +134,7 @@ def stage(base_dir, update_dir, output, patcher):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.unlink(missing_ok=True)
                 shutil.copy2(update_dir / entry["path"], target)
-        record = dict(manifest, source_mismatch_allowed=False, compatibility_verified=True,
-                      base_executable_sha256=DISC_SHA256, patched_executable_sha256=patched_hash)
-        (staged / "applied-update-manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+        write_record(staged, manifest, patched_hash)
         staged.rename(output)
     return output
 
@@ -105,12 +143,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--update", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path,
+                        help="Stage a complete separate game folder here (default: add the small "
+                             "tu2 overlay folder inside --base)")
     parser.add_argument("--patcher", type=Path, required=True,
                         help="d3-patch executable with the corrected signature check")
     args = parser.parse_args()
     try:
-        print(f"Staged verified TU2: {stage(args.base, args.update, args.output, args.patcher)}")
+        staged = (stage(args.base, args.update, args.output, args.patcher) if args.output
+                  else stage_overlay(args.base, args.update, args.patcher))
+        print(f"Staged verified TU2: {staged}")
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"TU2 staging failed: {error}\n")
 

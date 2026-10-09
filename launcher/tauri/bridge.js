@@ -9,7 +9,7 @@
   const settings = window.LAUNCHER_SETTINGS;
   const status = document.getElementById('launchStatus');
   const panel = document.getElementById('setup');
-  const fields = ['gameDir', 'gameDirTu2', 'userDataRoot', 'userDataRootTu2', 'vulkanDevice'];
+  const fields = ['gameDir', 'userDataRoot', 'userDataRootTu2', 'vulkanDevice'];
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {

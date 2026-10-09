@@ -18,7 +18,7 @@ import sys
 from apply_generated_patches import patch_generated
 from build_linux import PATCHES
 from codegen_title_update import generate_tu2
-from title_updates import DISC_SHA256, TU2_SHA256
+from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VS_CMAKE = pathlib.Path(r"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE"
@@ -106,11 +106,14 @@ def main():
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-win")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--title-update", choices=["tu2"], help="Build the verified USA TU2 executable separately")
-    parser.add_argument("--extra-features", action="store_true",
-                        help="Build optional PC menu settings and autosave wording in a separate directory")
+    parser.add_argument("--no-extra-features", dest="plain", action="store_true",
+                        help="Compile without the optional PC features (separate -plain directory). "
+                             "By default they are built in and switched on at launch with --extra_features")
+    parser.add_argument("--extra-features", action="store_true", help=argparse.SUPPRESS)  # now the default
     parser.add_argument("--skip-codegen", action="store_true", help="Reuse previously generated sources")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
     args = parser.parse_args()
+    args.extra_features = not args.plain
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     for name in ("sdk_source", "sdk_prefix", "game_dir"):
@@ -122,7 +125,7 @@ def main():
         rexglue = codegen_exe(args)
         if not (args.sdk_prefix / "lib/cmake/rexglue").is_dir():
             raise ValueError("SDK not installed; use --build-sdk")
-        xex = args.game_dir / "Default.xex"
+        xex = tu2_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
         expected = TU2_SHA256 if args.title_update else DISC_SHA256
         if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
             raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
@@ -144,7 +147,7 @@ def main():
                 generated.mkdir(parents=True, exist_ok=True)
                 (generated / "source-xex.sha256").write_text(expected + "\n")
             patch_generated(generated)
-        variant = ("tu2-" if args.title_update else "") + ("extras-" if args.extra_features else "")
+        variant = ("tu2-" if args.title_update else "") + ("" if args.extra_features else "plain-")
         build = ROOT / f"port/out/build/win-amd64-{variant}relwithdebinfo"
         options = [f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
                    f"-DSOULS_TITLE_UPDATE_2={'ON' if args.title_update else 'OFF'}"]

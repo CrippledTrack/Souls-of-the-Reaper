@@ -7,7 +7,7 @@ import os
 import pathlib
 import subprocess
 
-from title_updates import DISC_SHA256, TU2_SHA256
+from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -81,6 +81,9 @@ def launch_command(args, extra):
     }
     overrides = {arg.split("=", 1)[0] for arg in extra if arg.startswith("--")}
     extras = getattr(args, "extra_features", False)
+    plain = getattr(args, "plain", False)
+    if extras:
+        defaults["--extra_features"] = "true"
     if extras and "--fullscreen" in overrides:
         defaults["--pc_use_saved_window_mode"] = "false"
     use_saved = option_value(extra, "--pc_use_saved_render_scale", "true").lower() not in {"false", "0"}
@@ -90,11 +93,11 @@ def launch_command(args, extra):
         scale = saved_render_scale(state)
         if scale is not None:
             defaults["--resolution_scale"] = scale
-    name = "linux-amd64-extras-relwithdebinfo" if extras else "linux-amd64-relwithdebinfo"
+    name = "linux-amd64" + ("-tu2" if getattr(args, "title_update", None) else "") + ("-plain" if plain else "") + "-relwithdebinfo"
     if getattr(args, "title_update", None):
-        name = "linux-amd64-tu2-extras-relwithdebinfo" if extras else "linux-amd64-tu2-relwithdebinfo"
         # TU2 reads patch assets through update:\ even with a prepatched XEX.
-        defaults["--update_data_root"] = pathlib.Path(option_value(extra, "--game_data_root", str(args.game_dir.resolve())))
+        game_root = pathlib.Path(option_value(extra, "--game_data_root", str(args.game_dir.resolve())))
+        defaults["--update_data_root"] = tu2_layout(game_root)[1]
     return [str(ROOT / "port/out/build" / name / "diablo3"),
             *(f"{key}={value}" for key, value in defaults.items() if key not in overrides), *extra]
 
@@ -105,7 +108,9 @@ def main():
     mode.add_argument("--probe", action="store_true")
     mode.add_argument("--render-smoke", action="store_true")
     mode.add_argument("--extra-features", action="store_true",
-                      help="Run the optional PC menu settings build and read its saved render scale")
+                      help="Switch on the optional PC menu settings and read the saved render scale")
+    mode.add_argument("--plain", action="store_true",
+                      help="Run the build compiled without the optional PC features")
     parser.add_argument("--title-update", choices=["tu2"], help="Run the separate verified TU2 build")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,
@@ -127,16 +132,21 @@ def main():
         args.state_dir = data_home / name
     command = launch_command(args, extra)
     if not pathlib.Path(command[0]).is_file():
-        flag = " --probe" if args.probe or args.render_smoke else ((" --title-update tu2" if args.title_update else "") + (" --extra-features" if args.extra_features else ""))
+        flag = " --probe" if args.probe or args.render_smoke else ((" --title-update tu2" if args.title_update else "") + (" --no-extra-features" if args.plain else ""))
         parser.error("Executable missing; run scripts/build_linux.py" + flag)
     if not (args.probe or args.render_smoke):
         game = pathlib.Path(option_value(extra, "--game_data_root", str(args.game_dir.resolve())))
         if not game.is_absolute():
             game = ROOT / game
-        if not (game / "Default.xex").is_file():
-            parser.error("Game directory must contain Default.xex (Linux filenames are case-sensitive)")
+        xex = tu2_layout(game)[2] if args.title_update else game / "Default.xex"
+        if not xex.is_file():
+            parser.error("Game directory must contain Default.xex (Linux filenames are case-sensitive)"
+                         + ("; for TU2 run build_client.py or stage_title_update.py first" if args.title_update else ""))
         expected = TU2_SHA256 if args.title_update else DISC_SHA256
-        if hashlib.sha256((game / "Default.xex").read_bytes()).hexdigest() != expected:
+        if hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
+            if args.title_update and xex.parent == game:
+                parser.error(f"TU2 is not installed in {game} (there is no tu2/Default.xex). Add it with: "
+                             f"python3 scripts/build_client.py --title-update <Title Update 2 package> --game-dir {game} --variants tu2")
             parser.error(f"Executable SHA-256 does not match the {args.title_update or 'base-disc'} build; select the matching --title-update and --game-dir")
         state = pathlib.Path(option_value(extra, "--user_data_root", str(args.state_dir.resolve())))
         if not state.is_absolute():

@@ -44,10 +44,12 @@ python3 scripts/run_linux.py --game-dir /path/to/extracted/disc
 See [Linux build, diagnostics and integration notes](port/linux/README.md) for
 requirements, reuse of an existing SDK, saves, and GPU selection.
 
-An [optional PC features build](port/extra-features.md) adds a saved
+The [optional PC features](port/extra-features.md) add a saved
 resolution-scale setting and live window-mode selector to Options > Video, PC wording to the autosave
-warning, and ` + Extras` to the launch-screen version label. Use
-`--extra-features` on Linux or `-ExtraFeatures` on Windows to opt in.
+warning, and ` + Extras` to the launch-screen version label. They are built into
+the normal executable and switched on at launch: `--extra-features` on Linux,
+`-ExtraFeatures` on Windows, or "Base + Extras" in the launcher. Build with
+`--no-extra-features` (`-Plain` on Windows) to leave the code out entirely.
 
 ### Windows
 
@@ -64,8 +66,9 @@ warning, and ` + Extras` to the launch-screen version label. Use
 
 #### Steps
 
-For the optional modified-game build, add `-ExtraFeatures` to the build command
-in step 3. Launch it with `pwsh -File scripts\run_windows.ps1 -ExtraFeatures`.
+The optional features are already built in. Launch with them using
+`pwsh -File scripts\run_windows.ps1 -ExtraFeatures`; add `-Plain` to the build
+command in step 3 to compile without them.
 See [optional game features](port/extra-features.md) for details.
 
 **1. Apply SDK patches**

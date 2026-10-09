@@ -1,6 +1,6 @@
 # Optional PC features
 
-The extra-features build modifies the base game on Windows and Linux, and the
+The optional PC features modify the base game on Windows and Linux, and the
 verified USA TU2 build:
 
 - The press-button launch screen appends ` + Extras` to the original version.
@@ -15,10 +15,21 @@ verified USA TU2 build:
   `Xbox 360 Console`, `Xbox 360` and `Xbox360` wording with `PC`.
   Other localized wording is preserved.
 
-These features are disabled by default. CMake's `SOULS_ENABLE_EXTRA_FEATURES`
-option defaults to `OFF`; the extra hooks are compiled and linked only when
-it is `ON`. The base disc and TU2 use separate audited address maps with shared hook logic. Normal
-builds retain their existing game menus, autosave wording and version label.
+## Build-time and run-time switches
+
+The build scripts compile the features into the normal executable, but they
+stay **off at launch** until the `extra_features` cvar is set
+(`--extra_features=true`; the run scripts and graphical launcher do this for
+`--extra-features` / `-ExtraFeatures` / "Base + Extras"). Without it every hook
+hands straight back to the original game function, so the game keeps its
+existing menus, autosave wording and version label, and one executable serves
+both modes. The base disc and TU2 still need separate executables because they
+use separate audited address maps with shared hook logic.
+
+To compile **without** any of the extra code, build a plain executable with
+`--no-extra-features` (`-Plain` on `port\build.ps1`). It is written to a
+`-plain` directory next to the normal one. Direct CMake builds choose with
+`-DSOULS_ENABLE_EXTRA_FEATURES=ON|OFF` (default `OFF`).
 
 ## Windows
 
@@ -26,26 +37,27 @@ Use the existing Windows SDK and codegen steps from the main README, including
 `port\apply_generated_patches.ps1`. Then build and launch:
 
 ```powershell
-pwsh -File port\build.ps1 -Config RelWithDebInfo -ExtraFeatures
+pwsh -File port\build.ps1 -Config RelWithDebInfo
 pwsh -File scripts\run_windows.ps1 -Config RelWithDebInfo -ExtraFeatures
 ```
 
-`-Precompiled` remains available on the build script. The optional binary is
-`port\out\build\win-amd64-extras-relwithdebinfo\diablo3.exe`, separate from
-normal output. Debug and Release use `win-amd64-extras-<config>` directories.
+`-Precompiled` remains available on the build script. The binary is
+`port\out\build\win-amd64-relwithdebinfo\diablo3.exe`; a `-Plain` build goes to
+`win-amd64-plain-<config>`. Debug and Release use the same naming.
 
 The source-build launch script defaults to `game\` and `Documents\diablo3`.
 Use `-GameDir` and `-UserDataRoot` to select other directories. `-ResScale 2`
-explicitly overrides the saved in-game selection for that launch. The existing
-graphical launcher continues to select the normal executable; use the new
-script or launch the optional executable directly to test modified builds.
+explicitly overrides the saved in-game selection for that launch. The graphical
+launcher lists the executable twice, as `Base` and `Base + Extras`; the second
+adds `--extra_features=true`. Launching the executable directly needs that
+flag too.
 
 ## Linux
 
 After installing the Linux SDK and generating the base-disc sources:
 
 ```sh
-python3 scripts/build_linux.py --extra-features \
+python3 scripts/build_linux.py \
   --game-dir /path/to/extracted/disc
 python3 scripts/run_linux.py --extra-features \
   --game-dir /path/to/extracted/disc --vulkan_device=1
@@ -53,27 +65,28 @@ python3 scripts/run_linux.py --extra-features \
 
 Use `--sdk-prefix /path/to/installed/sdk` to reuse an existing SDK. Omit
 `--skip-codegen` for the first build or after changing codegen inputs.
-The optional executable is
-`port/out/build/linux-amd64-extras-relwithdebinfo/diablo3`; the normal executable
-remains in `port/out/build/linux-amd64-relwithdebinfo/diablo3`.
+The executable is
+`port/out/build/linux-amd64-relwithdebinfo/diablo3`; `--no-extra-features` builds
+`port/out/build/linux-amd64-plain-relwithdebinfo/diablo3` instead (run it with
+`run_linux.py --plain`).
 For direct CMake builds on either platform, use a separate build directory and
 pass `-DSOULS_ENABLE_EXTRA_FEATURES=ON` and
 `-DSOULS_BASE_XEX=/path/to/extracted/disc/Default.xex`. Generate and patch that
 platform's sources first. CMake verifies the executable hash and required
 hook function mappings.
 
-Both Linux launch modes use the existing user-data directory selected by
-`--state-dir` or `--user_data_root`. The optional launcher reads
-the `render_scale` value from `pc-settings.ini` there and supplies `--resolution_scale=N` at startup.
-The normal launcher ignores this file. A missing optional executable produces
-an error rather than launching the normal build.
+The user-data directory is the one selected by `--state-dir` or
+`--user_data_root`. With `--extra-features`, `run_linux.py` reads the
+`render_scale` value from `pc-settings.ini` there and supplies
+`--resolution_scale=N` at startup. Without it the file is ignored. A missing
+executable produces an error rather than launching a different build.
 
 ### Linux TU2
 
-Use the staged TU2 executable and assets with both flags:
+Use the staged TU2 executable and assets:
 
 ```sh
-python3 scripts/build_linux.py --title-update tu2 --extra-features \
+python3 scripts/build_linux.py --title-update tu2 \
   --sdk-prefix /path/to/rexglue-install \
   --game-dir /path/to/updated-tu2-disc \
   --cmake /path/to/cmake
@@ -81,9 +94,10 @@ python3 scripts/run_linux.py --title-update tu2 --extra-features --vulkan_device
   --game-dir /path/to/updated-tu2-disc
 ```
 
-The optional binary is `port/out/build/linux-amd64-tu2-extras-relwithdebinfo/diablo3`.
-It shares TU2 generated sources and the TU2 user-data directory with the normal
-TU2 build. The normal build ignores the saved render scale. For direct
+The binary is `port/out/build/linux-amd64-tu2-relwithdebinfo/diablo3`
+(`linux-amd64-tu2-plain-relwithdebinfo` with `--no-extra-features`). It uses the
+TU2 user-data directory, and ignores the saved render scale unless launched
+with `--extra-features`. For direct
 CMake builds, enable both `SOULS_TITLE_UPDATE_2` and `SOULS_ENABLE_EXTRA_FEATURES`
 and set `SOULS_BASE_XEX` to the patched TU2 `Default.xex`. Its required SHA-256 is
 `447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f`.

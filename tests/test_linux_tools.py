@@ -310,7 +310,7 @@ class TitleUpdateTests(unittest.TestCase):
             self.assertIn("D3RequestTitleUpdateExit();", text)
             self.assertNotIn("sub_831583B0", text)
 
-    def test_tu2_extra_features_select_separate_binary_and_saved_scale(self):
+    def test_tu2_extra_features_flag_and_plain_binary(self):
         with tempfile.TemporaryDirectory() as directory:
             state = pathlib.Path(directory)
             (state / "pc-settings.ini").write_text("window_mode=1\nrender_scale=2\n")
@@ -318,7 +318,8 @@ class TitleUpdateTests(unittest.TestCase):
                                       title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
                                       state_dir=state)
             command = launch_command(args, ["--vulkan_device=1"])
-            self.assertTrue(command[0].endswith("linux-amd64-tu2-extras-relwithdebinfo/diablo3"))
+            self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+            self.assertIn("--extra_features=true", command)
             self.assertIn("--resolution_scale=2", command)
             self.assertIn("--update_data_root=/tmp/tu2-disc", command)
             self.assertIn("--vulkan_device=1", command)
@@ -328,7 +329,11 @@ class TitleUpdateTests(unittest.TestCase):
             args.extra_features = False
             command = launch_command(args, [])
             self.assertNotIn("--resolution_scale=2", command)
+            self.assertNotIn("--extra_features=true", command)
             self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+            args.plain = True
+            command = launch_command(args, [])
+            self.assertTrue(command[0].endswith("linux-amd64-tu2-plain-relwithdebinfo/diablo3"))
 
     def test_tu2_never_patches_base_symbols(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -582,21 +587,21 @@ class BuildClientTests(unittest.TestCase):
         (self.root / "game").mkdir()
         (self.root / "prefix/bin").mkdir(parents=True)
         (self.root / "prefix/bin/rexglue").touch()
-        args = self.args(variants=["base", "tu2-extras"])
+        args = self.args(variants=["base", "tu2-plain"])
         with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, tu2_ready=mock.DEFAULT,
                                  missing_tools=mock.DEFAULT) as mocks:
             mocks["base_ready"].return_value = mocks["tu2_ready"].return_value = True
             mocks["missing_tools"].return_value = []
             steps = build_client.plan(args)
         self.assertEqual([title for title, _ in steps],
-                         ["Build Base (codegen and compile)", "Build TU2 + Extras (codegen and compile)"])
+                         ["Build Base (codegen and compile)", "Build TU2 (no extras) (codegen and compile)"])
         for regenerate, stamped in ((False, True), (True, True), (False, False)):
             args.regenerate = regenerate
             with mock.patch.object(build_client, "stamp_matches", return_value=stamped), \
                     mock.patch.object(build_client, "run") as run:
-                build_client.build_variant(args, "tu2-extras")
+                build_client.build_variant(args, "tu2-plain")
             command = [str(arg) for arg in run.call_args.args]
-            self.assertIn("--extra-features", command)
+            self.assertIn("--no-extra-features", command)
             self.assertEqual(command[command.index("--title-update") + 1], "tu2")
             self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
 

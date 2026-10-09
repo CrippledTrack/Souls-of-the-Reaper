@@ -12,8 +12,9 @@ does not apply to Linux.
 A separate [verified USA TU2 setup](../title_updates/tu2/README.md) stages the updated executable
 and assets, with dedicated codegen, binary and user-data paths. Use
 `--title-update tu2` with the staged `--game-dir` to build or launch it.
-The default remains the unmodified base disc. Add `--extra-features` for TU2
-PC menu features; Windows uses the same TU2 guest configuration.
+The default remains the unmodified base disc. Add `--extra-features` when
+launching TU2 to switch on the PC menu features; Windows uses the same TU2
+guest configuration.
 
 ## Build and run
 
@@ -26,11 +27,11 @@ The simplest route is one command from your disc image (the
 
 ```sh
 python3 scripts/build_client.py --iso /path/to/disc.iso \
-  [--title-update /path/to/tu00000002_00000000] [--variants base,extras,tu2,tu2-extras]
+  [--title-update /path/to/tu00000002_00000000] [--variants base,tu2,base-plain,tu2-plain]
 ```
 
-It checks the disc, extracts it to `game/`, optionally stages TU2 in
-`game-tu2/`, builds the pinned SDK, and compiles the selected builds. Finished
+It checks the disc, extracts it to `game/`, optionally adds TU2 as a small
+`game/tu2/` overlay, builds the pinned SDK, and compiles the selected builds. Finished
 steps are skipped, so you can run it again after an interruption. Use `--check`
 to validate the inputs and list the remaining steps.
 
@@ -106,8 +107,9 @@ an existing `--sdk-prefix`, it must also include `rexglue-keyboard.patch`.
 
 An [optional extra-features build](../extra-features.md) adds an in-game resolution
 scale setting, PC wording for the autosave warning, and ` + Extras` on the
-launch-screen version label. Use `--extra-features`
-when building and launching to opt in; the normal build keeps these disabled.
+launch-screen version label. They are compiled in by default and switched on by
+launching with `--extra-features`; without it the game is unchanged. Build with
+`--no-extra-features` to leave the code out of the executable.
 
 To compare the experimental faster host render-target path with FSI, use
 `--render_target_path_vulkan=host`. Check lighting, textures and effects as well

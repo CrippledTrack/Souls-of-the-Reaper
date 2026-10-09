@@ -7,14 +7,14 @@ import pathlib
 import subprocess
 
 from apply_generated_patches import patch_generated
-from title_updates import TU2_SHA256
+from title_updates import TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def generate_tu2(game_dir, rexglue, skip_codegen=False):
     game_dir = pathlib.Path(game_dir).resolve()
-    xex = game_dir / "Default.xex"
+    xex = tu2_layout(game_dir)[2]
     if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != TU2_SHA256:
         raise ValueError("Default.xex must match the verified USA TU2 executable")
     generated = ROOT / "port/generated/tu2"
@@ -27,9 +27,8 @@ def generate_tu2(game_dir, rexglue, skip_codegen=False):
         stamp.unlink(missing_ok=True)
         manifest_dir = ROOT / "port/title_updates/tu2"
         manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
-        for suffix in ("", "/Default.xex"):
-            manifest = manifest.replace(json.dumps("../../../game-tu2" + suffix),
-                                        json.dumps(game_dir.as_posix() + suffix))
+        manifest = manifest.replace(json.dumps("../../../game-tu2/Default.xex"), json.dumps(xex.as_posix()))
+        manifest = manifest.replace(json.dumps("../../../game-tu2"), json.dumps(game_dir.as_posix()))
         local = manifest_dir / "local_manifest.toml"
         local.write_text(manifest, encoding="utf-8")
         subprocess.run([str(rexglue), "codegen", str(local)], cwd=ROOT, check=True)

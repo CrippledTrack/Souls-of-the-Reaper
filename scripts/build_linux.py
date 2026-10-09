@@ -9,7 +9,7 @@ import subprocess
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_tu2
-from title_updates import DISC_SHA256, TU2_SHA256
+from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
@@ -66,8 +66,10 @@ def main():
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--title-update", choices=["tu2"], help="Build the verified USA TU2 executable separately")
     parser.add_argument("--probe", action="store_true", help="Build asset-free GPU and rendering diagnostics")
-    parser.add_argument("--extra-features", action="store_true",
-                        help="Build optional PC menu settings and autosave wording in a separate directory")
+    parser.add_argument("--no-extra-features", dest="plain", action="store_true",
+                        help="Compile without the optional PC features (separate -plain directory). "
+                             "By default they are built in and switched on at launch with --extra_features")
+    parser.add_argument("--extra-features", action="store_true", help=argparse.SUPPRESS)  # now the default
     parser.add_argument("--skip-codegen", action="store_true", help="Reuse previously generated Linux sources")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cmake", default="cmake")
@@ -76,8 +78,7 @@ def main():
         parser.error("--jobs must be positive")
     if args.title_update and args.probe:
         parser.error("--title-update cannot be combined with --probe")
-    if args.probe and args.extra_features:
-        parser.error("--probe and --extra-features cannot be combined")
+    args.extra_features = not args.plain and not args.probe
     for name in ("sdk_source", "sdk_prefix", "game_dir"):
         setattr(args, name, getattr(args, name).resolve())
     cmake = shutil.which(args.cmake)
@@ -91,7 +92,7 @@ def main():
         if args.probe:
             source, build = ROOT / "port/probe", ROOT / "port/out/build/linux-probe"
         else:
-            xex = args.game_dir / "Default.xex"
+            xex = tu2_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
             expected = TU2_SHA256 if args.title_update else DISC_SHA256
             if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
@@ -115,9 +116,7 @@ def main():
                 (generated / "source-xex.sha256").write_text(expected + "\n")
             if not args.title_update:
                 patch_generated(generated)
-            name = "linux-amd64-extras-relwithdebinfo" if args.extra_features else "linux-amd64-relwithdebinfo"
-            if args.title_update:
-                name = "linux-amd64-tu2-extras-relwithdebinfo" if args.extra_features else "linux-amd64-tu2-relwithdebinfo"
+            name = "linux-amd64" + ("-tu2" if args.title_update else "") + ("" if args.extra_features else "-plain") + "-relwithdebinfo"
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [
             f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",

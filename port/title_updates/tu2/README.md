@@ -12,6 +12,20 @@ to select the discrete NVIDIA GPU on the validation system.
 | TU2 package | `faf9feaa28e75035e61a960231d2c27f0bed3b7676db65747fa25352f19bddf3` |
 | Patched `Default.xex` | `447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f` |
 
+## Game folder layout
+
+By default TU2 is a small overlay inside the base game folder: `game/tu2/` holds
+the patched `Default.xex`, the four update CPKs and `applied-update-manifest.json`
+(about 27 MB). `game/` stays the unmodified disc and is the game root; `game/tu2`
+is mounted as `update:`, and TU2 builds load `game:\tu2\Default.xex` when it
+exists. Create it with `scripts/build_client.py`, or with
+`scripts/stage_title_update.py --base game --update ... --patcher ...` (no
+`--output`). Pass `--game-dir game` wherever a TU2 command takes `--game-dir`.
+
+The older layout, a complete separately staged folder (`--output`, or
+`build_client.py --game-dir-tu2`), is still detected and works unchanged.
+Saves stay separate either way.
+
 ## Linux build and launch
 
 Stage the extracted TU2 into a separate disc directory containing the patched
@@ -41,10 +55,11 @@ folder as both `game:` and `update:` so the guest can find the patch CPKs. The
 staged folder contains no XEXP, so the executable is not patched a second time.
 
 Keyboard input and F11 work through the shared application/SDK controls.
-Mouse input remains opt-in with `--mnk_mouse=true`. Add `--extra-features` to both the build and launch commands for the Video
+Mouse input remains opt-in with `--mnk_mouse=true`. Add `--extra-features` to the launch command for the Video
 render-resolution selector, PC autosave wording, and ` + Extras` version suffix.
-The optional binary is `linux-amd64-tu2-extras-relwithdebinfo/diablo3` under
-`port/out/build`; it uses the same TU2 user-data directory. See the
+The code is built into the normal `linux-amd64-tu2-relwithdebinfo/diablo3` under
+`port/out/build`; `--no-extra-features` at build time produces
+`linux-amd64-tu2-plain-relwithdebinfo` without it. Both use the same TU2 user-data directory. See the
 [extra-feature audit](extra-features-audit.json) and
 [feature documentation](../../extra-features.md). Windows builds use the shared TU2 codegen and hooks; native Windows validation is pending.
 
@@ -133,12 +148,12 @@ Generate and build on Windows with a matching SDK codegen executable:
 
 ```powershell
 python scripts/codegen_title_update.py --game-dir C:/games/updated-tu2-disc --rexglue C:/sdk/bin/rexglue.exe
-cmake --preset win-amd64-relwithdebinfo -S port -B port/out/build/win-amd64-tu2-extras-relwithdebinfo -DSOULS_TITLE_UPDATE_2=ON -DSOULS_ENABLE_EXTRA_FEATURES=ON -DSOULS_BASE_XEX=C:/games/updated-tu2-disc/Default.xex -DCMAKE_PREFIX_PATH=C:/sdk
-cmake --build port/out/build/win-amd64-tu2-extras-relwithdebinfo
+cmake --preset win-amd64-relwithdebinfo -S port -B port/out/build/win-amd64-tu2-relwithdebinfo -DSOULS_TITLE_UPDATE_2=ON -DSOULS_ENABLE_EXTRA_FEATURES=ON -DSOULS_BASE_XEX=C:/games/updated-tu2-disc/Default.xex -DCMAKE_PREFIX_PATH=C:/sdk
+cmake --build port/out/build/win-amd64-tu2-relwithdebinfo
 pwsh -File scripts/run_windows.ps1 -TitleUpdate tu2 -ExtraFeatures -GameDir C:/games/updated-tu2-disc
 ```
 
-Alternatively, `port/build.ps1 -TitleUpdate tu2 -GameDir ... [-ExtraFeatures]`
+Alternatively, `port/build.ps1 -TitleUpdate tu2 -GameDir ... [-Plain]`
 runs shared codegen before building (the SDK's codegen executable must already
 be built; `-Rexglue C:/sdk/bin/rexglue.exe` overrides its location). TU2 binaries and default save directories remain separate from base
 builds on both platforms. Native Windows build/runtime testing is pending.
