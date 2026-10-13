@@ -7,7 +7,7 @@
   every codegen run, before building.
 
 .DESCRIPTION
-  Two patches, both documented as "deuda tecnica" in CLAUDE.md:
+  Two game-specific patches:
 
   1. setjmp/longjmp fix (diablo3_recomp.108.cpp, sub_831583B0/sub_83158680):
      the recompiler mistranslates the guest setjmp/longjmp pair (truncated at

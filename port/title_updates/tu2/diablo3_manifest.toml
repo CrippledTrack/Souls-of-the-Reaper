@@ -1,0 +1,10 @@
+# Verified USA TU2, execution version 0x202; kept separate from the base disc.
+[project]
+name = "diablo3"
+sdk_version = "0.10.0"
+game_root = "../../../game-tu2"
+
+[entrypoint]
+file_path = "../../../game-tu2/Default.xex"
+out_directory_path = "../../generated/tu2"
+includes = ["config/thunks.toml", "config/callbacks.toml", "config/leaf-functions.toml", "config/branch-entry.toml"]

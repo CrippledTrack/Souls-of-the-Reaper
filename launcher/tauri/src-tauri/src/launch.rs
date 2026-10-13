@@ -1,0 +1,993 @@
+//! Build discovery, game-folder validation and game arguments. Kept free of
+//! Tauri so both platforms' launch rules are unit-tested on any host. The
+//! rules mirror scripts/run_linux.py and scripts/run_windows.ps1.
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+/// Verified guest executables (scripts/title_updates.py).
+pub const BASE_HASH: &str = "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef";
+pub const TU2_HASH: &str = "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f";
+/// Update assets a staged TU2 folder must hold (scripts/stage_title_update.py).
+pub const TU2_CPKS: [&str; 4] = [
+    "Patch.cpk",
+    "Patch2.cpk",
+    "enUS_Patch.cpk",
+    "enUS_Patch2.cpk",
+];
+/// Only executables compiled with the optional PC features register this cvar.
+const EXTRAS_MARKER: &[u8] = b"pc_use_saved_render_scale";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Platform {
+    Windows,
+    Linux,
+}
+
+impl Platform {
+    pub fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Linux
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Platform::Windows => "windows",
+            Platform::Linux => "linux",
+        }
+    }
+    fn build_prefix(self) -> &'static str {
+        match self {
+            Platform::Windows => "win-amd64",
+            Platform::Linux => "linux-amd64",
+        }
+    }
+    fn executable(self) -> &'static str {
+        match self {
+            Platform::Windows => "diablo3.exe",
+            Platform::Linux => "diablo3",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Build {
+    pub id: String,
+    pub label: String,
+    pub tu2: bool,
+    /// Launch with `--extra_features`. An executable that carries the features
+    /// is offered twice, with and without this, so the plain game stays one click away.
+    pub extras: bool,
+    pub executable: PathBuf,
+    /// Release installs pair the executable with the game folder beside it.
+    pub game_dir: Option<PathBuf>,
+}
+
+fn variant(tu2: bool, extras: bool) -> (&'static str, &'static str) {
+    match (tu2, extras) {
+        (false, false) => ("base", "Base"),
+        (false, true) => ("extras", "Base + Extras"),
+        (true, false) => ("tu2", "TU2"),
+        (true, true) => ("tu2-extras", "TU2 + Extras"),
+    }
+}
+
+fn make_build(tu2: bool, extras: bool, executable: PathBuf, game_dir: Option<PathBuf>) -> Build {
+    let (id, label) = variant(tu2, extras);
+    Build {
+        id: id.into(),
+        label: label.into(),
+        tu2,
+        extras,
+        executable,
+        game_dir,
+    }
+}
+
+/// Where a TU2 game folder keeps its files: `(update root, executable)`. The overlay
+/// layout puts the patched executable and update CPKs in `<game>/tu2` beside the
+/// unmodified disc; otherwise the folder is a complete staged copy.
+pub fn tu2_layout(game: &Path) -> (PathBuf, PathBuf) {
+    let overlay = game.join("tu2");
+    if overlay.join("Default.xex").is_file() {
+        (overlay.clone(), overlay.join("Default.xex"))
+    } else {
+        (game.to_path_buf(), game.join("Default.xex"))
+    }
+}
+
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    let data = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&data)))
+}
+
+fn has_extras_marker(executable: &Path) -> bool {
+    fs::read(executable)
+        .map(|data| {
+            data.windows(EXTRAS_MARKER.len())
+                .any(|w| w == EXTRAS_MARKER)
+        })
+        .unwrap_or(false)
+}
+
+/// Adds the builds an executable offers: plain, and with extras when it was
+/// compiled with the optional PC features. Earlier entries win a duplicate.
+fn push_builds(
+    builds: &mut Vec<Build>,
+    tu2: bool,
+    has_extras: bool,
+    executable: &Path,
+    game_dir: Option<&Path>,
+) {
+    for extras in [false, true] {
+        if (extras && !has_extras) || builds.iter().any(|b| b.tu2 == tu2 && b.extras == extras) {
+            continue;
+        }
+        builds.push(make_build(
+            tu2,
+            extras,
+            executable.to_path_buf(),
+            game_dir.map(Path::to_path_buf),
+        ));
+    }
+}
+
+/// Finds game builds for `platform`. A release install keeps one executable
+/// beside the launcher and its game folder; its TU2 flavour is read from that
+/// folder's Default.xex and whether it carries the extras from the executable
+/// itself. A source checkout is found from `search_from` upwards and offers
+/// every built `port/out/build/<platform>-amd64[-tu2][-plain]-<config>`
+/// variant (`-plain` was compiled without the extras).
+pub fn discover_builds(
+    platform: Platform,
+    launcher_dir: &Path,
+    search_from: &[PathBuf],
+) -> Vec<Build> {
+    let mut builds = Vec::new();
+    let installed = launcher_dir.join(platform.executable());
+    if installed.is_file() {
+        let game = launcher_dir.join("game");
+        let tu2 = sha256_file(&tu2_layout(&game).1).is_ok_and(|h| h == TU2_HASH);
+        push_builds(&mut builds, tu2, has_extras_marker(&installed), &installed, Some(&game));
+    }
+    if let Some(root) = repository_root(search_from) {
+        for (tu2, plain) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut name = platform.build_prefix().to_string();
+            if tu2 {
+                name += "-tu2";
+            }
+            if plain {
+                name += "-plain";
+            }
+            let found = ["relwithdebinfo", "release", "debug"]
+                .iter()
+                .find_map(|config| {
+                    let exe = root
+                        .join("port/out/build")
+                        .join(format!("{name}-{config}"))
+                        .join(platform.executable());
+                    exe.is_file().then_some(exe)
+                });
+            if let Some(exe) = found {
+                push_builds(&mut builds, tu2, !plain, &exe, None);
+            }
+        }
+    }
+    builds
+}
+
+pub fn repository_root(search_from: &[PathBuf]) -> Option<PathBuf> {
+    search_from.iter().find_map(|start| {
+        start
+            .ancestors()
+            .find(|p| p.join("port/CMakeLists.txt").is_file())
+            .map(Path::to_path_buf)
+    })
+}
+
+/// Launcher settings persisted in launcher.json. Empty strings use defaults.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Settings {
+    pub game_dir: String,
+    pub game_dir_tu2: String,
+    pub user_data_root: String,
+    pub user_data_root_tu2: String,
+    /// Linux only; -1 lets the SDK choose.
+    pub vulkan_device: i32,
+    /// Last inputs of the Build panel (scripts/build_client.py).
+    pub build_iso: String,
+    pub build_title_update: String,
+    pub build_cmake: String,
+    pub ui_state: serde_json::Value,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            game_dir: String::new(),
+            game_dir_tu2: String::new(),
+            user_data_root: String::new(),
+            user_data_root_tu2: String::new(),
+            vulkan_device: -1,
+            build_iso: String::new(),
+            build_title_update: String::new(),
+            build_cmake: String::new(),
+            ui_state: serde_json::Value::Null,
+        }
+    }
+}
+
+/// Reads launcher.json. The first prototype stored one game/save folder plus a
+/// `tu2` flag; a TU2 entry moves to the TU2 fields so its saves stay in use.
+pub fn parse_settings(data: &[u8]) -> Settings {
+    let Ok(raw) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return Settings::default();
+    };
+    let mut settings: Settings = serde_json::from_value(raw.clone()).unwrap_or_default();
+    if raw.get("tu2") == Some(&serde_json::Value::Bool(true)) && raw.get("gameDirTu2").is_none() {
+        settings.game_dir_tu2 = std::mem::take(&mut settings.game_dir);
+        settings.user_data_root_tu2 = std::mem::take(&mut settings.user_data_root);
+    }
+    settings
+}
+
+/// Folder defaults shown as placeholders and used for empty settings.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Defaults {
+    pub game_dir: PathBuf,
+    pub game_dir_tu2: PathBuf,
+    pub user_data_root: PathBuf,
+    pub user_data_root_tu2: PathBuf,
+}
+
+/// Linux matches run_linux.py ($XDG_DATA_HOME/souls-of-the-reaper[-tu2]).
+/// Windows matches run_windows.ps1 and the SDK default (Documents\diablo3).
+pub fn default_folders(platform: Platform, base: &Path, user_base: &Path) -> Defaults {
+    let (user, user_tu2) = match platform {
+        Platform::Linux => (
+            user_base.join("souls-of-the-reaper"),
+            user_base.join("souls-of-the-reaper-tu2"),
+        ),
+        Platform::Windows => (user_base.join("diablo3"), user_base.join("diablo3-tu2")),
+    };
+    Defaults {
+        game_dir: base.join("game"),
+        // TU2 is an overlay inside the game folder unless a full staged copy exists.
+        game_dir_tu2: if base.join("game-tu2").exists() {
+            base.join("game-tu2")
+        } else {
+            base.join("game")
+        },
+        user_data_root: user,
+        user_data_root_tu2: user_tu2,
+    }
+}
+
+fn choose(setting: &str, default: &Path) -> PathBuf {
+    if setting.trim().is_empty() {
+        default.to_path_buf()
+    } else {
+        PathBuf::from(setting.trim())
+    }
+}
+
+/// The game folder TU2 runs from. TU2 is normally an overlay (`<game>/tu2`) inside the
+/// base game folder, so that folder is used. An older full staged copy still works: a
+/// saved TU2 folder that holds an executable, else a `game-tu2` default that exists.
+fn tu2_game_folder(settings: &Settings, defaults: &Defaults, base_game: &Path) -> PathBuf {
+    let saved = settings.game_dir_tu2.trim();
+    if !saved.is_empty() && Path::new(saved).join("Default.xex").is_file() {
+        return PathBuf::from(saved);
+    }
+    if base_game.join("tu2").join("Default.xex").is_file() {
+        return base_game.to_path_buf();
+    }
+    if defaults.game_dir_tu2 != defaults.game_dir {
+        return defaults.game_dir_tu2.clone();
+    }
+    base_game.to_path_buf()
+}
+
+/// Base and TU2 game folders (often the same folder): settings, then defaults.
+pub fn game_folders(settings: &Settings, defaults: &Defaults) -> (PathBuf, PathBuf) {
+    let base = choose(&settings.game_dir, &defaults.game_dir);
+    let tu2 = tu2_game_folder(settings, defaults, &base);
+    (base, tu2)
+}
+
+/// Game and save folders for `build`: settings, then the release pairing,
+/// then defaults. TU2 uses separate save folders so saves never mix.
+pub fn folders_for(build: &Build, settings: &Settings, defaults: &Defaults) -> (PathBuf, PathBuf) {
+    let base_default = build.game_dir.as_deref().unwrap_or(&defaults.game_dir);
+    let base = choose(&settings.game_dir, base_default);
+    if build.tu2 {
+        (
+            tu2_game_folder(settings, defaults, &base),
+            choose(&settings.user_data_root_tu2, &defaults.user_data_root_tu2),
+        )
+    } else {
+        (base, choose(&settings.user_data_root, &defaults.user_data_root))
+    }
+}
+
+/// Windows `canonicalize` returns `\\?\C:\...` paths, which the Windows API does not
+/// normalise: the game appends `tu2/Default.xex` with a forward slash and then fails to
+/// open it. Drop the prefix for plain drive paths.
+pub fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().into_owned();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
+/// Checks the game folder holds the executable this build was compiled for.
+pub fn validate_game_dir(build: &Build, game: &Path) -> Result<(), String> {
+    let (update_root, tu2_xex) = tu2_layout(game);
+    let xex = if build.tu2 { tu2_xex } else { game.join("Default.xex") };
+    if !xex.is_file() {
+        return Err(format!(
+            "{} has no Default.xex. Choose the {} game folder in Launch settings (Linux filenames are case-sensitive).",
+            game.display(),
+            if build.tu2 { "staged TU2" } else { "extracted base-disc" }
+        ));
+    }
+    let hash = sha256_file(&xex)?;
+    let (expected, other, wanted, found) = if build.tu2 {
+        (TU2_HASH, BASE_HASH, "the staged TU2", "the base-disc")
+    } else {
+        (BASE_HASH, TU2_HASH, "the unmodified base-disc", "the TU2")
+    };
+    if hash != expected {
+        if build.tu2 && hash == other && xex.parent() == Some(game) {
+            return Err(format!(
+                "TU2 is not installed in {} (there is no tu2/Default.xex). Open Launch settings, choose Build from disc image… and pick the Title Update 2 package to add it.",
+                game.display()
+            ));
+        }
+        return Err(if hash == other {
+            format!(
+                "{} holds {found} executable; the {} build needs {wanted} folder.",
+                game.display(),
+                build.label
+            )
+        } else {
+            format!("Default.xex in {} is not the verified USA Ultimate Evil Edition {wanted} executable.", game.display())
+        });
+    }
+    if build.tu2 {
+        if let Some(missing) = TU2_CPKS
+            .iter()
+            .find(|n| !update_root.join("CPKs").join(n).is_file())
+        {
+            return Err(format!(
+                "Missing TU2 asset CPKs/{missing} in {}.",
+                update_root.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Build ids scripts/build_client.py accepts.
+/// `-plain` compiles without the optional PC features.
+pub const BUILD_VARIANTS: [&str; 4] = ["base", "tu2", "base-plain", "tu2-plain"];
+
+/// Inputs of the Build panel.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildRequest {
+    pub iso: String,
+    pub title_update: String,
+    pub variants: Vec<String>,
+    pub cmake: String,
+}
+
+/// Arguments for scripts/build_client.py, writing into the launcher's game
+/// folders. The script compiles with build_linux.py or build_windows.py,
+/// whichever matches the host.
+pub fn build_client_arguments(
+    _platform: Platform,
+    repo: &Path,
+    request: &BuildRequest,
+    game: &Path,
+    game_tu2: &Path,
+) -> Result<Vec<String>, String> {
+    let mut args = vec![
+        repo.join("scripts/build_client.py").display().to_string(),
+        format!("--game-dir={}", game.display()),
+    ];
+    // One folder for both means TU2 is built as an overlay inside it.
+    if game_tu2 != game {
+        args.push(format!("--game-dir-tu2={}", game_tu2.display()));
+    }
+    for (flag, value) in [
+        ("--iso", &request.iso),
+        ("--title-update", &request.title_update),
+        ("--cmake", &request.cmake),
+    ] {
+        if !value.trim().is_empty() {
+            args.push(format!("{flag}={}", value.trim()));
+        }
+    }
+    if let Some(bad) = request
+        .variants
+        .iter()
+        .find(|v| !BUILD_VARIANTS.contains(&v.as_str()))
+    {
+        return Err(format!("Unknown build {bad}."));
+    }
+    if request.variants.is_empty() {
+        return Err("Choose at least one build.".into());
+    }
+    args.push(format!("--variants={}", request.variants.join(",")));
+    Ok(args)
+}
+
+/// Choices from the launcher menu (buildLaunchConfig in the HTML).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameOptions {
+    pub build: Option<String>,
+    pub fps: u32,
+    pub vsync: bool,
+    pub mnk_mouse: bool,
+    pub present: String,
+    /// 0 keeps the extras build's saved in-game scale.
+    pub res_scale: u32,
+    /// None keeps the extras build's saved in-game window mode.
+    pub fullscreen: Option<bool>,
+    pub lang_id: u32,
+    pub country_id: u32,
+    pub rtp: String,
+    pub vk_path: String,
+}
+
+pub fn launch_arguments(
+    platform: Platform,
+    build: &Build,
+    game: &Path,
+    user: &Path,
+    options: &GameOptions,
+    vulkan_device: i32,
+) -> Result<Vec<String>, String> {
+    if options.res_scale > 3 || (options.res_scale == 0 && !build.extras) {
+        return Err("Choose a supported internal resolution.".into());
+    }
+    if options.fullscreen.is_none() && !build.extras {
+        return Err("Choose fullscreen or windowed.".into());
+    }
+    let mut args = vec![
+        format!("--game_data_root={}", game.display()),
+        format!("--user_data_root={}", user.display()),
+    ];
+    if build.extras {
+        args.push("--extra_features=true".into());
+    }
+    if build.tu2 {
+        // TU2 reads its patch CPKs through update:\ even with a prepatched XEX.
+        args.push(format!("--update_data_root={}", tu2_layout(game).0.display()));
+    }
+    match platform {
+        Platform::Linux => {
+            if !["fsi", "host"].contains(&options.vk_path.as_str()) {
+                return Err("Unsupported Vulkan render path.".into());
+            }
+            args.push(format!("--cache_root={}", user.join("cache").display()));
+            args.push(format!("--log_file={}", user.join("diablo3.log").display()));
+            args.push(format!("--render_target_path_vulkan={}", options.vk_path));
+            args.push(format!("--vsync={}", options.vsync));
+            if vulkan_device >= 0 {
+                args.push(format!("--vulkan_device={vulkan_device}"));
+            }
+        }
+        Platform::Windows => {
+            if !["rov", "rtv"].contains(&options.rtp.as_str()) {
+                return Err("Unsupported render path.".into());
+            }
+            if ![30, 60, 120, 144, 240].contains(&options.fps) {
+                return Err("Unsupported frame rate.".into());
+            }
+            if !["fsr", "cas", "bilinear"].contains(&options.present.as_str()) {
+                return Err("Unsupported image scaling.".into());
+            }
+            args.push(format!("--render_target_path_d3d12={}", options.rtp));
+            args.push("--rtv_color_depth_ownership_mode=8".into());
+            args.push("--execute_unclipped_draw_vs_on_cpu=true".into());
+            args.push(format!("--d3_frame_limit={}", options.fps));
+            args.push(format!("--vsync={}", options.vsync));
+            args.push(format!("--present_effect={}", options.present));
+            args.push("--mnk_cursor_visible=false".into());
+        }
+    }
+    args.push("--mnk_mode=true".into());
+    args.push(format!("--mnk_mouse={}", options.mnk_mouse));
+    args.push(format!("--user_language={}", options.lang_id));
+    args.push(format!("--user_country={}", options.country_id));
+    if options.res_scale > 0 {
+        args.push(format!("--draw_resolution_scale_x={}", options.res_scale));
+        args.push(format!("--draw_resolution_scale_y={}", options.res_scale));
+        if build.extras {
+            args.push("--pc_use_saved_render_scale=false".into());
+        }
+    }
+    if let Some(fullscreen) = options.fullscreen {
+        args.push(format!("--fullscreen={fullscreen}"));
+        if build.extras {
+            args.push("--pc_use_saved_window_mode=false".into());
+        }
+    }
+    Ok(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options() -> GameOptions {
+        GameOptions {
+            build: None,
+            fps: 120,
+            vsync: false,
+            mnk_mouse: false,
+            present: "fsr".into(),
+            res_scale: 2,
+            fullscreen: Some(true),
+            lang_id: 1,
+            country_id: 103,
+            rtp: "rtv".into(),
+            vk_path: "fsi".into(),
+        }
+    }
+
+    fn request(variants: &[&str]) -> BuildRequest {
+        BuildRequest {
+            iso: " /isos/d3 usa.iso ".into(),
+            title_update: String::new(),
+            variants: variants.iter().map(|v| v.to_string()).collect(),
+            cmake: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_arguments_target_launcher_game_folders() {
+        let args = build_client_arguments(
+            Platform::Linux,
+            Path::new("/repo"),
+            &request(&["base", "tu2-plain"]),
+            Path::new("/g/base"),
+            Path::new("/g/tu2"),
+        )
+        .unwrap();
+        let script = Path::new("/repo").join("scripts/build_client.py");
+        assert_eq!(
+            args,
+            [
+                script.to_str().unwrap(),
+                "--game-dir=/g/base",
+                "--game-dir-tu2=/g/tu2",
+                "--iso=/isos/d3 usa.iso",
+                "--variants=base,tu2-plain",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_arguments_reject_unknown_or_missing_builds() {
+        let folders = (Path::new("/g"), Path::new("/t"));
+        let run = |platform, variants: &[&str]| {
+            build_client_arguments(platform, Path::new("/r"), &request(variants), folders.0, folders.1)
+        };
+        for platform in [Platform::Linux, Platform::Windows] {
+            assert!(run(platform, &[]).is_err());
+            assert!(run(platform, &["base;rm"]).is_err());
+        }
+        let windows = run(Platform::Windows, &["base", "tu2"]).unwrap();
+        assert!(windows.contains(&"--variants=base,tu2".to_string()));
+        assert!(!windows.contains(&"--data-only".to_string()));
+    }
+
+    fn build(tu2: bool, extras: bool) -> Build {
+        make_build(tu2, extras, PathBuf::from("diablo3"), None)
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sotr-launcher-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn tu2_mounts_update_root_and_keeps_paths_with_spaces() {
+        let game = Path::new("/tmp/game with spaces");
+        let args = launch_arguments(
+            Platform::Linux,
+            &build(true, false),
+            game,
+            Path::new("/s d"),
+            &options(),
+            1,
+        )
+        .unwrap();
+        assert!(args.contains(&"--game_data_root=/tmp/game with spaces".into()));
+        assert!(args.contains(&"--update_data_root=/tmp/game with spaces".into()));
+        let log = Path::new("/s d").join("diablo3.log");
+        assert!(args.contains(&format!("--log_file={}", log.display())));
+        let base = launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            game,
+            Path::new("/s"),
+            &options(),
+            1,
+        )
+        .unwrap();
+        assert!(!base.iter().any(|a| a.starts_with("--update_data_root")));
+    }
+
+    #[test]
+    fn linux_omits_d3d12_and_windows_only_options() {
+        let args = launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &options(),
+            -1,
+        )
+        .unwrap();
+        assert!(args.contains(&"--render_target_path_vulkan=fsi".into()));
+        assert!(!args.iter().any(|a| a.contains("d3d12")
+            || a.contains("d3_frame_limit")
+            || a.contains("present_effect")));
+        assert!(
+            !args.iter().any(|a| a.starts_with("--vulkan_device")),
+            "auto device passes nothing"
+        );
+        let pinned = launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &options(),
+            0,
+        )
+        .unwrap();
+        assert!(pinned.contains(&"--vulkan_device=0".into()));
+    }
+
+    #[test]
+    fn windows_passes_d3d12_presentation_and_frame_limit() {
+        let args = launch_arguments(
+            Platform::Windows,
+            &build(false, false),
+            Path::new("C:\\g"),
+            Path::new("C:\\s"),
+            &options(),
+            1,
+        )
+        .unwrap();
+        for expected in [
+            "--render_target_path_d3d12=rtv",
+            "--d3_frame_limit=120",
+            "--present_effect=fsr",
+            "--vsync=false",
+        ] {
+            assert!(args.contains(&expected.into()), "{expected}");
+        }
+        assert!(!args.iter().any(|a| a.contains("vulkan")));
+    }
+
+    #[test]
+    fn extras_in_game_choices_leave_saved_settings_alone() {
+        let mut opts = options();
+        opts.res_scale = 0;
+        opts.fullscreen = None;
+        let args = launch_arguments(
+            Platform::Linux,
+            &build(false, true),
+            Path::new("/g"),
+            Path::new("/s"),
+            &opts,
+            -1,
+        )
+        .unwrap();
+        assert!(!args.iter().any(|a| a.contains("resolution_scale")
+            || a.contains("pc_use_saved")
+            || a.starts_with("--fullscreen")));
+        // The same choices are invalid for a normal build.
+        assert!(launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &opts,
+            -1
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn extras_flag_is_only_passed_when_chosen() {
+        let run = |extras| {
+            launch_arguments(
+                Platform::Linux,
+                &build(false, extras),
+                Path::new("/g"),
+                Path::new("/s"),
+                &options(),
+                -1,
+            )
+            .unwrap()
+        };
+        assert!(run(true).contains(&"--extra_features=true".to_string()));
+        assert!(!run(false).iter().any(|a| a.starts_with("--extra_features")));
+    }
+
+    #[test]
+    fn extras_explicit_choices_override_saved_settings() {
+        let args = launch_arguments(
+            Platform::Windows,
+            &build(true, true),
+            Path::new("/g"),
+            Path::new("/s"),
+            &options(),
+            -1,
+        )
+        .unwrap();
+        for expected in [
+            "--draw_resolution_scale_x=2",
+            "--pc_use_saved_render_scale=false",
+            "--fullscreen=true",
+            "--pc_use_saved_window_mode=false",
+        ] {
+            assert!(args.contains(&expected.into()), "{expected}");
+        }
+        let normal = launch_arguments(
+            Platform::Windows,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &options(),
+            -1,
+        )
+        .unwrap();
+        assert!(
+            !normal.iter().any(|a| a.starts_with("--pc_use_saved")),
+            "normal builds lack these cvars"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_values() {
+        let mut opts = options();
+        opts.res_scale = 4;
+        assert!(launch_arguments(
+            Platform::Linux,
+            &build(false, true),
+            Path::new("/g"),
+            Path::new("/s"),
+            &opts,
+            -1
+        )
+        .is_err());
+        let mut opts = options();
+        opts.vk_path = "rov".into();
+        assert!(launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &opts,
+            -1
+        )
+        .is_err());
+        let mut opts = options();
+        opts.fps = 75;
+        assert!(launch_arguments(
+            Platform::Windows,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &opts,
+            -1
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn discovers_source_builds_by_variant_and_prefers_relwithdebinfo() {
+        let root = scratch("discover");
+        fs::create_dir_all(root.join("port")).unwrap();
+        fs::write(root.join("port/CMakeLists.txt"), "").unwrap();
+        for dir in [
+            "linux-amd64-relwithdebinfo",
+            "linux-amd64-tu2-plain-release",
+            "linux-amd64-tu2-plain-relwithdebinfo",
+            "win-amd64-relwithdebinfo",
+        ] {
+            let path = root.join("port/out/build").join(dir);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(
+                path.join(if dir.starts_with("win") {
+                    "diablo3.exe"
+                } else {
+                    "diablo3"
+                }),
+                "",
+            )
+            .unwrap();
+        }
+        let builds = discover_builds(
+            Platform::Linux,
+            &root.join("launcher"),
+            &[root.join("launcher/tauri")],
+        );
+        let ids: Vec<_> = builds.iter().map(|b| b.id.as_str()).collect();
+        // The full build is offered with and without extras; the plain TU2 build only without.
+        assert_eq!(ids, ["base", "extras", "tu2"]);
+        assert_eq!(builds[0].executable, builds[1].executable);
+        assert!(builds[2]
+            .executable
+            .ends_with("linux-amd64-tu2-plain-relwithdebinfo/diablo3"));
+        let windows = discover_builds(Platform::Windows, &root, std::slice::from_ref(&root));
+        assert_eq!(windows.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn release_install_detects_extras_from_the_executable() {
+        let root = scratch("release");
+        fs::write(root.join("diablo3"), b"...pc_use_saved_render_scale...").unwrap();
+        let builds = discover_builds(Platform::Linux, &root, &[]);
+        assert_eq!(builds.len(), 2);
+        assert!(!builds[0].extras && builds[1].extras && !builds[1].tu2);
+        assert_eq!(
+            builds[0].game_dir.as_deref(),
+            Some(root.join("game").as_path())
+        );
+        fs::write(root.join("diablo3"), b"plain").unwrap();
+        let builds = discover_builds(Platform::Linux, &root, &[]);
+        assert_eq!(builds.len(), 1);
+        assert!(!builds[0].extras);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn validation_names_the_folder_mismatch() {
+        let game = scratch("validate");
+        assert!(validate_game_dir(&build(false, false), &game)
+            .unwrap_err()
+            .contains("no Default.xex"));
+        fs::write(game.join("Default.xex"), "not a real xex").unwrap();
+        assert!(validate_game_dir(&build(true, false), &game)
+            .unwrap_err()
+            .contains("not the verified"));
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn missing_settings_fields_keep_automatic_vulkan_device() {
+        let settings = parse_settings(br#"{"gameDir":"/g","executable":"old prototype field"}"#);
+        assert_eq!(
+            (settings.game_dir.as_str(), settings.vulkan_device),
+            ("/g", -1)
+        );
+        assert_eq!(parse_settings(b"not json").vulkan_device, -1);
+    }
+
+    #[test]
+    fn prototype_tu2_settings_move_to_tu2_folders() {
+        let settings = parse_settings(
+            br#"{"gameDir":"/tu2","userDataRoot":"/saves","tu2":true,"vulkanDevice":1}"#,
+        );
+        assert_eq!(settings.game_dir_tu2, "/tu2");
+        assert_eq!(settings.user_data_root_tu2, "/saves");
+        assert!(settings.game_dir.is_empty() && settings.user_data_root.is_empty());
+        assert_eq!(settings.vulkan_device, 1);
+        // Files written by this launcher are never migrated again.
+        let current = parse_settings(br#"{"gameDir":"/base","gameDirTu2":"/tu2","tu2":true}"#);
+        assert_eq!(current.game_dir, "/base");
+    }
+
+    #[test]
+    fn plain_path_drops_the_verbatim_drive_prefix_only() {
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\C:\Users\me\game")),
+            PathBuf::from(r"C:\Users\me\game")
+        );
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
+        );
+        assert_eq!(plain_path(PathBuf::from("/home/me/game")), PathBuf::from("/home/me/game"));
+    }
+
+    #[test]
+    fn tu2_uses_the_base_folder_unless_an_older_staged_copy_exists() {
+        let root = scratch("tu2folder");
+        let defaults = default_folders(Platform::Linux, &root, Path::new("/data"));
+        let mut settings = Settings::default();
+        // Overlay or nothing built yet: TU2 shares the base folder.
+        assert_eq!(game_folders(&settings, &defaults).1, root.join("game"));
+        // A stale saved TU2 folder without an executable is ignored.
+        settings.game_dir_tu2 = root.join("gone").display().to_string();
+        assert_eq!(game_folders(&settings, &defaults).1, root.join("game"));
+        // A saved folder that still holds an executable is honoured.
+        let old = root.join("old-tu2");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("Default.xex"), "x").unwrap();
+        settings.game_dir_tu2 = old.display().to_string();
+        assert_eq!(game_folders(&settings, &defaults).1, old);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tu2_overlay_mounts_its_folder_as_update_and_validates_there() {
+        let game = scratch("overlay");
+        let overlay = game.join("tu2");
+        fs::create_dir_all(overlay.join("CPKs")).unwrap();
+        // Without the overlay executable the folder is a plain staged copy.
+        assert_eq!(tu2_layout(&game).0, game);
+        fs::write(overlay.join("Default.xex"), "x").unwrap();
+        assert_eq!(tu2_layout(&game).0, overlay);
+        let args = launch_arguments(
+            Platform::Linux,
+            &build(true, false),
+            &game,
+            Path::new("/s"),
+            &options(),
+            -1,
+        )
+        .unwrap();
+        assert!(args.contains(&format!("--update_data_root={}", overlay.display())));
+        assert!(validate_game_dir(&build(true, false), &game)
+            .unwrap_err()
+            .contains("not the verified"));
+        // One folder for both versions builds TU2 as an overlay: no second folder is passed.
+        let request = BuildRequest {
+            iso: String::new(),
+            title_update: String::new(),
+            variants: vec!["tu2".into()],
+            cmake: String::new(),
+        };
+        let args = build_client_arguments(Platform::Linux, Path::new("/r"), &request, &game, &game).unwrap();
+        assert!(!args.iter().any(|a| a.starts_with("--game-dir-tu2")));
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn tu2_uses_separate_folders_and_settings_override_defaults() {
+        let defaults = default_folders(Platform::Linux, Path::new("/repo"), Path::new("/data"));
+        let mut settings = Settings::default();
+        let (game, user) = folders_for(&build(true, true), &settings, &defaults);
+        assert_eq!(
+            (game.as_path(), user.as_path()),
+            (
+                Path::new("/repo/game"),
+                Path::new("/data/souls-of-the-reaper-tu2")
+            )
+        );
+        settings.game_dir = " /custom ".into();
+        let (game, user) = folders_for(&build(false, false), &settings, &defaults);
+        assert_eq!(
+            (game.as_path(), user.as_path()),
+            (Path::new("/custom"), Path::new("/data/souls-of-the-reaper"))
+        );
+        let windows = default_folders(Platform::Windows, Path::new("/r"), Path::new("/Documents"));
+        assert!(
+            windows.user_data_root.ends_with("diablo3")
+                && windows.user_data_root_tu2.ends_with("diablo3-tu2")
+        );
+    }
+}

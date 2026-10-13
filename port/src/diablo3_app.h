@@ -2,6 +2,9 @@
 
 #pragma once
 
+// Every host loads the Xenos GPU plugin shipped with the pinned SDK.
+#define SOULS_GPU_PLUGIN 1
+
 #include <filesystem>
 #include <memory>
 
@@ -12,6 +15,14 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
+#include "window_features.h"
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+#include "features/pc_features.h"
+#ifdef SOULS_GPU_PLUGIN
+#include <rex/system/gpu_plugin.h>
+#endif
+#endif
+#include <rex/ui/keybinds.h>
 
 class Diablo3App : public rex::ReXApp {
  public:
@@ -27,7 +38,61 @@ class Diablo3App : public rex::ReXApp {
   // ...]"). GetName() ("diablo3") is untouched on purpose - it also names the
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
+#if !defined(__linux__) && !defined(SOULS_TITLE_UPDATE_2)
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
+#endif
+
+#if defined(SOULS_GPU_PLUGIN) || defined(SOULS_ENABLE_EXTRA_FEATURES)
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+#ifdef SOULS_GPU_PLUGIN
+    config.gpu_plugin = "xenos";
+#else
+    (void)config;
+#endif
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+    d3::features::InitializeExtras();
+    if (d3::features::Enabled()) {
+#ifdef SOULS_GPU_PLUGIN
+      // GPU cvars are registered by the plugin, before its presentation/setup.
+      config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
+      if (!config.graphics) {
+        REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
+      }
+#endif
+      d3::features::ApplySavedRenderScale(user_data_root());
+    }
+#endif
+  }
+#endif
+#ifdef SOULS_GPU_PLUGIN
+  void OnLoadXexImage(std::string& xex_image) override {
+    xex_image = "game:\\Default.xex";
+#ifdef SOULS_TITLE_UPDATE_2
+    // Overlay layout: the pristine disc is the game root and the patched
+    // executable sits in <game>/tu2 beside the update CPKs (mounted as update:).
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(game_data_root() / "tu2" / "Default.xex", ec)) {
+      xex_image = "game:\\tu2\\Default.xex";
+    }
+#endif
+  }
+#endif
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+#ifdef SOULS_ENABLE_EXTRA_FEATURES
+    d3::features::InitializeWindowMode(*window(), user_data_root());
+#endif
+    (void)drawer;
+    title_ = CreateWindowTelemetry(app_context(), window());
+  }
+  void OnShutdown() override { title_.reset(); }
+  void OnKeyDown(rex::ui::KeyEvent& event) override {
+    if (event.virtual_key() == rex::ui::VirtualKey::kF11) {
+      if (!event.prev_state()) window()->SetFullscreen(!window()->IsFullscreen());
+      event.set_handled(true);
+      return;
+    }
+    rex::ui::ProcessKeyEvent(event);
+  }
 
   // FATX cache device setup.
   // Diablo mounts cache:\ as a FATX volume by reading \Device\Harddisk0\Partition0
@@ -67,4 +132,6 @@ class Diablo3App : public rex::ReXApp {
       REXLOG_ERROR("Failed to register cache: volume");
     }
   }
+ private:
+  std::unique_ptr<WindowTelemetry> title_;
 };
