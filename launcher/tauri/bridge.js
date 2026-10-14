@@ -9,12 +9,12 @@
   const settings = window.LAUNCHER_SETTINGS;
   const status = document.getElementById('launchStatus');
   const panel = document.getElementById('setup');
-  const fields = ['gameDir', 'userDataRoot', 'userDataRootTu2', 'vulkanDevice'];
+  const fields = ['gameDir', 'userDataRoot', 'userDataRootTu2', 'username', 'vulkanDevice'];
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {
-    const { lang, path, fps, scale, res, display, mouse, vkpath, vsync } = state;
-    return { lang, path, fps, scale, res, display, mouse, vkpath, vsync, build: curBuild() ? curBuild().id : null };
+    const { lang, path, fps, scale, res, display, mouse, vkpath, vsync, backend } = state;
+    return { lang, path, fps, scale, res, display, mouse, vkpath, vsync, backend, build: curBuild() ? curBuild().id : null };
   };
   function fillSettings() {
     fields.forEach(key => {
@@ -32,7 +32,7 @@
   }
   function showStatus(text) { status.textContent = text; }
 
-  document.getElementById('deviceLabel').hidden = caps.platform !== 'linux';
+  document.getElementById('deviceLabel').hidden = !(caps.backends || []).includes('vulkan');
   function listBuilds() {
     document.getElementById('buildList').textContent = caps.builds.length
       ? caps.builds.map(b => `${b.label}: ${b.executable}`).join('\n')
@@ -66,6 +66,26 @@
     document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update 2 package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
   }
   document.getElementById('openBuild').hidden = !caps.canBuild;
+  // TU2 is an overlay on the base game, and each variant is a full separate
+  // compile, so a TU2 build replaces its base counterpart instead of joining it.
+  // Only these events switch the selection; the user can still tick Base again.
+  const variantBox = value => variantBoxes.find(b => b.value === value);
+  const BASE_OF = { tu2: 'base', 'tu2-plain': 'base-plain' };
+  function titleUpdateAdded() {
+    const bases = Object.entries(BASE_OF).filter(([, base]) => variantBox(base).checked);
+    if (bases.length) {
+      bases.forEach(([tu, base]) => { variantBox(base).checked = false; variantBox(tu).checked = true; });
+    } else if (!variantBoxes.some(b => b.checked && b.value.startsWith('tu2'))) {
+      variantBox('tu2').checked = true;
+    }
+  }
+  variantBoxes.forEach(box => box.addEventListener('change', () => {
+    const base = BASE_OF[box.value];
+    if (base && box.checked) variantBox(base).checked = false;
+  }));
+  document.getElementById('buildTitleUpdate').addEventListener('change', event => {
+    if (event.target.value.trim()) titleUpdateAdded();
+  });
   function openBuild() {
     Object.keys(buildInputs).forEach(key => { document.getElementById(key).value = settings[key] ?? ''; });
     panel.hidden = true; buildPanel.hidden = false;
@@ -97,10 +117,8 @@
       const path = await invoke('pick_file', { kind });
       if (!path) return;
       button.previousElementSibling.value = path;
-      // A title update usually means a TU2 build is wanted.
-      if (kind === 'titleUpdate' && !variantBoxes.some(b => b.checked && b.value.startsWith('tu2'))) {
-        variantBoxes.find(b => b.value === 'tu2').checked = true;
-      }
+      // A title update means a TU2 build is wanted, in place of the base one.
+      if (kind === 'titleUpdate') titleUpdateAdded();
     } catch (error) { buildStep.textContent = String(error); }
   }));
   document.getElementById('cancelBuild').addEventListener('click', () => {
@@ -128,6 +146,11 @@
       buildStep.textContent = String(error);
     } finally { setBuilding(false); }
   });
+  // Same signal as the launcher's TU2 autoselect (caps.tu2Installed): once the
+  // update is there, the Build panel opens on TU2 instead of Base so a rebuild
+  // does not make both. A saved package path counts too. Applied once, so a
+  // deliberate Base tick later is left alone.
+  if (caps.tu2Installed || (settings.buildTitleUpdate ?? '').trim()) titleUpdateAdded();
   if (!caps.builds.length && caps.canBuild) openBuild();
 
   window.LAUNCHER_HOST = {

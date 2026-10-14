@@ -112,6 +112,7 @@ def main():
     mode.add_argument("--plain", action="store_true",
                       help="Run the build compiled without the optional PC features")
     parser.add_argument("--title-update", choices=["tu2"], help="Run the separate verified TU2 build")
+    parser.add_argument("--username", help="In-game player name (max 15 characters)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,
                         help="Override the user data directory (TU2 uses a separate default)")
@@ -163,7 +164,8 @@ def main():
         except OSError as error:
             parser.exit(1, f"Cannot create user data directory: {error}\n")
     try:
-        raise SystemExit(subprocess.run(command, cwd=ROOT).returncode)
+        env = {**os.environ, "SOTR_USERNAME": args.username} if args.username else None
+        raise SystemExit(subprocess.run(command, cwd=ROOT, env=env).returncode)
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except OSError as error:

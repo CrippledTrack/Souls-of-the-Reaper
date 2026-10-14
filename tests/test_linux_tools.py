@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
             subprocess.run([compiler, "-std=c++23", "-Wall", "-Wextra", "-Werror",
                             f"-I{ROOT / 'tests/fixtures/exit'}",
                             str(ROOT / "tests/linux_exit.cpp"),
-                            str(ROOT / "port/src/linux_exit.cpp"),
+                            str(ROOT / "port/src/base_exit.cpp"),
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
 

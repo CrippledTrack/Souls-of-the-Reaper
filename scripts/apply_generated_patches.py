@@ -75,7 +75,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", nargs="?", type=pathlib.Path,
-                        default=ROOT / "port/generated/linux")
+                        default=ROOT / "port/generated/base")
     parser.add_argument("--title-update", choices=["tu2"])
     args = parser.parse_args()
     try:

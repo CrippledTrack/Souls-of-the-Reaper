@@ -9,12 +9,10 @@ import subprocess
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_tu2
+from sdk_patches import apply_common_patches
 from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
-           "rexglue-object-reference.patch", "rexglue-keyboard.patch",
-           "rexglue-wait-precision.patch", "rexglue-idle-toast.patch")
 
 
 def run(*args):
@@ -22,7 +20,7 @@ def run(*args):
 
 
 def build_sdk(args, cmake):
-    lock = json.loads((ROOT / "port/linux/rexglue.lock.json").read_text())
+    lock = json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
     sdk = args.sdk_source
     if not sdk.exists():
         run("git", "clone", "--no-checkout", lock["repository"], sdk)
@@ -31,13 +29,7 @@ def build_sdk(args, cmake):
     if actual != lock["commit"]:
         raise ValueError(f"SDK revision mismatch: {actual}; expected {lock['commit']}")
     run("git", "-C", sdk, "submodule", "update", "--init", "--recursive")
-    for name in PATCHES:
-        patch = ROOT / "patches/linux" / name
-        applied = subprocess.run(["git", "-C", str(sdk), "apply", "--reverse", "--check", str(patch)],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        if not applied:
-            run("git", "-C", sdk, "apply", "--check", patch)
-            run("git", "-C", sdk, "apply", patch)
+    apply_common_patches(sdk)
     build = ROOT / "port/out/sdk-linux"
     run(cmake, "-S", sdk, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
@@ -96,12 +88,12 @@ def main():
             expected = TU2_SHA256 if args.title_update else DISC_SHA256
             if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
-            variant = "tu2" if args.title_update else "linux"
+            variant = "tu2" if args.title_update else "base"
             generated = ROOT / "port/generated" / variant
             if args.title_update:
                 generate_tu2(args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
             elif not args.skip_codegen:
-                manifest_dir = ROOT / "port/linux"
+                manifest_dir = ROOT / "port/base"
                 game_placeholder = "../../game"
                 manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
                 # JSON strings also encode paths safely as TOML basic strings.

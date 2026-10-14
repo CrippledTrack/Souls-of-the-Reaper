@@ -15,7 +15,7 @@
 #ifdef SOULS_TITLE_UPDATE_2
 #include "generated/tu2/diablo3_pch.h"
 #else
-#include "generated/linux/diablo3_pch.h"
+#include "generated/base/diablo3_pch.h"
 #endif
 #ifndef _WIN32
 #include <dlfcn.h>
@@ -33,11 +33,18 @@
 namespace {
 std::atomic<uint64_t> swaps{0};
 std::atomic<uint64_t> dimensions{0};
+// Name of the renderer in use, taken from what the process actually loaded so
+// the title never claims a backend that failed to start. Both renderers live in
+// one GPU plugin; gpu_backend picks one at launch and 'any' resolves to D3D12.
+std::string_view RendererName() {
 #ifdef _WIN32
-constexpr std::string_view backend = "D3D12";
+  if (rex::cvar::GetFlagByName("gpu_backend") == "vulkan")
+    return GetModuleHandleW(L"vulkan-1.dll") ? "Vulkan" : "Renderer pending";
+  return GetModuleHandleW(L"d3d12.dll") ? "D3D12" : "Renderer pending";
 #else
-constexpr std::string_view backend = "Vulkan";
+  return "Vulkan";
 #endif
+}
 
 using OriginalSwap = void (*)(PPCContext &, uint8_t *);
 OriginalSwap ResolveOriginalSwap() {
@@ -74,7 +81,7 @@ class WindowStatus final : public WindowTelemetry {
 public:
   WindowStatus(rex::ui::WindowedAppContext &context, rex::ui::Window *window)
       : context_(context), window_(window) {
-    window_->SetTitle("Souls of the Reaper | Starting | " + std::string(backend));
+    window_->SetTitle("Souls of the Reaper | Starting | " + std::string(RendererName()));
     ticker_ = std::thread([this] { Run(); });
   }
   ~WindowStatus() override {
@@ -147,7 +154,7 @@ private:
       title << " | Render " << (size >> 32) * scale_x << 'x'
             << uint32_t(size) * scale_y;
     title << " | Window " << window.GetActualPhysicalWidth() << 'x'
-          << window.GetActualPhysicalHeight() << " | " << backend;
+          << window.GetActualPhysicalHeight() << " | " << RendererName();
     window.SetTitle(title.str());
   }
 

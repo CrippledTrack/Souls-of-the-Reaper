@@ -3,7 +3,7 @@
 #ifdef SOULS_TITLE_UPDATE_2
 #include "generated/tu2/diablo3_init.h"
 #else
-#include "generated/linux/diablo3_init.h"
+#include "generated/base/diablo3_init.h"
 #endif
 
 #include "diablo3_app.h"

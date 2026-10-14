@@ -65,8 +65,8 @@ verify modifications from an installed SDK's version string. `--build-sdk`
 verifies the source revision and applies each tracked patch idempotently.
 `--sdk-source` selects a source checkout when building the SDK.
 
-Generated Linux sources live in `port/generated/linux`, separate from Windows
-sources in `port/generated/default`. Rebuild with `--skip-codegen` after changing
+Generated Linux sources live in `port/generated/base`, shared by the
+Windows build. Rebuild with `--skip-codegen` after changing
 host code. Regenerate after changing SDK codegen, manifests, or guest function
 hints. Direct CMake builds require previously generated and patched sources.
 
@@ -135,15 +135,15 @@ and `scripts/check_texture_exponents.py`; consult their `--help` output.
 
 ## Imported work and adaptations
 
-- `patches/linux/rexglue-keyboard.patch`: enables the game keyboard layout, supports
+- `patches/common/rexglue-keyboard.patch`: enables the game keyboard layout, supports
   Shift alongside movement, emits controller keystrokes for menus, gates mouse
   clicks behind mouse mode, and suppresses gameplay input while typing in dialogs.
-- `patches/linux/rexglue-registration.patch`: faster bulk function registration
+- `patches/common/rexglue-registration.patch`: faster bulk function registration
   and gap cleanup; `tests/rexglue_registration.cpp` compares against original
   behavior and runs during SDK builds.
-- `patches/linux/rexglue-texture-exponent.patch`: reads texture exponent bias
+- `patches/common/rexglue-texture-exponent.patch`: reads texture exponent bias
   from fetch word 3 rather than unrelated sampler state in word 4.
-- `patches/linux/rexglue-object-reference.patch`: implements native-object
+- `patches/common/rexglue-object-reference.patch`: implements native-object
   retain and avoids corrupting enumerator bodies on reference/dereference.
 - `config/`: audited base-disc callbacks, tail-call thunks and 85 leaf entries,
   kept separate from the existing Windows hints.

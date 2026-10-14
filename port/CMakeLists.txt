@@ -32,8 +32,8 @@ endif()
 if(SOULS_TITLE_UPDATE_2)
     include(title_updates/rexglue.cmake)
 else()
-    # Linux and Windows share the pinned SDK and the codegen in generated/linux.
-    include(linux/rexglue.cmake)
+    # Every platform shares the pinned SDK and the base-disc codegen in generated/base.
+    include(base/rexglue.cmake)
 endif()
 
 # Sources
@@ -45,7 +45,7 @@ set(DIABLO3_SOURCES
 if(SOULS_TITLE_UPDATE_2)
     list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp)
 else()
-    list(APPEND DIABLO3_SOURCES src/linux_exit.cpp)
+    list(APPEND DIABLO3_SOURCES src/base_exit.cpp)
 endif()
 
 if(WIN32)
@@ -63,7 +63,7 @@ if(SOULS_ENABLE_EXTRA_FEATURES)
     if(SOULS_TITLE_UPDATE_2)
         set(_souls_init "${CMAKE_CURRENT_SOURCE_DIR}/generated/tu2/diablo3_init.cpp")
     else()
-        set(_souls_init "${CMAKE_CURRENT_SOURCE_DIR}/generated/linux/diablo3_init.cpp")
+        set(_souls_init "${CMAKE_CURRENT_SOURCE_DIR}/generated/base/diablo3_init.cpp")
     endif()
     if(NOT EXISTS "${_souls_init}")
         message(FATAL_ERROR "Run platform codegen before enabling extra features")

@@ -6,6 +6,8 @@
   pwsh -File scripts/run_windows.ps1 -ExtraFeatures -Config RelWithDebInfo
 .EXAMPLE
   pwsh -File scripts/run_windows.ps1 -ExtraFeatures -ResScale 2
+.EXAMPLE
+  pwsh -File scripts/run_windows.ps1 -Backend vulkan -ExtraFeatures
 #>
 param(
     [switch]$ExtraFeatures,
@@ -15,6 +17,7 @@ param(
     [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
     [string]$Config = 'RelWithDebInfo',
     [string]$GameDir = (Join-Path $PSScriptRoot '..\game'),
+    [string]$Username,
     [string]$UserDataRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'diablo3'),
     [ValidateSet(1, 2, 3)]
     [int]$ResScale = 1,
@@ -22,7 +25,15 @@ param(
     [string]$WindowMode,
     # ROV is the faithful path; auto/RTV render Diablo III's aliased lighting black on some GPUs.
     [ValidateSet("rov", "rtv")]
-    [string]$RenderPath = "rov"
+    [string]$RenderPath = "rov",
+    # Both renderers are in the same executable; this selects one at launch (--gpu_backend).
+    [ValidateSet("d3d12", "vulkan")]
+    [string]$Backend = "d3d12",
+    # Vulkan render-target path: fsi (faithful, needs fragment shader interlock) or host.
+    [ValidateSet("fsi", "host")]
+    [string]$VulkanPath = "fsi",
+    # Physical device index for --vulkan_device; -1 leaves the choice automatic.
+    [int]$VulkanDevice = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,9 +49,9 @@ if ($TitleUpdate) {
 $buildDir = Join-Path $root "port\out\build\$buildName"
 $exe = Join-Path $buildDir 'diablo3.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
-    $updateFlag = if ($TitleUpdate) { " -TitleUpdate $TitleUpdate -GameDir `"$GameDir`"" } else { "" }
-    $featureFlag = if ($Plain) { ' -Plain' } else { '' }
-    throw "Executable missing. Build with: pwsh -File port/build.ps1 -Config $Config$featureFlag$updateFlag"
+    $tuArg = if ($TitleUpdate) { " --title-update $TitleUpdate" } else { '' }
+    $plainArg = if ($Plain) { ' --no-extra-features' } else { '' }
+    throw "Executable missing. Build with: python scripts/build_windows.py$tuArg$plainArg"
 }
 $game = (Resolve-Path -LiteralPath $GameDir).Path
 # TU2 is either an overlay (<game>\tu2 holds the patched executable and update CPKs) or a full staged copy.
@@ -74,7 +85,9 @@ function ConvertTo-QuotedArgument([string]$Value) {
 }
 $arguments = @('--game_data_root', (ConvertTo-QuotedArgument $game),
     '--user_data_root', (ConvertTo-QuotedArgument $state),
-    "--render_target_path_d3d12=$RenderPath")
+    "--gpu_backend=$Backend",
+    $(if ($Backend -eq 'vulkan') { "--render_target_path_vulkan=$VulkanPath" } else { "--render_target_path_d3d12=$RenderPath" }))
+if ($Backend -eq 'vulkan' -and $VulkanDevice -ge 0) { $arguments += "--vulkan_device=$VulkanDevice" }
 if ($ExtraFeatures) { $arguments += '--extra_features=true' }
 if ($TitleUpdate) { $arguments += @('--update_data_root', (ConvertTo-QuotedArgument $updateRoot)) }
 if ($PSBoundParameters.ContainsKey('ResScale')) {
@@ -86,5 +99,6 @@ if ($PSBoundParameters.ContainsKey('WindowMode')) {
     $arguments += "--fullscreen=$fullscreen"
     if ($ExtraFeatures) { $arguments += '--pc_use_saved_window_mode=false' }
 }
+if ($Username) { $env:SOTR_USERNAME = $Username }
 $process = Start-Process -FilePath $exe -WorkingDirectory $buildDir -ArgumentList $arguments -PassThru -Wait
 exit $process.ExitCode

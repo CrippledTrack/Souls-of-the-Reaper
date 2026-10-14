@@ -1,8 +1,8 @@
 # Linux and Windows use the pinned 0.10 SDK and the shared codegen directory.
 find_package(rexglue 0.10.0 REQUIRED CONFIG)
-set(_generated "${CMAKE_CURRENT_SOURCE_DIR}/generated/linux")
+set(_generated "${CMAKE_CURRENT_SOURCE_DIR}/generated/base")
 if(NOT EXISTS "${_generated}/sources.cmake")
-    message(FATAL_ERROR "Run python3 scripts/build_linux.py to generate the Linux sources first")
+    message(FATAL_ERROR "Run scripts/build_linux.py or scripts/build_windows.py to generate the base-disc sources first")
 endif()
 include("${_generated}/sources.cmake")
 

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <memory>
 
+#include <rex/cvar.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/filesystem/vfs.h>
@@ -54,7 +55,10 @@ class Diablo3App : public rex::ReXApp {
     if (d3::features::Enabled()) {
 #ifdef SOULS_GPU_PLUGIN
       // GPU cvars are registered by the plugin, before its presentation/setup.
-      config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
+      // Honour --gpu_backend here too: this early load bypasses ReXApp, which
+      // would otherwise pass it. "any" resolves to D3D12 when it is compiled in.
+      config.graphics = rex::system::LoadGpuPlugin(
+          config.gpu_plugin, rex::cvar::GetFlagByName("gpu_backend"));
       if (!config.graphics) {
         REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
       }

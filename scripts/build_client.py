@@ -182,7 +182,7 @@ def build_variant(args, variant):
     if plain:
         command.append("--no-extra-features")
     # Reuse sources generated earlier in this or a previous run for the same executable.
-    if not args.regenerate and stamp_matches("tu2" if tu2 else "linux", TU2_SHA256 if tu2 else DISC_SHA256):
+    if not args.regenerate and stamp_matches("tu2" if tu2 else "base", TU2_SHA256 if tu2 else DISC_SHA256):
         command.append("--skip-codegen")
     run(*command)
 

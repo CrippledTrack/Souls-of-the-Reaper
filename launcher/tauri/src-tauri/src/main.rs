@@ -36,9 +36,15 @@ struct Host {
 #[serde(rename_all = "camelCase")]
 struct Caps<'a> {
     platform: &'static str,
+    /// Renderers the page may offer: both on Windows (one executable holds
+    /// them), Vulkan only on Linux.
+    backends: &'static [&'static str],
     builds: &'a [Build],
     defaults: &'a Defaults,
     can_build: bool,
+    /// The TU2 update is in the game folder (drives the TU2 autoselect and the
+    /// Build panel's default variant).
+    tu2_installed: bool,
 }
 
 fn load_settings(path: &Path) -> Settings {
@@ -114,6 +120,7 @@ async fn launch_game(
     let output = fs::File::create(&stdio_log).map_err(|e| e.to_string())?;
     let mut child = Command::new(&build.executable)
         .args(&args)
+        .env("SOTR_USERNAME", settings.username.trim())
         .current_dir(build.executable.parent().unwrap())
         .stdout(Stdio::from(output.try_clone().map_err(|e| e.to_string())?))
         .stderr(Stdio::from(output))
@@ -334,11 +341,20 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         settings.ui_state = serde_json::json!({ "res": -1, "display": -1 });
     }
 
+    // TU2 is an overlay in the base game folder: once its files are there, open on it.
+    let tu2 = launch::tu2_installed(&builds, &settings, &defaults);
+    launch::apply_default_build(&mut settings.ui_state, &builds, tu2);
+
     let caps = Caps {
         platform: platform.name(),
+        backends: match platform {
+            Platform::Windows => &["d3d12", "vulkan"],
+            Platform::Linux => &["vulkan"],
+        },
         builds: &builds,
         defaults: &defaults,
         can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file()),
+        tu2_installed: tu2,
     };
     let init = format!(
         "window.LAUNCHER_CAPS={};window.LAUNCHER_SETTINGS={};window.SAVED_STATE={};",

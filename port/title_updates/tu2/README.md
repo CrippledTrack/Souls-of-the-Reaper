@@ -144,17 +144,14 @@ optional hooks are shared across host platforms. The SDK must support the
 manifest's 0.10 API. TU2 supplies its own UI-thread exit handler on every host; it does not depend
 on the base-disc SDK exit patch.
 
-Generate and build on Windows with a matching SDK codegen executable:
+Build on Windows with the one-step script (it builds the pinned SDK, runs the
+shared TU2 codegen and compiles the separate TU2 executable):
 
 ```powershell
-python scripts/codegen_title_update.py --game-dir C:/games/updated-tu2-disc --rexglue C:/sdk/bin/rexglue.exe
-cmake --preset win-amd64-relwithdebinfo -S port -B port/out/build/win-amd64-tu2-relwithdebinfo -DSOULS_TITLE_UPDATE_2=ON -DSOULS_ENABLE_EXTRA_FEATURES=ON -DSOULS_BASE_XEX=C:/games/updated-tu2-disc/Default.xex -DCMAKE_PREFIX_PATH=C:/sdk
-cmake --build port/out/build/win-amd64-tu2-relwithdebinfo
+python scripts/build_windows.py --build-sdk --title-update tu2 --game-dir C:/games/updated-tu2-disc
 pwsh -File scripts/run_windows.ps1 -TitleUpdate tu2 -ExtraFeatures -GameDir C:/games/updated-tu2-disc
 ```
 
-Alternatively, `port/build.ps1 -TitleUpdate tu2 -GameDir ... [-Plain]`
-runs shared codegen before building (the SDK's codegen executable must already
-be built; `-Rexglue C:/sdk/bin/rexglue.exe` overrides its location). TU2 binaries and default save directories remain separate from base
+TU2 binaries and default save directories remain separate from base
 builds on both platforms. Native Windows build/runtime testing is pending.
 

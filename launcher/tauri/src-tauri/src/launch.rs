@@ -200,6 +200,8 @@ pub struct Settings {
     pub game_dir_tu2: String,
     pub user_data_root: String,
     pub user_data_root_tu2: String,
+    /// In-game player name; empty keeps the SDK default.
+    pub username: String,
     /// Linux only; -1 lets the SDK choose.
     pub vulkan_device: i32,
     /// Last inputs of the Build panel (scripts/build_client.py).
@@ -216,6 +218,7 @@ impl Default for Settings {
             game_dir_tu2: String::new(),
             user_data_root: String::new(),
             user_data_root_tu2: String::new(),
+            username: String::new(),
             vulkan_device: -1,
             build_iso: String::new(),
             build_title_update: String::new(),
@@ -378,6 +381,41 @@ pub fn validate_game_dir(build: &Build, game: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// True when a TU2 build exists and its game folder holds the verified TU2
+/// executable and CPKs. TU2 is an overlay in the base game folder, so providing
+/// the update is what makes the TU2 builds usable.
+pub fn tu2_installed(builds: &[Build], settings: &Settings, defaults: &Defaults) -> bool {
+    builds.iter().filter(|b| b.tu2).any(|b| {
+        let (game, _) = folders_for(b, settings, defaults);
+        validate_game_dir(b, &game).is_ok()
+    })
+}
+
+/// Seeds the menu's build choice when none was saved (or the saved one is gone):
+/// the TU2 build with the same extras setting as the first build, when TU2 is
+/// installed. An explicit saved choice is never overridden.
+pub fn apply_default_build(
+    ui_state: &mut serde_json::Value,
+    builds: &[Build],
+    tu2_installed: bool,
+) {
+    let saved = ui_state
+        .get("build")
+        .and_then(|v| v.as_str())
+        .is_some_and(|id| builds.iter().any(|b| b.id == id));
+    if saved || !tu2_installed {
+        return;
+    }
+    let extras = builds.first().is_some_and(|b| b.extras);
+    let pick = builds
+        .iter()
+        .find(|b| b.tu2 && b.extras == extras)
+        .or_else(|| builds.iter().find(|b| b.tu2));
+    if let (Some(build), Some(state)) = (pick, ui_state.as_object_mut()) {
+        state.insert("build".into(), build.id.clone().into());
+    }
+}
+
 /// Build ids scripts/build_client.py accepts.
 /// `-plain` compiles without the optional PC features.
 pub const BUILD_VARIANTS: [&str; 4] = ["base", "tu2", "base-plain", "tu2-plain"];
@@ -450,6 +488,9 @@ pub struct GameOptions {
     pub country_id: u32,
     pub rtp: String,
     pub vk_path: String,
+    /// Windows renderer: "d3d12" (also when absent) or "vulkan". Linux is always Vulkan.
+    #[serde(default)]
+    pub backend: String,
 }
 
 pub fn launch_arguments(
@@ -491,21 +532,41 @@ pub fn launch_arguments(
             }
         }
         Platform::Windows => {
-            if !["rov", "rtv"].contains(&options.rtp.as_str()) {
-                return Err("Unsupported render path.".into());
+            // One executable holds both renderers; --gpu_backend picks one.
+            let backend = match options.backend.as_str() {
+                "" | "d3d12" => "d3d12",
+                "vulkan" => "vulkan",
+                _ => return Err("Unsupported renderer.".into()),
+            };
+            args.push(format!("--gpu_backend={backend}"));
+            if backend == "vulkan" {
+                // Same rules as Linux: the Vulkan backend has no D3D12 render
+                // path, frame limiter or FSR/CAS presenter.
+                if !["fsi", "host"].contains(&options.vk_path.as_str()) {
+                    return Err("Unsupported Vulkan render path.".into());
+                }
+                args.push(format!("--render_target_path_vulkan={}", options.vk_path));
+                args.push(format!("--vsync={}", options.vsync));
+                if vulkan_device >= 0 {
+                    args.push(format!("--vulkan_device={vulkan_device}"));
+                }
+            } else {
+                if !["rov", "rtv"].contains(&options.rtp.as_str()) {
+                    return Err("Unsupported render path.".into());
+                }
+                if ![30, 60, 120, 144, 240].contains(&options.fps) {
+                    return Err("Unsupported frame rate.".into());
+                }
+                if !["fsr", "cas", "bilinear"].contains(&options.present.as_str()) {
+                    return Err("Unsupported image scaling.".into());
+                }
+                args.push(format!("--render_target_path_d3d12={}", options.rtp));
+                args.push("--rtv_color_depth_ownership_mode=8".into());
+                args.push("--execute_unclipped_draw_vs_on_cpu=true".into());
+                args.push(format!("--d3_frame_limit={}", options.fps));
+                args.push(format!("--vsync={}", options.vsync));
+                args.push(format!("--present_effect={}", options.present));
             }
-            if ![30, 60, 120, 144, 240].contains(&options.fps) {
-                return Err("Unsupported frame rate.".into());
-            }
-            if !["fsr", "cas", "bilinear"].contains(&options.present.as_str()) {
-                return Err("Unsupported image scaling.".into());
-            }
-            args.push(format!("--render_target_path_d3d12={}", options.rtp));
-            args.push("--rtv_color_depth_ownership_mode=8".into());
-            args.push("--execute_unclipped_draw_vs_on_cpu=true".into());
-            args.push(format!("--d3_frame_limit={}", options.fps));
-            args.push(format!("--vsync={}", options.vsync));
-            args.push(format!("--present_effect={}", options.present));
             args.push("--mnk_cursor_visible=false".into());
         }
     }
@@ -546,6 +607,7 @@ mod tests {
             country_id: 103,
             rtp: "rtv".into(),
             vk_path: "fsi".into(),
+            backend: String::new(),
         }
     }
 
@@ -685,7 +747,84 @@ mod tests {
         ] {
             assert!(args.contains(&expected.into()), "{expected}");
         }
+        assert!(args.contains(&"--gpu_backend=d3d12".into()));
         assert!(!args.iter().any(|a| a.contains("vulkan")));
+    }
+
+    fn pair(tu2: bool, extras: bool) -> Build {
+        make_build(tu2, extras, PathBuf::from("/x"), None)
+    }
+
+    #[test]
+    fn tu2_becomes_the_default_build_when_it_is_installed() {
+        let builds = [pair(false, false), pair(false, true), pair(true, false), pair(true, true)];
+        let mut state = serde_json::json!({ "res": -1 });
+        apply_default_build(&mut state, &builds, true);
+        assert_eq!(state["build"], "tu2");
+        assert_eq!(state["res"], -1, "other saved menu state is kept");
+
+        // Extras builds first: the TU2 default keeps extras.
+        let extras_first = [pair(false, true), pair(true, true)];
+        let mut state = serde_json::Value::Null;
+        state = if state.is_null() { serde_json::json!({}) } else { state };
+        apply_default_build(&mut state, &extras_first, true);
+        assert_eq!(state["build"], "tu2-extras");
+    }
+
+    #[test]
+    fn default_build_respects_saved_choice_and_missing_update() {
+        let builds = [pair(false, false), pair(true, false)];
+        let mut saved = serde_json::json!({ "build": "base" });
+        apply_default_build(&mut saved, &builds, true);
+        assert_eq!(saved["build"], "base", "explicit choice wins");
+        let mut none = serde_json::json!({});
+        apply_default_build(&mut none, &builds, false);
+        assert!(none.get("build").is_none(), "no TU2 files, stay on base");
+        let mut stale = serde_json::json!({ "build": "tu2-plain" });
+        apply_default_build(&mut stale, &builds, true);
+        assert_eq!(stale["build"], "tu2", "a saved build that no longer exists is replaced");
+        let mut only_base = serde_json::json!({});
+        apply_default_build(&mut only_base, &[pair(false, false)], true);
+        assert!(only_base.get("build").is_none(), "no TU2 build to select");
+    }
+
+    #[test]
+    fn windows_vulkan_uses_vulkan_options_not_d3d12_ones() {
+        let mut opts = options();
+        opts.backend = "vulkan".into();
+        opts.vsync = true;
+        let args = launch_arguments(
+            Platform::Windows,
+            &build(false, true),
+            Path::new("C:/g"),
+            Path::new("C:/s"),
+            &opts,
+            1,
+        )
+        .unwrap();
+        for expected in [
+            "--gpu_backend=vulkan",
+            "--render_target_path_vulkan=fsi",
+            "--vsync=true",
+            "--vulkan_device=1",
+            "--mnk_cursor_visible=false",
+        ] {
+            assert!(args.contains(&expected.into()), "{expected}");
+        }
+        assert!(!args.iter().any(|a| a.contains("d3d12")
+            || a.contains("d3_frame_limit")
+            || a.contains("present_effect")
+            || a.contains("rtv_color_depth")));
+        opts.backend = "metal".into();
+        assert!(launch_arguments(
+            Platform::Windows,
+            &build(false, true),
+            Path::new("C:/g"),
+            Path::new("C:/s"),
+            &opts,
+            -1,
+        )
+        .is_err());
     }
 
     #[test]

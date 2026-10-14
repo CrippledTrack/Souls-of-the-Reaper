@@ -27,23 +27,23 @@ both modes. The base disc and TU2 still need separate executables because they
 use separate audited address maps with shared hook logic.
 
 To compile **without** any of the extra code, build a plain executable with
-`--no-extra-features` (`-Plain` on `port\build.ps1`). It is written to a
+`--no-extra-features`. It is written to a
 `-plain` directory next to the normal one. Direct CMake builds choose with
 `-DSOULS_ENABLE_EXTRA_FEATURES=ON|OFF` (default `OFF`).
 
 ## Windows
 
-Use the existing Windows SDK and codegen steps from the main README, including
-`port\apply_generated_patches.ps1`. Then build and launch:
+Build and launch (the build script handles the SDK, codegen and generated-code
+patches; see the main README):
 
 ```powershell
-pwsh -File port\build.ps1 -Config RelWithDebInfo
-pwsh -File scripts\run_windows.ps1 -Config RelWithDebInfo -ExtraFeatures
+python scripts\build_windows.py --build-sdk --game-dir game
+pwsh -File scripts\run_windows.ps1 -ExtraFeatures
 ```
 
-`-Precompiled` remains available on the build script. The binary is
-`port\out\build\win-amd64-relwithdebinfo\diablo3.exe`; a `-Plain` build goes to
-`win-amd64-plain-<config>`. Debug and Release use the same naming.
+The binary is
+`port\out\build\win-amd64-relwithdebinfo\diablo3.exe`; a `--no-extra-features` build goes to
+`win-amd64-plain-relwithdebinfo`.
 
 The source-build launch script defaults to `game\` and `Documents\diablo3`.
 Use `-GameDir` and `-UserDataRoot` to select other directories. `-ResScale 2`

@@ -41,7 +41,7 @@ python3 scripts/build_linux.py --build-sdk --game-dir /path/to/extracted/disc
 python3 scripts/run_linux.py --game-dir /path/to/extracted/disc
 ```
 
-See [Linux build, diagnostics and integration notes](port/linux/README.md) for
+See [Linux build, diagnostics and integration notes](port/base/README.md) for
 requirements, reuse of an existing SDK, saves, and GPU selection.
 
 The [optional PC features](port/extra-features.md) add a saved
@@ -49,55 +49,50 @@ resolution-scale setting and live window-mode selector to Options > Video, PC wo
 warning, and ` + Extras` to the launch-screen version label. They are built into
 the normal executable and switched on at launch: `--extra-features` on Linux,
 `-ExtraFeatures` on Windows, or "Base + Extras" in the launcher. Build with
-`--no-extra-features` (`-Plain` on Windows) to leave the code out entirely.
+`--no-extra-features` (Windows too) to leave the code out entirely.
 
 ### Windows
 
 #### Requirements
 
 - Windows 10/11 x64
-- Visual Studio 2022 Community (CMake 3.25+, Ninja, MSVC headers)
-- LLVM/Clang 22+ installed to `C:\Program Files\LLVM\`
-- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) cloned as `rexglue-sdk/` next to this folder
-- Diablo III Xbox 360 disc dump:
-  - `game/Default_decrypted.exe` — decrypted XEX (flat binary, base 0x82000000)
-  - `game/CPKs/` — all CPK archives from the disc (7.4 GB)
-  - A valid Diablo III RoS save in `Documents\diablo3\<xuid>\394F07D4\00000001\d3save\`
+- Visual Studio 2022 Community with the C++ and CMake workloads
+- LLVM/Clang 22+ (`C:\Program Files\LLVM\` is found automatically), Git and Python 3
+- The USA Ultimate Evil Edition disc extracted to a folder (default `game\`) holding `Default.xex` and `CPKs\`.
+  The build verifies the executable's SHA-256 before generating code.
 
 #### Steps
 
 The optional features are already built in. Launch with them using
-`pwsh -File scripts\run_windows.ps1 -ExtraFeatures`; add `-Plain` to the build
-command in step 3 to compile without them.
+`pwsh -File scriptsun_windows.ps1 -ExtraFeatures`; add `--no-extra-features`
+to the build command in step 1 to compile without them.
 See [optional game features](port/extra-features.md) for details.
 
-**1. Apply SDK patches**
+**1. Build** (one command; the first run also clones, patches and builds the pinned SDK, and
+runs codegen, ~12 min)
 ```powershell
-git -C rexglue-sdk apply ..\patches\rexglue-sdk.patch
-Copy-Item patches\d3d_screenshot.cpp rexglue-sdk\src\graphics\d3d12\
+python scriptsuild_windows.py --build-sdk --game-dir game
 ```
 
-**2. Codegen** (~12 min, one-time per XEX)
+This applies the shared patches in `patches/common/` and the Windows patches in
+`patches/windows/` to the pinned ReXGlue SDK (`tools/rexglue-sdk-win`), runs
+codegen into `port/generated/base`, applies the hand patches to the generated
+code (`scripts/apply_generated_patches.py`) and compiles the game. Later builds
+can drop `--build-sdk`, and `--skip-codegen` reuses generated sources.
+
+Output: `port\outuild\win-amd64-relwithdebinfo\diablo3.exe`
+
+The [graphical launcher](launcher/tauri/README.md) runs the same script from its
+Build panel when given the ISO and title update.
+
+**2. Run**
 ```powershell
-sdk-bin\win-amd64\bin\rexglue.exe --log-level info --log-file port\cg.log codegen port\diablo3_manifest.toml
-port\apply_generated_patches.ps1
+pwsh -File scriptsun_windows.ps1 -ExtraFeatures
 ```
 
-`apply_generated_patches.ps1` re-applies the hand patches codegen can't produce on its own (see **Known Issues**). Run it every time codegen is (re-)run — it's idempotent, safe to run more than once.
+Pass `-Username "Name"` to set the in-game player name (up to 15 characters).
 
-**3. Build**
-```powershell
-pwsh -File port\build.ps1 -Config RelWithDebInfo
-```
-
-Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
-
-> If only the runtime DLL changed after a rebuild, copy it manually:
-> ```powershell
-> Copy-Item rexglue-sdk\out\win-amd64\rexruntimerd.dll port\out\build\win-amd64-relwithdebinfo\ -Force
-> ```
-
-**4. Build the launcher**
+**3. Build the PowerShell launcher (optional)**
 
 The launcher's compiled exe, icon, and the WebView2 SDK redistributable DLLs aren't in the repo (binaries, not code) - only its source is (`launcher/Launcher.ps1`, `launcher/build_launcher.ps1`, `launcher/v6_borderless_final.html`). To build it:
 - Get the WebView2 SDK redistributable DLLs (`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll`, `WebView2Loader.dll`) from the [`Microsoft.Web.WebView2`](https://www.nuget.org/packages/Microsoft.Web.WebView2) NuGet package and place them in `launcher\lib\`.
@@ -108,7 +103,7 @@ launcher\build_launcher.ps1
 Copy-Item launcher\dist\SoulsOfTheReaper.exe . -Force
 ```
 
-**5. Run**
+**4. Start it**
 ```
 SoulsOfTheReaper.exe
 ```
@@ -146,7 +141,7 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 
 ### Hand patches to generated code (re-apply after every codegen)
 
-The generated code needs two game-specific fixes after codegen. On Windows, run `port\apply_generated_patches.ps1` after every codegen (see step 2 above). The Linux build script applies the equivalent patches automatically in `port/generated/linux/`:
+The generated code needs two game-specific fixes after codegen. Both build scripts apply them automatically to `port/generated/base/` (`scripts/apply_generated_patches.py`):
 
 - **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Replaced with host `ppc_setjmp`/`ppc_longjmp`.
 - **Main-menu exit fix** (`sub_82632E00`) — redirects the game's "leave session, return to title screen" routine (reached from the main-menu B → confirm dialog → A/Aceptar flow) to close the game instead, like a normal PC game's Exit option.

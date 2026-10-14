@@ -53,6 +53,7 @@ inject('<div class="stage">', `${panelStyle}
     <label>Game folder<input id="gameDir" type="text" spellcheck="false"></label>
     <label>Save folder<input id="userDataRoot" type="text" spellcheck="false"></label>
     <label>TU2 save folder<input id="userDataRootTu2" type="text" spellcheck="false"></label>
+    <label>Player name (max 15 characters, blank = User)<input id="username" type="text" maxlength="15" spellcheck="false"></label>
     <label id="deviceLabel">Vulkan device (blank = automatic)<input id="vulkanDevice" type="number" min="0" max="32"></label>
     <label>Builds found<pre id="buildList"></pre></label>
     <p>Empty fields use the folder shown. TU2 uses the same game folder as Base (its tu2/ folder holds the update) but keeps separate saves. Use the in-game F4 menu for key bindings.</p>

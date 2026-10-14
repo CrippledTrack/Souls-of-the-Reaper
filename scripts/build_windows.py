@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build the shared port on Windows with the pinned ReXGlue SDK (Direct3D 12).
+"""Build the shared port on Windows with the pinned ReXGlue SDK (Direct3D 12 and Vulkan).
 
-Mirrors build_linux.py: the same pinned SDK commit, the same Linux patches and
-the same codegen output, plus patches/windows/rexglue-windows.patch for the
-Direct3D 12 renderer. Needs Visual Studio 2022 (C++ and CMake workload), LLVM
+Parallels build_linux.py: the same pinned SDK commit, the same common patches
+(patches/common) and the same codegen output, plus patches/windows/rexglue-windows.patch for the
+Direct3D 12 renderer and patches/windows/rexglue-gpu-backend.patch, which adds
+the gpu_backend setting. The SDK compiles both renderers into one plugin and the
+game picks one at launch (--gpu_backend=d3d12|vulkan). Needs Visual Studio 2022 (C++ and CMake workload), LLVM
 clang 22+, Git and Python on the machine.
 """
 import argparse
@@ -16,8 +18,8 @@ import subprocess
 import sys
 
 from apply_generated_patches import patch_generated
-from build_linux import PATCHES
 from codegen_title_update import generate_tu2
+from sdk_patches import apply_common_patches, apply_patch
 from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -46,15 +48,6 @@ def prepare_path():
                          "and CMake workload, and LLVM clang 22+.")
 
 
-def apply_patch(sdk, patch):
-    check = ["git", "-C", str(sdk), "apply", "--check"]
-    reverse = subprocess.run([*check, "--reverse", str(patch)], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL).returncode == 0
-    if not reverse:
-        run(*check, patch)
-        run("git", "-C", sdk, "apply", patch)
-
-
 def restore_symlinks(sdk):
     """Git checks symlinks out as text stubs on Windows; replace them with copies of their targets."""
     out = subprocess.check_output(["git", "-C", str(sdk / "thirdparty/libmspack"), "ls-files", "-s"], text=True)
@@ -69,7 +62,7 @@ def restore_symlinks(sdk):
 
 
 def build_sdk(args):
-    lock = json.loads((ROOT / "port/linux/rexglue.lock.json").read_text())
+    lock = json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
     sdk = args.sdk_source
     if not sdk.exists():
         run("git", "-c", "core.autocrlf=false", "clone", "--no-checkout", lock["repository"], sdk)
@@ -80,11 +73,12 @@ def build_sdk(args):
         raise ValueError(f"SDK revision mismatch: {actual}; expected {lock['commit']}")
     run("git", "-C", sdk, "submodule", "update", "--init", "--recursive")
     restore_symlinks(sdk)
-    for name in PATCHES:
-        apply_patch(sdk, ROOT / "patches/linux" / name)
+    apply_common_patches(sdk)
     apply_patch(sdk, ROOT / "patches/windows/rexglue-windows.patch")
+    apply_patch(sdk, ROOT / "patches/windows/rexglue-gpu-backend.patch")
     shutil.copyfile(ROOT / "patches/d3d_screenshot.cpp", sdk / "src/graphics/d3d12/d3d_screenshot.cpp")
-    run("cmake", "--preset", "win-amd64", "-DREXGLUE_ENABLE_TRACY=OFF", "-DREXGLUE_BUILD_TESTS=OFF", cwd=sdk)
+    run("cmake", "--preset", "win-amd64", "-DREXGLUE_ENABLE_TRACY=OFF", "-DREXGLUE_BUILD_TESTS=OFF",
+        "-DREXGLUE_USE_D3D12=ON", "-DREXGLUE_USE_VULKAN=ON", cwd=sdk)
     build = sdk / "out/build/win-amd64"
     run("cmake", "--build", build, "--config", "RelWithDebInfo", "--parallel", args.jobs)
     run("cmake", "--install", build, "--config", "RelWithDebInfo", "--prefix", args.sdk_prefix)
@@ -129,12 +123,12 @@ def main():
         expected = TU2_SHA256 if args.title_update else DISC_SHA256
         if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
             raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
-        generated = ROOT / "port/generated" / ("tu2" if args.title_update else "linux")
+        generated = ROOT / "port/generated" / ("tu2" if args.title_update else "base")
         if args.title_update:
             generate_tu2(args.game_dir, rexglue, args.skip_codegen)
         else:
             if not args.skip_codegen:
-                manifest_dir = ROOT / "port/linux"
+                manifest_dir = ROOT / "port/base"
                 manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
                 for suffix in ("", "/Default.xex"):
                     manifest = manifest.replace(json.dumps("../../game" + suffix),

@@ -38,7 +38,7 @@ function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved =
   const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
     __TAURI__: { core: { invoke }, event: { listen } },
-    LAUNCHER_CAPS: { platform, builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
+    LAUNCHER_CAPS: { platform, tu2Installed: !!settings.tu2Installed, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
     LAUNCHER_SETTINGS: { gameDir: '', gameDirTu2: '', userDataRoot: '', userDataRootTu2: '', vulkanDevice: -1, ...settings },
     SAVED_STATE: saved,
   });
@@ -73,7 +73,24 @@ test('Linux shows Vulkan rows and hides D3D12-only options', () => {
 
 test('Windows keeps the D3D12 rows and adds the build selector', () => {
   const { rows } = tauriPage({ platform: 'windows' });
-  assert.deepEqual(rows().map(r => r.label).slice(0, 4), ['Game Version', 'Render Path', 'Frame Rate', 'Image Scaling']);
+  assert.deepEqual(rows().map(r => r.label).slice(0, 5),
+    ['Game Version', 'Renderer', 'Render Path', 'Frame Rate', 'Image Scaling']);
+  assert.equal(rows()[1].value, 'D3D12');
+});
+
+test('Windows can switch to Vulkan, which swaps in the Vulkan rows and is sent on Play', async () => {
+  const { rows, row, next, doc, click, calls } = tauriPage({ platform: 'windows' });
+  next('Renderer');
+  assert.equal(row('Renderer').value, 'Vulkan');
+  assert.deepEqual(rows().map(r => r.label).slice(0, 4), ['Game Version', 'Renderer', 'Render Path', 'VSync']);
+  assert.equal(row('Render Path').value, 'FSI');
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const options = calls.find(c => c.command === 'launch_game').args.options;
+  assert.equal(options.backend, 'vulkan');
+  assert.equal(options.vkPath, 'fsi');
+  assert.equal(options.vsync, true);
+  assert.equal(calls.find(c => c.command === 'launch_game').args.settings.uiState.backend, 1);
 });
 
 test('Extras builds offer In-game resolution and display; normal builds do not', () => {
@@ -157,10 +174,11 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   await tick();
   assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/tu00000002_00000000');
   assert.equal(doc.querySelector('#buildVariants input[value="tu2"]').checked, true, 'choosing a title update selects TU2');
+  assert.equal(doc.querySelector('#buildVariants input[value="base"]').checked, false, 'and replaces Base so one build is made');
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['base', 'tu2'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['tu2'] });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);
@@ -176,6 +194,37 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   assert.equal(row('Game Version').value, 'Base');
   assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras/);
   assert.equal(doc.getElementById('launchStatus').textContent, '');
+});
+
+test('Ticking TU2 unticks Base, and Base can still be chosen again on purpose', () => {
+  const { doc } = tauriPage({ builds: [] });
+  const box = value => doc.querySelector(`#buildVariants input[value="${value}"]`);
+  assert.equal(box('base').checked, true);
+  box('tu2').checked = true;
+  box('tu2').dispatchEvent(new doc.defaultView.Event('change'));
+  assert.equal(box('base').checked, false);
+  box('base').checked = true;
+  box('base').dispatchEvent(new doc.defaultView.Event('change'));
+  assert.equal(box('tu2').checked, true, 'an explicit Base choice is not fought');
+  const title = doc.getElementById('buildTitleUpdate');
+  box('tu2').checked = false;
+  box('base-plain').checked = true;
+  title.value = '/isos/tu00000002_00000000';
+  title.dispatchEvent(new doc.defaultView.Event('change'));
+  assert.equal(box('tu2-plain').checked, true, 'a plain base build swaps to the plain TU2 build');
+  assert.equal(box('base-plain').checked, false);
+});
+
+test('TU2 already installed opens the Build panel on TU2 only, like the Game Version default', () => {
+  const { doc } = tauriPage({ builds: [], settings: { tu2Installed: true } });
+  const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
+  assert.deepEqual(checked, ['tu2']);
+});
+
+test('A saved title update package opens the Build panel on TU2 only', () => {
+  const { doc } = tauriPage({ builds: [], settings: { buildIso: '/i.iso', buildTitleUpdate: '/isos/tu00000002_00000000' } });
+  const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
+  assert.deepEqual(checked, ['tu2']);
 });
 
 test('Build failures and cancellation are reported in the panel', async () => {
