@@ -5,6 +5,7 @@
 // Every host loads the Xenos GPU plugin shipped with the pinned SDK.
 #define SOULS_GPU_PLUGIN 1
 
+#include <string>
 #include <filesystem>
 #include <memory>
 
@@ -57,8 +58,11 @@ class Diablo3App : public rex::ReXApp {
       // GPU cvars are registered by the plugin, before its presentation/setup.
       // Honour --gpu_backend here too: this early load bypasses ReXApp, which
       // would otherwise pass it. "any" resolves to D3D12 when it is compiled in.
-      config.graphics = rex::system::LoadGpuPlugin(
-          config.gpu_plugin, rex::cvar::GetFlagByName("gpu_backend"));
+      // The cvar only exists where the SDK defines it (Windows patch); on Linux
+      // the lookup is empty, which the plugin rejects, so fall back to "any".
+      std::string gpu_backend = rex::cvar::GetFlagByName("gpu_backend");
+      if (gpu_backend.empty()) gpu_backend = "any";
+      config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin, gpu_backend);
       if (!config.graphics) {
         REX_FATAL("Unable to load the Xenos GPU plugin for the optional PC build");
       }
