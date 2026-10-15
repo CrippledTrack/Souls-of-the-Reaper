@@ -81,6 +81,24 @@ The user-data directory is the one selected by `--state-dir` or
 `--resolution_scale=N` at startup. Without it the file is ignored. A missing
 executable produces an error rather than launching a different build.
 
+### Linux image scaling
+
+`patches/linux/rexglue-present-effects.patch` (applied by `build_linux.py
+--build-sdk`) compiles the SDK's built-in spatial present effects into the
+Vulkan presenter. They change only how the rendered image is scaled to the
+window, not the internal resolution:
+
+```sh
+python3 scripts/run_linux.py --extra-features --present_effect=fsr \
+  --window_width=1920 --window_height=1080
+```
+
+`--present_effect` is `bilinear` (default, plain stretch), `cas` or `fsr`
+(FSR 1.0 EASU+RCAS). `fsr2` and `fsr3` need the external FidelityFX runtime and
+are not available. The graphical launcher exposes the choice as Image Scaling.
+An SDK built before this patch does not know the flag; rebuild it with
+`--build-sdk`.
+
 ### Linux TU2
 
 Use the staged TU2 executable and assets:
@@ -216,8 +234,31 @@ other formatting calls and the game's actual version data untouched.
 
 ## TU2 address audit
 
-[`pc_features_tu2.h`](src/features/pc_features_tu2.h) remaps guest functions for
-TU2 only. [`extra-features-audit.json`](title_updates/tu2/extra-features-audit.json)
+Every game-build-specific value (guest function addresses, data addresses,
+structure offsets and the expected `Default.xex` SHA-256) lives in one profile
+per build, [`src/features/versions/<id>.json`](src/features/versions/). CMake
+reads the selected profile (`base`, or `tu2` with `SOULS_TITLE_UPDATE_2`;
+override with `-DSOULS_FEATURE_VERSION=<id>`), verifies the executable hash and
+generated symbols, and writes the header the hooks compile against. Supporting
+another build means adding a profile with the same names; no C++ changes.
+
+To generate a candidate profile for a new executable from a verified one:
+
+```sh
+python3 scripts/find_feature_addresses.py --reference tu2 \
+  --reference-xex game/tu2/Default.xex --target-xex /path/to/new/Default.xex --id mybuild
+```
+
+It decodes both executables (`d3-image`, built from `scripts/d3-patch`), finds
+each function by its masked instruction body, and re-derives data addresses
+from the same code. Entries that are not a unique body match are flagged
+(`weak`, `ambiguous`, `unresolved`) and must be checked by hand. Run
+`--sign <id> --target-xex <xex>` to refresh a profile's runtime signatures.
+Reproducing the audited TU2 profile from the base disc is part of the test
+suite. At runtime the hooks check each profile function's leading
+instructions in guest memory and disable the extras (with a log warning) on a
+mismatch; the log reports how many signatures were verified.
+[`extra-features-audit.json`](title_updates/tu2/extra-features-audit.json)
 records the instruction-context matches, corroborating generated call sites,
 and the unchanged descriptor/control layouts.
 

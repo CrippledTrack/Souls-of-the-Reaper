@@ -1,0 +1,2 @@
+# Keep the large launcher UI bundle out of GitHub language statistics.
+launcher/**/*.html linguist-vendored

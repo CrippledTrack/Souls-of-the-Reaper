@@ -19,10 +19,15 @@ through this launcher has been tested.
   Display. It keeps the value saved in the game's Options > Video menu. Any
   other choice overrides it for that launch
   (`--pc_use_saved_render_scale=false` / `--pc_use_saved_window_mode=false`).
-- **Linux** shows the Vulkan render path (FSI, or the experimental Host path)
-  and VSync. It hides Frame Rate and Image Scaling, because the Linux SDK has
-  no frame limiter and is built without FidelityFX.
-- **Windows** keeps the D3D12 options: ROV/RTV, frame limit and FSR/CAS.
+- **Linux** shows the Vulkan render path (FSI, or the experimental Host path),
+  VSync and Image Scaling (`Off`, `FSR` or `CAS`, passed as
+  `--present_effect=bilinear|fsr|cas`). It hides Frame Rate, because the Linux
+  SDK has no frame limiter. The spatial effects only change how the rendered
+  image is scaled to the window, not the internal resolution, and need an SDK
+  built with `patches/linux/rexglue-present-effects.patch`; rebuild the SDK
+  after updating (older builds reject the flag). `Off` is the default.
+- **Windows** keeps the D3D12 options: ROV/RTV, frame limit and FSR/CAS. With
+  the Vulkan renderer it offers VSync and the same Image Scaling choice.
 - **Play** checks that `Default.xex` matches the selected build (base disc or
   staged TU2). For TU2 it also checks the four update CPKs and mounts the folder
   as `update:`. It then starts the game and closes the launcher. If the game

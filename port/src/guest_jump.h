@@ -52,6 +52,11 @@ template <typename Context> uint32_t d3_jmp_restore(Context &ctx, uint32_t buf) 
   return r.val;
 }
 
+// longjmp skips C++ destructors in the frames it unwinds. Frames between a
+// guest setjmp and longjmp are recompiled guest functions operating on
+// PPCContext, which hold no RAII locals; keep host objects with destructors
+// (strings, locks, vectors) out of any hook that can run inside that span.
+//
 // Guest setjmp, expanded in the calling function. The host setjmp must run in
 // a frame that stays live until the matching longjmp: the caller (Lua's
 // protected call) is, while a replaced setjmp function returns immediately and

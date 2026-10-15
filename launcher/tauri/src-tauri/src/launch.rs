@@ -493,6 +493,17 @@ pub struct GameOptions {
     pub backend: String,
 }
 
+/// Image scaling for the Vulkan presenter. The effect is only compiled into
+/// SDKs built with patches/linux/rexglue-present-effects.patch (or Windows').
+fn vulkan_present(options: &GameOptions) -> Result<&str, String> {
+    match options.present.as_str() {
+        // Older saved settings and Launcher.ps1 send "fsr" by default; the UI
+        // always sends an explicit choice, so pass it through unchanged.
+        present @ ("bilinear" | "fsr" | "cas") => Ok(present),
+        _ => Err("Unsupported image scaling.".into()),
+    }
+}
+
 pub fn launch_arguments(
     platform: Platform,
     build: &Build,
@@ -527,6 +538,7 @@ pub fn launch_arguments(
             args.push(format!("--log_file={}", user.join("diablo3.log").display()));
             args.push(format!("--render_target_path_vulkan={}", options.vk_path));
             args.push(format!("--vsync={}", options.vsync));
+            args.push(format!("--present_effect={}", vulkan_present(options)?));
             if vulkan_device >= 0 {
                 args.push(format!("--vulkan_device={vulkan_device}"));
             }
@@ -541,12 +553,13 @@ pub fn launch_arguments(
             args.push(format!("--gpu_backend={backend}"));
             if backend == "vulkan" {
                 // Same rules as Linux: the Vulkan backend has no D3D12 render
-                // path, frame limiter or FSR/CAS presenter.
+                // path or frame limiter, but shares the FSR/CAS presenter.
                 if !["fsi", "host"].contains(&options.vk_path.as_str()) {
                     return Err("Unsupported Vulkan render path.".into());
                 }
                 args.push(format!("--render_target_path_vulkan={}", options.vk_path));
                 args.push(format!("--vsync={}", options.vsync));
+                args.push(format!("--present_effect={}", vulkan_present(options)?));
                 if vulkan_device >= 0 {
                     args.push(format!("--vulkan_device={vulkan_device}"));
                 }
@@ -709,9 +722,30 @@ mod tests {
         )
         .unwrap();
         assert!(args.contains(&"--render_target_path_vulkan=fsi".into()));
-        assert!(!args.iter().any(|a| a.contains("d3d12")
-            || a.contains("d3_frame_limit")
-            || a.contains("present_effect")));
+        assert!(!args.iter().any(|a| a.contains("d3d12") || a.contains("d3_frame_limit")));
+        assert!(args.contains(&"--present_effect=fsr".into()));
+        let mut off = options();
+        off.present = "bilinear".into();
+        let off_args = launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &off,
+            -1,
+        )
+        .unwrap();
+        assert!(off_args.contains(&"--present_effect=bilinear".into()));
+        off.present = "fsr2".into();
+        assert!(launch_arguments(
+            Platform::Linux,
+            &build(false, false),
+            Path::new("/g"),
+            Path::new("/s"),
+            &off,
+            -1
+        )
+        .is_err());
         assert!(
             !args.iter().any(|a| a.starts_with("--vulkan_device")),
             "auto device passes nothing"
@@ -807,13 +841,13 @@ mod tests {
             "--render_target_path_vulkan=fsi",
             "--vsync=true",
             "--vulkan_device=1",
+            "--present_effect=fsr",
             "--mnk_cursor_visible=false",
         ] {
             assert!(args.contains(&expected.into()), "{expected}");
         }
         assert!(!args.iter().any(|a| a.contains("d3d12")
             || a.contains("d3_frame_limit")
-            || a.contains("present_effect")
             || a.contains("rtv_color_depth")));
         opts.backend = "metal".into();
         assert!(launch_arguments(

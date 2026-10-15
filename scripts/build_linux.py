@@ -9,7 +9,7 @@ import subprocess
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_tu2
-from sdk_patches import apply_common_patches
+from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk
 from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,16 +20,10 @@ def run(*args):
 
 
 def build_sdk(args, cmake):
-    lock = json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
     sdk = args.sdk_source
-    if not sdk.exists():
-        run("git", "clone", "--no-checkout", lock["repository"], sdk)
-        run("git", "-C", sdk, "checkout", "--detach", lock["commit"])
-    actual = subprocess.check_output(["git", "-C", str(sdk), "rev-parse", "HEAD"], text=True).strip()
-    if actual != lock["commit"]:
-        raise ValueError(f"SDK revision mismatch: {actual}; expected {lock['commit']}")
-    run("git", "-C", sdk, "submodule", "update", "--init", "--recursive")
+    lock = checkout_pinned_sdk(sdk, run)
     apply_common_patches(sdk)
+    apply_linux_patches(sdk)
     build = ROOT / "port/out/sdk-linux"
     run(cmake, "-S", sdk, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",

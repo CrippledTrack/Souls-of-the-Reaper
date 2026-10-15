@@ -275,7 +275,7 @@
   // values back out of diablo3.toml and injects them as window.SAVED_STATE, so
   // the launcher reopens on whatever you last played with.
   // vkpath/vsync are the Linux (Vulkan) rows; build is a CAPS.builds id.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,res:0,display:0,mouse:0,vkpath:0,vsync:1,backend:0,build:null};
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,vkpath:0,vsync:1,backend:0,build:null};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
     const v=window.SAVED_STATE[k];
     if(typeof v==='number'||(k==='build'&&typeof v==='string'))_sdefault[k]=v;});}
@@ -338,9 +338,11 @@
     if(WIN_VK())
       rows.push({key:'backend',label:T.lbl_backend[L],opts:opts(['D3D12','Vulkan']),tip:T.tip_backend[L]});
     if(VK()){
-      // The Vulkan backend has no frame limiter or FSR/CAS presenter.
+      // The Vulkan backend has no frame limiter, but it does share the FSR/CAS
+      // presenter. Off (plain bilinear) comes first so it stays the default.
       rows.push({key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host']),tip:T.tip_path_vk[L]});
       rows.push({key:'vsync',label:'VSync',opts:[{v:1,t:T.val_on[L]},{v:0,t:T.val_off[L]}]});
+      rows.push({key:'vkscale',label:T.lbl_scale[L],opts:opts([T.val_off[L],'FSR','CAS']),tip:T.tip_scale[L]});
     } else {
       rows.push({key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
       rows.push({key:'fps',label:T.lbl_fps[L],opts:opts(FPS[state.path].map(f=>f+' FPS'))});
@@ -486,7 +488,7 @@
       // camera stays a launcher choice.
       mnkMode:true,
       mnkMouse:state.mouse===1,
-      present:['fsr','cas','bilinear'][state.scale],
+      present:VK()?['bilinear','fsr','cas'][state.vkscale]:['fsr','cas','bilinear'][state.scale],
       resScale:res+1,
       fullscreen:display===-1?null:display===0,
       lang:state.lang,

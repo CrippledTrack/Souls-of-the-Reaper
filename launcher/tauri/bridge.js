@@ -13,8 +13,8 @@
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {
-    const { lang, path, fps, scale, res, display, mouse, vkpath, vsync, backend } = state;
-    return { lang, path, fps, scale, res, display, mouse, vkpath, vsync, backend, build: curBuild() ? curBuild().id : null };
+    const { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend } = state;
+    return { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend, build: curBuild() ? curBuild().id : null };
   };
   function fillSettings() {
     fields.forEach(key => {

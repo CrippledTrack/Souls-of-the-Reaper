@@ -183,7 +183,12 @@ def inspect_source(source, reference=None):
 def import_save(source, output, xuid, reference=None):
     source, report, payloads = inspect_source(source, reference)
     if not report["known_tu2_versions_match"]:
-        raise SaveError("Save versions are outside the inspected TU2 format; inspection only")
+        hero_versions = sorted({(hero["version"], hero["digest_version"]) for hero in report["heroes"]})
+        raise SaveError(
+            f"Save versions are outside the inspected TU2 format (account {report['account_version']}, "
+            f"hero/digest {hero_versions}; expected account 108, hero/digest 905). "
+            "Saves from newer or different editions, such as Ultimate Evil Edition, are not imported; "
+            "inspection only")
     if not re.fullmatch(r"[0-9a-fA-F]{16}", xuid):
         raise SaveError("XUID must contain exactly 16 hexadecimal digits")
     output = output.resolve()

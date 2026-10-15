@@ -16,3 +16,7 @@ add_subdirectory(${XENONRECOMP_DIR} xenonrecomp EXCLUDE_FROM_ALL)
 add_executable(d3-patch patch_xex.cpp)
 target_link_libraries(d3-patch PRIVATE XenonUtils)
 target_include_directories(d3-patch PRIVATE ${XENONRECOMP_DIR}/thirdparty/TinySHA1)
+
+# d3-image: dumps the loaded PPC image for scripts/find_feature_addresses.py.
+add_executable(d3-image dump_image.cpp)
+target_link_libraries(d3-image PRIVATE XenonUtils)

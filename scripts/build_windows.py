@@ -19,7 +19,7 @@ import sys
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_tu2
-from sdk_patches import apply_common_patches, apply_patch
+from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk
 from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -62,21 +62,13 @@ def restore_symlinks(sdk):
 
 
 def build_sdk(args):
-    lock = json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
     sdk = args.sdk_source
-    if not sdk.exists():
-        run("git", "-c", "core.autocrlf=false", "clone", "--no-checkout", lock["repository"], sdk)
-        run("git", "-C", sdk, "config", "core.autocrlf", "false")
-        run("git", "-C", sdk, "checkout", "--detach", lock["commit"])
-    actual = subprocess.check_output(["git", "-C", str(sdk), "rev-parse", "HEAD"], text=True).strip()
-    if actual != lock["commit"]:
-        raise ValueError(f"SDK revision mismatch: {actual}; expected {lock['commit']}")
-    run("git", "-C", sdk, "submodule", "update", "--init", "--recursive")
+    lock = checkout_pinned_sdk(sdk, run, config=("core.autocrlf=false",))
     restore_symlinks(sdk)
     apply_common_patches(sdk)
     apply_patch(sdk, ROOT / "patches/windows/rexglue-windows.patch")
     apply_patch(sdk, ROOT / "patches/windows/rexglue-gpu-backend.patch")
-    shutil.copyfile(ROOT / "patches/d3d_screenshot.cpp", sdk / "src/graphics/d3d12/d3d_screenshot.cpp")
+    shutil.copyfile(ROOT / "patches/windows/src/d3d_screenshot.cpp", sdk / "src/graphics/d3d12/d3d_screenshot.cpp")
     run("cmake", "--preset", "win-amd64", "-DREXGLUE_ENABLE_TRACY=OFF", "-DREXGLUE_BUILD_TESTS=OFF",
         "-DREXGLUE_USE_D3D12=ON", "-DREXGLUE_USE_VULKAN=ON", cwd=sdk)
     build = sdk / "out/build/win-amd64"

@@ -67,8 +67,9 @@ test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => 
 test('Linux shows Vulkan rows and hides D3D12-only options', () => {
   const { rows } = tauriPage();
   assert.deepEqual(rows().map(r => r.label),
-    ['Game Version', 'Render Path', 'VSync', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
+    ['Game Version', 'Render Path', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
   assert.equal(rows()[1].value, 'FSI');
+  assert.equal(rows()[3].value, 'Off');
 });
 
 test('Windows keeps the D3D12 rows and adds the build selector', () => {

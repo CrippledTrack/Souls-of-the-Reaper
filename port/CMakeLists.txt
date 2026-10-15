@@ -15,11 +15,18 @@ endif()
 if(SOULS_ENABLE_EXTRA_FEATURES)
     set(SOULS_BASE_XEX "${CMAKE_CURRENT_SOURCE_DIR}/../game/Default.xex" CACHE FILEPATH
         "Game executable used to generate the selected optional hooks")
-    if(SOULS_TITLE_UPDATE_2)
-        set(_souls_expected_hash "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f")
-    else()
-        set(_souls_expected_hash "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef")
+    # One profile per game build under src/features/versions/ holds the guest
+    # addresses, structure offsets and executable hash the hooks depend on.
+    set(SOULS_FEATURE_VERSION "" CACHE STRING "PC-feature version profile id (default: base, or tu2 with SOULS_TITLE_UPDATE_2)")
+    if(NOT SOULS_FEATURE_VERSION)
+        if(SOULS_TITLE_UPDATE_2)
+            set(SOULS_FEATURE_VERSION tu2)
+        else()
+            set(SOULS_FEATURE_VERSION base)
+        endif()
     endif()
+    include(src/features/versions/load_version.cmake)
+    souls_load_feature_version(${SOULS_FEATURE_VERSION} _souls_version_header _souls_expected_hash _souls_hooks)
     if(NOT EXISTS "${SOULS_BASE_XEX}")
         message(FATAL_ERROR "Extra features require the selected game Default.xex; set SOULS_BASE_XEX")
     endif()
@@ -69,15 +76,6 @@ if(SOULS_ENABLE_EXTRA_FEATURES)
         message(FATAL_ERROR "Run platform codegen before enabling extra features")
     endif()
     file(READ "${_souls_init}" _souls_mappings)
-    if(SOULS_TITLE_UPDATE_2)
-        set(_souls_hooks sub_82703EF0 sub_827026D8 sub_82702718 sub_82702E80 sub_82703568 sub_82835EE0 sub_823BD130
-            sub_82702450 sub_82702518 sub_827071C0 sub_82CE2E40 sub_82CE31D8 sub_82CE1608 sub_82CE2100
-            sub_82750310 sub_8246EB88 sub_8250B098 sub_8246EB18)
-    else()
-        set(_souls_hooks sub_826FD808 sub_826FBFF0 sub_826FC030 sub_826FC798 sub_826FCE80 sub_8282F0F0 sub_823BD130
-            sub_826FBD68 sub_826FBE30 sub_82700AD8 sub_82CDAD58 sub_82CDB0F0 sub_82CD9520 sub_82CDA018
-            sub_82749C10 sub_8246C520 sub_825086E0 sub_8246C4B0)
-    endif()
     foreach(_hook IN LISTS _souls_hooks)
         string(FIND "${_souls_mappings}" "${_hook}" _hook_position)
         if(_hook_position EQUAL -1)
@@ -88,6 +86,7 @@ if(SOULS_ENABLE_EXTRA_FEATURES)
         src/features/pc_features.cpp
         src/features/pc_features_startup.cpp
         src/features/pc_features_storage.cpp)
+    target_include_directories(diablo3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/souls_generated")
     target_compile_definitions(diablo3 PRIVATE SOULS_ENABLE_EXTRA_FEATURES=1)
     message(STATUS "Optional PC features enabled: render resolution and window mode menus, PC autosave wording and Extras version label")
 endif()

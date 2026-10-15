@@ -23,7 +23,9 @@ Inspection reports account and hero versions, embedded hero IDs, the proposed
 filenames, and payload hashes. The format check currently accepts account
 version 108 and hero/digest version 905, observed in the local PS3 and Xbox TU2
 references. Matching versions do not establish compatibility of every nested
-field or platform-specific value.
+field or platform-specific value. Saves with other versions (for example from
+other editions) are refused at import with a message naming the versions found;
+inspection still works so the report can be examined.
 
 ## Import into a new directory
 
