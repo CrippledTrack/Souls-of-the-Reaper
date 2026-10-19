@@ -37,12 +37,15 @@ $buildDir   = "$PSScriptRoot\out\build\win-amd64-relwithdebinfo"
 # config (config\*.toml) and the hand patches use this executable's addresses.
 $discSha256 = 'cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef'
 
-# Applied in this order on top of the pinned SDK.
+# Applied in this order on top of the pinned SDK. patches\systemlink holds whole
+# new source files (it mirrors the SDK tree) and is copied in first, because
+# rexglue-systemlink-net.patch refers to them.
 $sdkPatches = @(
     'rexglue-registration.patch',     # codegen: register the leaf functions in config\
     'rexglue-object-reference.patch', # kernel: ObReferenceObject keeps objects alive
     'rexglue-keyboard.patch',         # keyboard layout and menu keystrokes
     'rexglue-username.patch',         # player name from SOTR_USERNAME
+    'rexglue-systemlink-net.patch',   # System Link (LAN play)
     'rexglue-sdk.patch'               # the port's Windows/D3D12 runtime changes
 )
 
@@ -72,7 +75,8 @@ if ($missing) {
 # SDK's tracked files are restored to the pinned commit first - rexglue-sdk\ is
 # managed by this script, so keep your own SDK experiments elsewhere.
 function Apply-SdkPatches {
-    $paths = @($sdkPatches | ForEach-Object { Join-Path $root "patches\$_" })
+    $paths = @($sdkPatches | ForEach-Object { Join-Path $root "patches\$_" }) +
+        @(Get-ChildItem -LiteralPath "$root\patches\systemlink" -Recurse -File | Sort-Object FullName | ForEach-Object FullName)
     $hashes = ($paths | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join "`n"
     $stamp = Join-Path $sdkSource '.sotr-patches'
     if ((Test-Path -LiteralPath $stamp) -and (Get-Content -Raw -LiteralPath $stamp).Trim() -eq $hashes) {
@@ -84,6 +88,7 @@ function Apply-SdkPatches {
         Invoke-Step 'git checkout' { git -C $sdkSource checkout -- . }
     }
     Remove-Item -LiteralPath $stamp -ErrorAction SilentlyContinue
+    Copy-Item -Path "$root\patches\systemlink\*" -Destination $sdkSource -Recurse -Force
     foreach ($patch in $sdkPatches) {
         Invoke-Step "Applying $patch" { git -C $sdkSource apply (Join-Path $root "patches\$patch") }
         Write-Host "    $patch`: applied" -ForegroundColor Green

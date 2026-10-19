@@ -83,6 +83,20 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 
 ---
 
+## System Link (LAN play)
+
+Copies of the game on different PCs in the same local network can play together through the game's own System Link menu, as on two Xbox 360 consoles linked by a cable or router.
+
+- **Give each PC its own player number.** Add `systemlink_instance = 1` (2, 3, … for further PCs) to `diablo3.toml` next to `diablo3.exe` on every PC but one. Each number gets its own player ID and the default name `User<N>`; `0` (the default) keeps the classic ID, so existing saves keep working. The launcher leaves this line alone.
+- **Set a player name** in the launcher's **Player Name** row (up to 15 characters, blank = `User`). It's remembered in `%LOCALAPPDATA%\SoulsOfTheReaper\player_name.txt` and passed to the game as the `SOTR_USERNAME` environment variable, which you can also set yourself when starting `diablo3.exe` directly.
+- **Several network adapters?** If a PC is on more than one network (Wi-Fi plus a VM switch, for example), set `systemlink_address = "192.168.1.20"` to the address the other player can reach.
+- Allow `diablo3.exe` through Windows Firewall on private networks when asked.
+- `systemlink_trace = true` logs the game's network and session calls, to see what's going on when the PCs don't find each other.
+
+The networking lives in `patches/systemlink/` (new SDK source files) and `patches/rexglue-systemlink-net.patch` (the hooks into the SDK's sockets and XNet calls); `patches/rexglue-username.patch` reads the player name.
+
+---
+
 ## Known Issues
 
 ### Hand patches to generated code (re-apply after every codegen)
