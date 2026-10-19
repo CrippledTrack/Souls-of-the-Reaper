@@ -42,6 +42,7 @@ $sdkPatches = @(
     'rexglue-registration.patch',     # codegen: register the leaf functions in config\
     'rexglue-object-reference.patch', # kernel: ObReferenceObject keeps objects alive
     'rexglue-keyboard.patch',         # keyboard layout and menu keystrokes
+    'rexglue-username.patch',         # player name from SOTR_USERNAME
     'rexglue-sdk.patch'               # the port's Windows/D3D12 runtime changes
 )
 
