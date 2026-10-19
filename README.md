@@ -14,6 +14,8 @@ Download the latest release from the [Releases](../../releases) page, extract th
 
 ## Option B — Build from source
 
+Detailed guides live in [`docs/`](docs/README.md): [building the game](docs/building-the-game.md) and [building the launcher](docs/building-the-launcher.md).
+
 On Linux, one command builds everything from your own disc image (and,
 optionally, the USA Title Update 2 package). The launcher's Build panel runs the same script:
 
