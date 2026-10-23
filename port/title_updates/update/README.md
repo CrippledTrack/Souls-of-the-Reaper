@@ -1,4 +1,4 @@
-# USA Title Update 2
+# USA Title Update
 
 This build targets the verified update for title `394F07D4`, media `38E299CD`.
 The package version is `2`; the executable changes from `0x2` to `0x202`
@@ -65,7 +65,7 @@ The code is built into the normal `linux-amd64-update-relwithdebinfo/diablo3` un
 
 ## Reproduce staging
 
-`scripts/build_client.py --iso ... --title-update tu00000002_00000000` runs
+`scripts/build_client.py --iso ... --title-update /path/to/title-update` runs
 every step below. It is the same as the launcher's Build panel.
 
 The old external `d3-patch` wrapper compared `digestSource` with the unrelated
@@ -81,7 +81,7 @@ No mismatch override is used for update.
 SHA-1 and writes `update-manifest.json`:
 
 ```sh
-python3 scripts/extract_update.py tu00000002_00000000 /path/to/extracted-update
+python3 scripts/extract_update.py /path/to/title-update /path/to/extracted-update
 ```
 
 For another copy of the staged assets, choose a new output directory. Base

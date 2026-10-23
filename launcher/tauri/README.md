@@ -46,7 +46,7 @@ In a source checkout, **Build from disc image…** (in ⚙) runs
 by itself when no build is found. Choose:
 
 - the USA Ultimate Evil Edition disc image (ISO);
-- optionally, the USA Title Update 2 package (`tu00000002_00000000`);
+- optionally, the USA Title Update package;
 - which builds to compile: Base, update, and optionally `(no extras)` versions compiled without the optional PC code.
 
 The script writes into the game folders from Launch settings (`game/` and

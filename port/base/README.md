@@ -27,7 +27,7 @@ The simplest route is one command from your disc image (the
 
 ```sh
 python3 scripts/build_client.py --iso /path/to/disc.iso \
-  [--title-update /path/to/tu00000002_00000000] [--variants base,update,base-plain,update-plain]
+  [--title-update /path/to/title-update] [--variants base,update,base-plain,update-plain]
 ```
 
 It checks the disc, extracts it to `game/`, optionally adds update as a small

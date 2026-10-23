@@ -146,7 +146,7 @@ def verify_package(package):
     if not package.is_file():
         raise BuildError(f"Title update package not found: {package}")
     if sha256(package) != USA_UPDATE_PACKAGE_SHA256:
-        raise BuildError(f"{package.name} is not the verified USA Title Update 2 package "
+        raise BuildError(f"{package.name} is not the verified USA Title Update package "
                          f"(expected SHA-256 {USA_UPDATE_PACKAGE_SHA256}).")
 
 
@@ -205,7 +205,7 @@ def plan(args):
             raise BuildError(f"{incomplete} exists but is not a complete staged update; "
                              "move it aside or choose another update game folder.")
         if not args.title_update:
-            raise BuildError("update builds need the USA Title Update 2 package (tu00000002_00000000).")
+            raise BuildError("update builds need the USA Title Update package.")
     problems = missing_tools(args, compile_needed, need_update and not args.patcher)
     if problems:
         raise BuildError("\n".join(problems))
@@ -259,7 +259,7 @@ def main(argv=None):
                                      allow_abbrev=False)
     parser.add_argument("--iso", type=pathlib.Path, help="USA Ultimate Evil Edition disc image")
     parser.add_argument("--title-update", type=pathlib.Path, metavar="PACKAGE",
-                        help="USA Title Update 2 package (tu00000002_00000000)")
+                        help="USA Title Update package")
     parser.add_argument("--variants", default=None,
                         help="Comma-separated builds: base, update, base-plain, update-plain "
                              "(default: base, plus update when a title update is given)")

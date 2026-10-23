@@ -75,7 +75,7 @@ if ($TitleUpdate) {
     $expected = '447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f'
     if ((Get-FileHash -LiteralPath $xex -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
         if ($updateRoot -eq $game) {
-            throw "The title update is not installed in $game (there is no update\Default.xex). Add it with: python scripts/build_client.py --title-update <Title Update 2 package> --game-dir `"$game`" --variants update"
+            throw "The title update is not installed in $game (there is no update\Default.xex). Add it with: python scripts/build_client.py --title-update <Title Update package> --game-dir `"$game`" --variants update"
         }
         throw 'The executable in GameDir\update is not the verified USA update executable.'
     }

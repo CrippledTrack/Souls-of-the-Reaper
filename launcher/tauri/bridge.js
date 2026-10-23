@@ -72,7 +72,7 @@
   if (caps.platform === 'windows') {
     // build_windows.py finds CMake, Ninja and Clang (Visual Studio, LLVM) by itself.
     document.getElementById('cmakeLabel').hidden = true;
-    document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update 2 package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
+    document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
   }
   document.getElementById('openBuild').hidden = !caps.canBuild;
   // The title update is an overlay on the base game, and each variant is a full separate

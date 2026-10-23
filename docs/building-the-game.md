@@ -3,7 +3,7 @@
 The game is an AOT recompilation of the Xbox 360 executable using a pinned [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) (commit recorded in [`port/base/rexglue.lock.json`](../port/base/rexglue.lock.json)). A full build does, in order:
 
 1. Extract the disc image into `game/` (verifying `Default.xex`).
-2. Optionally stage Title Update 2 as a small overlay in `game/update/`.
+2. Optionally stage Title Update as a small overlay in `game/update/`.
 3. Clone, patch and build the pinned SDK into `tools/` (one-time).
 4. Run codegen into `port/generated/`, apply the hand patches (`scripts/apply_generated_patches.py`).
 5. Compile the game into `port/out/build/<variant>/`.
@@ -13,7 +13,7 @@ Every step is skipped when its output already exists, so an interrupted build ca
 ## Inputs
 
 - **Disc image**: USA Ultimate Evil Edition (`.iso`). Or an already-extracted folder holding `Default.xex` and `CPKs/` (the filename must be exactly `Default.xex`).
-- **Title update** (optional): the USA update package, `tu00000002_00000000`.
+- **Title update** (optional): the USA update package.
 
 ## Windows
 
@@ -30,7 +30,7 @@ Every step is skipped when its output already exists, so an interrupted build ca
 ### One command (from the disc image)
 
 ```powershell
-python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\tu00000002_00000000
+python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update
 ```
 
 Drop `--title-update` for a base-only build. `--variants base,update,base-plain,update-plain` selects which executables to compile (`-plain` omits the optional PC features). `--check` validates inputs and lists the remaining steps without building.
@@ -76,7 +76,7 @@ Use `--cmake /path/to/cmake` if CMake is not on `PATH`. The CPU baseline is x86-
 
 ```sh
 python3 scripts/build_client.py --iso /path/to/disc.iso \
-  [--title-update /path/to/tu00000002_00000000] \
+  [--title-update /path/to/title-update] \
   [--variants base,update,base-plain,update-plain]
 ```
 

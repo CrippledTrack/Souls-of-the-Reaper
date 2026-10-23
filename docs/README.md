@@ -8,10 +8,10 @@
 Related notes that live next to the code:
 
 - [Linux integration notes](../port/base/README.md): diagnostics, saves, GPU selection, input
-- [Title Update 2 setup](../port/title_updates/update/README.md)
+- [Title Update setup](../port/title_updates/update/README.md)
 - [Optional PC features](../port/extra-features.md)
 - [Tauri launcher reference](../launcher/tauri/README.md): options, launch settings, tests
 
 ## What you need to supply
 
-The repository contains no game data. You need your own **USA Diablo III: Ultimate Evil Edition** (Xbox 360) disc image, and optionally the USA **Title Update 2** package (`tu00000002_00000000`). The build verifies SHA-256 hashes of `Default.xex` and refuses other editions.
+The repository contains no game data. You need your own **USA Diablo III: Ultimate Evil Edition** (Xbox 360) disc image, and optionally the USA **Title Update** package. The build verifies SHA-256 hashes of `Default.xex` and refuses other editions.

@@ -149,7 +149,7 @@ def main():
         if hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
             if args.title_update and xex.parent == game:
                 parser.error(f"The title update is not installed in {game} (there is no update/Default.xex). Add it with: "
-                             f"python3 scripts/build_client.py --title-update <Title Update 2 package> --game-dir {game} --variants update")
+                             f"python3 scripts/build_client.py --title-update <Title Update package> --game-dir {game} --variants update")
             parser.error(f"Executable SHA-256 does not match the {args.title_update or 'base-disc'} build; select the matching --title-update and --game-dir")
         state = pathlib.Path(option_value(extra, "--user_data_root", str(args.state_dir.resolve())))
         if not state.is_absolute():

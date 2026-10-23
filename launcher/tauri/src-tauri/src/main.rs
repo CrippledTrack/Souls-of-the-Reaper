@@ -290,7 +290,7 @@ async fn pick_file(app: tauri::AppHandle, kind: String) -> Result<Option<String>
         "iso" => dialog
             .set_title("Select the Diablo III disc image")
             .add_filter("Xbox 360 disc image", &["iso", "xiso"]),
-        "titleUpdate" => dialog.set_title("Select the Title Update 2 package (tu00000002_00000000)"),
+        "titleUpdate" => dialog.set_title("Select the Title Update package"),
         "cmake" => dialog.set_title("Select the CMake executable"),
         _ => return Err("Unknown file type.".into()),
     };

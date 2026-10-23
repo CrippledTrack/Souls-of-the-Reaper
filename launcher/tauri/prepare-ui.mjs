@@ -60,9 +60,9 @@ inject('<div class="stage">', `${panelStyle}
   </section>
   <section id="buildPanel" class="panel" hidden aria-label="Build the game">
     <h2>Build the game</h2>
-    <p id="buildIntro">Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update 2 package for update builds. The first build takes a while; later builds reuse finished steps.</p>
+    <p id="buildIntro">Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update package for update builds. The first build takes a while; later builds reuse finished steps.</p>
     <label>Disc image (ISO)<span class="pick"><input id="buildIso" type="text" spellcheck="false"><button type="button" data-pick="iso" aria-label="Browse for disc image">…</button></span></label>
-    <label>Title Update 2 package (optional)<span class="pick"><input id="buildTitleUpdate" type="text" spellcheck="false" placeholder="tu00000002_00000000"><button type="button" data-pick="titleUpdate" aria-label="Browse for title update">…</button></span></label>
+    <label>Title Update package (optional)<span class="pick"><input id="buildTitleUpdate" type="text" spellcheck="false" placeholder="Path to the title update package"><button type="button" data-pick="titleUpdate" aria-label="Browse for title update">…</button></span></label>
     <fieldset id="buildVariants"><legend>Builds</legend>
       <label><input type="checkbox" value="base" checked>Base</label><label><input type="checkbox" value="update">Update</label>
       <label><input type="checkbox" value="base-plain">Base (no extras)</label><label><input type="checkbox" value="update-plain">Update (no extras)</label>

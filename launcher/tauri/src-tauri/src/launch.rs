@@ -376,7 +376,7 @@ pub fn validate_game_dir(build: &Build, game: &Path) -> Result<(), String> {
     if hash != expected {
         if build.update && hash == other && xex.parent() == Some(game) {
             return Err(format!(
-                "The title update is not installed in {} (there is no update/Default.xex). Open Launch settings, choose Build from disc image… and pick the Title Update 2 package to add it.",
+                "The title update is not installed in {} (there is no update/Default.xex). Open Launch settings, choose Build from disc image… and pick the Title Update package to add it.",
                 game.display()
             ));
         }

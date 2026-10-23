@@ -189,20 +189,20 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   const { doc, click, row, rows, calls, emit } = tauriPage({
     builds: [],
     responses: {
-      pick_file: ({ kind }) => (kind === 'titleUpdate' ? '/isos/tu00000002_00000000' : null),
+      pick_file: ({ kind }) => (kind === 'titleUpdate' ? '/isos/title-update' : null),
       start_build: () => new Promise(resolve => { finish = resolve; }),
     },
   });
   doc.getElementById('buildIso').value = ' /isos/d3.iso ';
   click(doc.querySelector('[data-pick="titleUpdate"]'));
   await tick();
-  assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/tu00000002_00000000');
+  assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/title-update');
   assert.equal(doc.querySelector('#buildVariants input[value="update"]').checked, true, 'choosing a title update selects update');
   assert.equal(doc.querySelector('#buildVariants input[value="base"]').checked, false, 'and replaces Base so one build is made');
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['update'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'] });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);
@@ -233,7 +233,7 @@ test('Ticking update unticks Base, and Base can still be chosen again on purpose
   const title = doc.getElementById('buildTitleUpdate');
   box('update').checked = false;
   box('base-plain').checked = true;
-  title.value = '/isos/tu00000002_00000000';
+  title.value = '/isos/title-update';
   title.dispatchEvent(new doc.defaultView.Event('change'));
   assert.equal(box('update-plain').checked, true, 'a plain base build swaps to the plain update build');
   assert.equal(box('base-plain').checked, false);
@@ -246,7 +246,7 @@ test('update already installed opens the Build panel on update only, like the Ga
 });
 
 test('A saved title update package opens the Build panel on update only', () => {
-  const { doc } = tauriPage({ builds: [], settings: { buildIso: '/i.iso', buildTitleUpdate: '/isos/tu00000002_00000000' } });
+  const { doc } = tauriPage({ builds: [], settings: { buildIso: '/i.iso', buildTitleUpdate: '/isos/title-update' } });
   const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
   assert.deepEqual(checked, ['update']);
 });

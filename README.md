@@ -17,18 +17,17 @@ Download the latest release from the [Releases](../../releases) page, extract th
 Detailed guides live in [`docs/`](docs/README.md): [building the game](docs/building-the-game.md) and [building the launcher](docs/building-the-launcher.md).
 
 On Linux, one command builds everything from your own disc image (and,
-optionally, the USA Title Update 2 package). The launcher's Build panel runs the same script:
+optionally, the USA Title Update package). The launcher's Build panel runs the same script:
 
 ```sh
-python3 scripts/build_client.py --iso /path/to/disc.iso [--title-update /path/to/tu00000002_00000000]
+python3 scripts/build_client.py --iso /path/to/disc.iso [--title-update /path/to/title-update]
 ```
 
 The matching USA update can also be built separately; see the
 [title update setup](port/title_updates/update/README.md).
 
 A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existing
-interface on Linux and Windows and selects base, extras and update builds. The
-original PowerShell/WebView2 launcher remains available on Windows.
+interface on Linux and Windows and selects base, extras and update builds.
 
 ### Linux (Vulkan)
 
@@ -87,6 +86,20 @@ Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
 The [graphical launcher](launcher/tauri/README.md) runs the same script from its
 Build panel when given the ISO and title update.
 
+**1b. Build the title update (optional)**
+
+To also build the USA Title Update executable, pass the extracted update package
+to the one-command build, which extracts the disc, stages the update
+as a small overlay in `game\update\` and compiles every selected build:
+```powershell
+python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update
+```
+
+If `game\` is already extracted and the overlay is staged, build just the update executable with
+`python scripts\build_windows.py --title-update usa --game-dir game`. Output:
+`port\out\build\win-amd64-update-relwithdebinfo\diablo3.exe`. Staging and verification details are in the
+[title update setup](port/title_updates/update/README.md) and [building the game](docs/building-the-game.md).
+
 **2. Run**
 ```powershell
 pwsh -File scripts\run_windows.ps1 -ExtraFeatures
@@ -104,27 +117,35 @@ pwsh -File scripts\run_windows.ps1 -Backend vulkan -ExtraFeatures
 
 `-VulkanPath fsi` (default, faithful; needs fragment shader interlock) or `host` chooses the render-target path, and `-VulkanDevice N` picks a GPU by index. The graphical launcher offers the same choice as a Renderer option. It needs a Vulkan-capable GPU and driver.
 
-**3. Build the PowerShell launcher (optional)**
+**3. Build the launcher (optional)**
 
-The launcher's compiled exe, icon, and the WebView2 SDK redistributable DLLs aren't in the repo (binaries, not code) - only its source is (`launcher/Launcher.ps1`, `launcher/build_launcher.ps1`, `launcher/v6_borderless_final.html`). To build it:
-- Get the WebView2 SDK redistributable DLLs (`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll`, `WebView2Loader.dll`) from the [`Microsoft.Web.WebView2`](https://www.nuget.org/packages/Microsoft.Web.WebView2) NuGet package and place them in `launcher\lib\`.
-- Supply your own `launcher\ico_launcher.ico` (the original artwork isn't included).
+The [Tauri launcher](launcher/tauri/README.md) picks base, extras and update builds, sets the
+renderer and other launch options, and has a **Build from disc image…** panel (⚙ menu) that runs
+`scripts\build_client.py`. Besides the game's requirements it needs:
+- [Rust](https://rustup.rs/) (stable) with the MSVC toolchain (the Visual Studio 2022 C++ workload covers the build tools)
+- [Node.js](https://nodejs.org/) with npm
+- The WebView2 runtime (already present on Windows 10/11 with Edge)
+
 ```powershell
-Install-Module ps2exe -Scope CurrentUser -Force  # one-time
-launcher\build_launcher.ps1
-Copy-Item launcher\dist\SoulsOfTheReaper.exe . -Force
+cd launcher\tauri
+npm ci
+npm run build
 ```
+
+Output: `launcher\tauri\src-tauri\target\release\sotr-launcher.exe`. Run it from anywhere inside the
+checkout and it finds the builds under `port\out\build\`. See
+[building the launcher](docs/building-the-launcher.md) for the debug build, tests and other details.
 
 **4. Start it**
-```
-SoulsOfTheReaper.exe
+```powershell
+launcher\tauri\src-tauri\target\release\sotr-launcher.exe
 ```
 
 ---
 
 ## Controls
 
-Keyboard and up to 4 gamepads all work at once — whoever presses/types first at the title screen becomes player 1, the next becomes player 2, and so on (local co-op, up to 4 players). The launcher (`SoulsOfTheReaper.exe`) only has one control-related option: whether the mouse also drives the camera.
+Keyboard and up to 4 gamepads all work at once — whoever presses/types first at the title screen becomes player 1, the next becomes player 2, and so on (local co-op, up to 4 players). The launcher (`sotr-launcher.exe`) only has one control-related option: whether the mouse also drives the camera.
 
 | Mode | Description |
 |------|-------------|
