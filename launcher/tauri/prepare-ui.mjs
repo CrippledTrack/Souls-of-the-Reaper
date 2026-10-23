@@ -52,21 +52,20 @@ inject('<div class="stage">', `${panelStyle}
     <h2>Launch settings</h2>
     <label>Game folder<input id="gameDir" type="text" spellcheck="false"></label>
     <label>Save folder<input id="userDataRoot" type="text" spellcheck="false"></label>
-    <label>TU2 save folder<input id="userDataRootTu2" type="text" spellcheck="false"></label>
-    <label>Player name (max 15 characters, blank = User)<input id="username" type="text" maxlength="15" spellcheck="false"></label>
+    <label>Update save folder<input id="userDataRootUpdate" type="text" spellcheck="false"></label>
     <label id="deviceLabel">Vulkan device (blank = automatic)<input id="vulkanDevice" type="number" min="0" max="32"></label>
     <label>Builds found<pre id="buildList"></pre></label>
-    <p>Empty fields use the folder shown. TU2 uses the same game folder as Base (its tu2/ folder holds the update) but keeps separate saves. Use the in-game F4 menu for key bindings.</p>
+    <p>Empty fields use the folder shown. The title update uses the same game folder as Base (its update/ folder holds the update) but keeps separate saves. Use the in-game F4 menu for key bindings.</p>
     <div class="acts"><button id="openBuild" type="button" hidden>Build from disc image…</button><button id="cancelSetup" type="button">Cancel</button><button id="saveSetup" type="button">Save</button></div>
   </section>
   <section id="buildPanel" class="panel" hidden aria-label="Build the game">
     <h2>Build the game</h2>
-    <p id="buildIntro">Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update 2 package for TU2 builds. The first build takes a while; later builds reuse finished steps.</p>
+    <p id="buildIntro">Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update 2 package for update builds. The first build takes a while; later builds reuse finished steps.</p>
     <label>Disc image (ISO)<span class="pick"><input id="buildIso" type="text" spellcheck="false"><button type="button" data-pick="iso" aria-label="Browse for disc image">…</button></span></label>
     <label>Title Update 2 package (optional)<span class="pick"><input id="buildTitleUpdate" type="text" spellcheck="false" placeholder="tu00000002_00000000"><button type="button" data-pick="titleUpdate" aria-label="Browse for title update">…</button></span></label>
     <fieldset id="buildVariants"><legend>Builds</legend>
-      <label><input type="checkbox" value="base" checked>Base</label><label><input type="checkbox" value="tu2">TU2</label>
-      <label><input type="checkbox" value="base-plain">Base (no extras)</label><label><input type="checkbox" value="tu2-plain">TU2 (no extras)</label>
+      <label><input type="checkbox" value="base" checked>Base</label><label><input type="checkbox" value="update">Update</label>
+      <label><input type="checkbox" value="base-plain">Base (no extras)</label><label><input type="checkbox" value="update-plain">Update (no extras)</label>
     </fieldset>
     <label id="cmakeLabel">CMake 3.25+ (blank = from PATH)<span class="pick"><input id="buildCmake" type="text" spellcheck="false"><button type="button" data-pick="cmake" aria-label="Browse for CMake">…</button></span></label>
     <div id="buildStep" role="status" aria-live="polite"></div>

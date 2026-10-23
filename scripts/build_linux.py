@@ -8,9 +8,9 @@ import shutil
 import subprocess
 
 from apply_generated_patches import patch_generated
-from codegen_title_update import generate_tu2
+from codegen_title_update import generate_update
 from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk
-from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
+from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / "tools/rexglue-sdk-linux")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-linux")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
-    parser.add_argument("--title-update", choices=["tu2"], help="Build the verified USA TU2 executable separately")
+    parser.add_argument("--title-update", choices=["usa"], help="Build the verified USA update executable separately")
     parser.add_argument("--probe", action="store_true", help="Build asset-free GPU and rendering diagnostics")
     parser.add_argument("--no-extra-features", dest="plain", action="store_true",
                         help="Compile without the optional PC features (separate -plain directory). "
@@ -78,14 +78,14 @@ def main():
         if args.probe:
             source, build = ROOT / "port/probe", ROOT / "port/out/build/linux-probe"
         else:
-            xex = tu2_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
-            expected = TU2_SHA256 if args.title_update else DISC_SHA256
+            xex = update_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
+            expected = USA_UPDATE_SHA256 if args.title_update else DISC_SHA256
             if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
-            variant = "tu2" if args.title_update else "base"
+            variant = "update" if args.title_update else "base"
             generated = ROOT / "port/generated" / variant
             if args.title_update:
-                generate_tu2(args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
+                generate_update(args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
             elif not args.skip_codegen:
                 manifest_dir = ROOT / "port/base"
                 game_placeholder = "../../game"
@@ -102,11 +102,11 @@ def main():
                 (generated / "source-xex.sha256").write_text(expected + "\n")
             if not args.title_update:
                 patch_generated(generated)
-            name = "linux-amd64" + ("-tu2" if args.title_update else "") + ("" if args.extra_features else "-plain") + "-relwithdebinfo"
+            name = "linux-amd64" + ("-update" if args.title_update else "") + ("" if args.extra_features else "-plain") + "-relwithdebinfo"
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [
             f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
-            f"-DSOULS_TITLE_UPDATE_2={'ON' if args.title_update else 'OFF'}"]
+            f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}"]
         if args.extra_features:
             feature_options.append(f"-DSOULS_BASE_XEX={xex}")
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",

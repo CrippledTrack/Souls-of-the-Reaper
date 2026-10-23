@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect PS3/RPCS3 Diablo III RoS saves or import into a NEW TU2 state directory.
+"""Inspect PS3/RPCS3 Diablo III RoS saves or import into a NEW update state directory.
 
 Experimental: preserves payload bytes; desktop load/save validation is pending.
 The source is read-only. No third-party Python packages are required.
@@ -172,7 +172,7 @@ def inspect_source(source, reference=None):
             [hero["version"], hero["digest_version"]] in reference_versions["heroes"] for hero in heroes)
     report = {"format": "souls-ps3-import-v1", "source": str(source),
               "account_version": account_version, "heroes": heroes,
-              "known_tu2_versions_match": compatible, "reference_versions": reference_versions,
+              "known_update_versions_match": compatible, "reference_versions": reference_versions,
               "runtime_validated": False,
               "omitted": ["PREFS.DAT", "HEROES.IDX", "PARAM.SFO", "PARAM.PFD", "ICON0.PNG"],
               "files": {name: {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
@@ -182,10 +182,10 @@ def inspect_source(source, reference=None):
 
 def import_save(source, output, xuid, reference=None):
     source, report, payloads = inspect_source(source, reference)
-    if not report["known_tu2_versions_match"]:
+    if not report["known_update_versions_match"]:
         hero_versions = sorted({(hero["version"], hero["digest_version"]) for hero in report["heroes"]})
         raise SaveError(
-            f"Save versions are outside the inspected TU2 format (account {report['account_version']}, "
+            f"Save versions are outside the inspected update format (account {report['account_version']}, "
             f"hero/digest {hero_versions}; expected account 108, hero/digest 905). "
             "Saves from newer or different editions, such as Ultimate Evil Edition, are not imported; "
             "inspection only")
@@ -225,7 +225,7 @@ def main():
                         help="Import into a NEW state directory; omitted means inspection only")
     parser.add_argument("--xuid", default=DEFAULT_XUID, help="Destination emulated Xbox profile ID")
     parser.add_argument("--reference-save", type=pathlib.Path,
-                        help="Read-only Xbox TU2 d3save directory for version/filename comparison")
+                        help="Read-only Xbox update d3save directory for version/filename comparison")
     args = parser.parse_args()
     try:
         if args.output_state:

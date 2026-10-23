@@ -9,12 +9,12 @@ game launch through the Windows launcher has not been tested yet.
 
 ## What it offers
 
-- **Game Version** lists the builds it finds: `Base`, `Base + Extras`, `TU2`
-  and `TU2 + Extras`. `+ Extras` is the same executable launched with
+- **Game Version** lists the builds it finds: `Base`, `Base + Extras`, `update`
+  and `Update + Extras`. `+ Extras` is the same executable launched with
   `--extra_features=true`. A source checkout offers each built
-  `port/out/build/<platform>-amd64[-tu2][-plain]-<config>` variant
+  `port/out/build/<platform>-amd64[-update][-plain]-<config>` variant
   (RelWithDebInfo first, then Release and Debug). A release install uses the
-  `diablo3`/`diablo3.exe` beside the launcher. Its TU2 flavour comes from
+  `diablo3`/`diablo3.exe` beside the launcher. Its update flavour comes from
   `game/Default.xex`; whether it carries the extras is read from the executable itself. `-plain` builds are compiled without them and only offer the plain choice.
 - **Extras builds** add an `In-game` choice for Internal Resolution and
   Display. It keeps the value saved in the game's Options > Video menu. Any
@@ -31,7 +31,7 @@ game launch through the Windows launcher has not been tested yet.
   FSR/CAS. Vulkan (`--gpu_backend=vulkan`) shows the same render path and device
   options as Linux, plus VSync and the same Image Scaling choice.
 - **Play** checks that `Default.xex` matches the selected build (base disc or
-  staged TU2). For TU2 it also checks the four update CPKs and mounts the folder
+  staged update). For update it also checks the four update CPKs and mounts the folder
   as `update:`. It then starts the game and closes the launcher. If the game
   exits during startup, the launcher stays open and shows the error.
 
@@ -47,14 +47,14 @@ by itself when no build is found. Choose:
 
 - the USA Ultimate Evil Edition disc image (ISO);
 - optionally, the USA Title Update 2 package (`tu00000002_00000000`);
-- which builds to compile: Base, TU2, and optionally `(no extras)` versions compiled without the optional PC code.
+- which builds to compile: Base, update, and optionally `(no extras)` versions compiled without the optional PC code.
 
 The script writes into the game folders from Launch settings (`game/` and
-`game/tu2/` by default; an existing `game-tu2/` is still used). It runs these steps and skips any that are already done:
+`game/update/` by default; an existing `game-update/` is still used). It runs these steps and skips any that are already done:
 
 1. Check the disc's `Default.xex` before copying anything, then extract the disc.
-2. Extract the title update, build the `d3-patch` tool and stage TU2 as a small
-   `tu2/` overlay inside the game folder (about 27 MB: the patched executable and
+2. Extract the title update, build the `d3-patch` tool and stage update as a small
+   `update/` overlay inside the game folder (about 27 MB: the patched executable and
    the update CPKs; the disc files are not copied).
 3. Build the pinned ReXGlue SDK once (`tools/`).
 4. Generate code and compile each selected build. Generated code is reused for
@@ -71,24 +71,29 @@ packages. On Windows install Visual Studio 2022 with the C++ and CMake
 workloads and LLVM Clang 22+; the usual install folders of Clang, CMake and
 Ninja are added to `PATH` automatically, and the build runs
 `scripts/build_windows.py` (the one-time SDK build and the compile both happen
-in the panel). Allow about 15 GiB of free space for a first build with TU2. A
+in the panel). Allow about 15 GiB of free space for a first build with update. A
 release install has no sources, so the panel is not shown there.
 
 ## Launch settings (⚙)
 
-Game folder, save folders for base and TU2 builds, and the Vulkan device (Linux, and Windows when the Vulkan renderer is selected). TU2 has no game folder of its own: it uses the base game folder, whose `tu2/` folder holds the update (an older full `game-tu2/` copy is still used if present).
+Game folder, save folders for base and update builds, and the Vulkan device (Linux, and Windows when the Vulkan renderer is selected). The title update has no game folder of its own: it uses the base game folder, whose `update/` folder holds the update (an older full `game-update/` copy is still used if present).
 Empty fields use these defaults:
 
 | | Game folder | Save folder |
 | --- | --- | --- |
 | Base / extras | `game/` | Linux: `$XDG_DATA_HOME/souls-of-the-reaper`; Windows: `Documents\diablo3` |
-| TU2 | same as Base (`game/tu2/` overlay; or `game-tu2/` if that older full copy exists) | `…/souls-of-the-reaper-tu2`; Windows: `Documents\diablo3-tu2` |
+| update | same as Base (`game/update/` overlay; or `game-update/` if that older full copy exists) | `…/souls-of-the-reaper-update`; Windows: `Documents\diablo3-update` |
+
+Installs made before the update was renamed keep working: a `game/tu2/` overlay or
+`game-tu2/` folder, `…-tu2` save folders (used while the new-name folder does not
+exist) and the old `gameDirTu2`/`userDataRootTu2` settings keys are all still read.
+Rebuild once so the executables are named `…-update-…`.
 
 Game folders sit at the repository root for a source checkout, or beside the
 launcher for an install. Settings and the last menu choices are saved in
 `launcher.json` under Tauri's app config directory
 (`~/.config/org.soulsofthereaper.launcher` on Linux). Settings from the
-first prototype move to the TU2 fields when it was set to TU2. The game's
+first prototype move to the update fields when it was set to the update. The game's
 output goes to `launcher-stdio.log` in the save folder; on Linux the game log
 is `diablo3.log` there.
 
@@ -134,4 +139,4 @@ Rust tests cover both platforms' arguments on any host.
 - The installer and `setup.ps1` still package and start `Launcher.ps1`'s
   `SoulsOfTheReaper.exe`.
 - Building needs a source checkout and Python. Compiling is automated on Linux
-  and Windows, and only the USA disc and USA TU2 are accepted.
+  and Windows, and only the USA disc and USA update are accepted.

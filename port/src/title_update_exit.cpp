@@ -1,7 +1,7 @@
 #include <rex/runtime.h>
 #include <rex/ui/window.h>
 
-// TU2 owns its exit hook on every host, independent of base-disc SDK patches.
+// The title update owns its exit hook on every host, independent of base-disc SDK patches.
 extern "C" void D3RequestTitleUpdateExit() {
   if (auto *runtime = rex::Runtime::instance()) {
     if (auto *window = runtime->display_window()) {

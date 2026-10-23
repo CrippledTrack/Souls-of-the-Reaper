@@ -3,17 +3,17 @@
 The game is an AOT recompilation of the Xbox 360 executable using a pinned [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) (commit recorded in [`port/base/rexglue.lock.json`](../port/base/rexglue.lock.json)). A full build does, in order:
 
 1. Extract the disc image into `game/` (verifying `Default.xex`).
-2. Optionally stage Title Update 2 as a small overlay in `game/tu2/`.
+2. Optionally stage Title Update 2 as a small overlay in `game/update/`.
 3. Clone, patch and build the pinned SDK into `tools/` (one-time).
 4. Run codegen into `port/generated/`, apply the hand patches (`scripts/apply_generated_patches.py`).
 5. Compile the game into `port/out/build/<variant>/`.
 
-Every step is skipped when its output already exists, so an interrupted build can be resumed with the same command. Budget roughly 15 GiB of disk for a first build with TU2, and 12+ minutes for the first SDK build and codegen.
+Every step is skipped when its output already exists, so an interrupted build can be resumed with the same command. Budget roughly 15 GiB of disk for a first build with update, and 12+ minutes for the first SDK build and codegen.
 
 ## Inputs
 
 - **Disc image**: USA Ultimate Evil Edition (`.iso`). Or an already-extracted folder holding `Default.xex` and `CPKs/` (the filename must be exactly `Default.xex`).
-- **Title update** (optional): the USA TU2 package, `tu00000002_00000000`.
+- **Title update** (optional): the USA update package, `tu00000002_00000000`.
 
 ## Windows
 
@@ -33,7 +33,7 @@ Every step is skipped when its output already exists, so an interrupted build ca
 python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\tu00000002_00000000
 ```
 
-Drop `--title-update` for a base-only build. `--variants base,tu2,base-plain,tu2-plain` selects which executables to compile (`-plain` omits the optional PC features). `--check` validates inputs and lists the remaining steps without building.
+Drop `--title-update` for a base-only build. `--variants base,update,base-plain,update-plain` selects which executables to compile (`-plain` omits the optional PC features). `--check` validates inputs and lists the remaining steps without building.
 
 ### Step by step
 
@@ -45,7 +45,7 @@ python scripts\build_windows.py --build-sdk --game-dir game
 
 - `--build-sdk` clones, patches and builds the SDK (`tools\rexglue-sdk-win`, installed to `tools\rexglue-install-win`). Omit it on later builds.
 - `--skip-codegen` reuses generated sources, for when only host code (`port\src`) changed.
-- `--title-update tu2` builds the TU2 executable (needs the staged overlay, see the [TU2 guide](../port/title_updates/tu2/README.md)).
+- `--title-update usa` builds the update executable (needs the staged overlay, see the [update guide](../port/title_updates/update/README.md)).
 - `--no-extra-features` compiles without the optional PC features.
 - `--jobs N` sets build parallelism (default: CPU count).
 
@@ -77,7 +77,7 @@ Use `--cmake /path/to/cmake` if CMake is not on `PATH`. The CPU baseline is x86-
 ```sh
 python3 scripts/build_client.py --iso /path/to/disc.iso \
   [--title-update /path/to/tu00000002_00000000] \
-  [--variants base,tu2,base-plain,tu2-plain]
+  [--variants base,update,base-plain,update-plain]
 ```
 
 ### Step by step
@@ -94,7 +94,7 @@ python3 scripts/run_linux.py
 
 - Use `--game-dir /path/to/extracted/disc` to point at a disc extracted elsewhere.
 - Use `--sdk-prefix /path/to/installed/sdk` to reuse an installed SDK. It must already include the tracked patches in `patches/common/`; `--build-sdk` is what applies them.
-- `--skip-codegen`, `--title-update tu2`, `--no-extra-features` and `--jobs N` behave as on Windows.
+- `--skip-codegen`, `--title-update usa`, `--no-extra-features` and `--jobs N` behave as on Windows.
 - `--probe` builds the asset-free GPU diagnostics instead of the game.
 
 Output: `port/out/build/linux-amd64-relwithdebinfo/diablo3`. Saves, logs and caches live in `$XDG_DATA_HOME/souls-of-the-reaper` (default `~/.local/share/souls-of-the-reaper`); override with `--state-dir`.
@@ -106,15 +106,15 @@ More run options, diagnostics and input notes are in the [Linux integration note
 | Variant | Directory under `port/out/build/` |
 | --- | --- |
 | Base | `<platform>-amd64-relwithdebinfo` |
-| TU2 | `<platform>-amd64-tu2-relwithdebinfo` |
+| update | `<platform>-amd64-update-relwithdebinfo` |
 | Base, no extras | `<platform>-amd64-plain-relwithdebinfo` |
-| TU2, no extras | `<platform>-amd64-tu2-plain-relwithdebinfo` |
+| update, no extras | `<platform>-amd64-update-plain-relwithdebinfo` |
 
 `<platform>` is `win` or `linux`. Normal builds contain the optional [PC features](../port/extra-features.md); they are switched on at launch with `--extra_features` (`-ExtraFeatures` in `run_windows.ps1`).
 
 ## Troubleshooting
 
-- **`SHA-256 mismatch` / `Default.xex missing`**: only the unmodified USA Ultimate Evil Edition disc (and USA TU2) is supported at this time.
+- **`SHA-256 mismatch` / `Default.xex missing`**: only the unmodified USA Ultimate Evil Edition disc (and USA update) is supported at this time.
 - **`SDK revision mismatch`**: delete `tools/rexglue-sdk-*` and rerun with `--build-sdk`.
 - **Stale generated code after pulling changes** to manifests, `config/*.toml` or SDK patches: rerun without `--skip-codegen`.
 - **Windows and Linux SDKs are separate** (`tools/rexglue-sdk-win` vs `tools/rexglue-sdk-linux`); do not share a prefix between them. Generated sources in `port/generated/` are shared.

@@ -1,7 +1,7 @@
-// Optional PC hooks shared by the base disc and verified USA TU2.
+// Optional PC hooks shared by the base disc and verified USA update.
 // See port/extra-features.md for the executable and address audit.
-#ifdef SOULS_TITLE_UPDATE_2
-#include "generated/tu2/diablo3_pch.h"
+#ifdef SOULS_TITLE_UPDATE
+#include "generated/update/diablo3_pch.h"
 #else
 #include "generated/base/diablo3_pch.h"
 #endif

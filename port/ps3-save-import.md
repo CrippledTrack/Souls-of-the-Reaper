@@ -1,7 +1,7 @@
-# Experimental PS3 save importer for TU2
+# Experimental PS3 save importer for update
 
 `scripts/import_ps3_save.py` inspects an extracted RPCS3 Diablo III: Reaper of
-Souls save and can produce a separate state directory for the Xbox TU2 build.
+Souls save and can produce a separate state directory for the Xbox update build.
 It uses only Python's standard library. Imported gameplay and save/reload
 compatibility have not been validated.
 
@@ -11,7 +11,7 @@ compatibility have not been validated.
 python3 scripts/import_ps3_save.py /path/to/BLUS31437-AUTOSAVE
 ```
 
-Optionally compare versions and hero filenames against an existing Xbox TU2
+Optionally compare versions and hero filenames against an existing Xbox update
 save, also read-only:
 
 ```sh
@@ -21,7 +21,7 @@ python3 scripts/import_ps3_save.py /path/to/BLUS31437-AUTOSAVE \
 
 Inspection reports account and hero versions, embedded hero IDs, the proposed
 filenames, and payload hashes. The format check currently accepts account
-version 108 and hero/digest version 905, observed in the local PS3 and Xbox TU2
+version 108 and hero/digest version 905, observed in the local PS3 and Xbox update
 references. Matching versions do not establish compatibility of every nested
 field or platform-specific value. Saves with other versions (for example from
 other editions) are refused at import with a message naming the versions found;
@@ -70,29 +70,29 @@ No Xbox content header is fabricated. The inspected SDK's content manager can
 enumerate directories without a header by constructing metadata from the path;
 complete game loading still needs validation.
 
-## Try the imported save with TU2
+## Try the imported save with update
 
 ```sh
-python3 scripts/run_linux.py --title-update tu2 --extra-features \
-  --game-dir /path/to/updated-tu2-disc \
+python3 scripts/run_linux.py --title-update usa --extra-features \
+  --game-dir /path/to/updated-disc \
   --state-dir /path/to/new-ps3-import-state --vulkan_device=1
 ```
 
 You can also import and launch in one command:
 
 ```sh
-python3 scripts/run_linux.py --title-update tu2 --extra-features \
-  --game-dir /path/to/updated-tu2-disc \
+python3 scripts/run_linux.py --title-update usa --extra-features \
+  --game-dir /path/to/updated-disc \
   --import-ps3-save /path/to/BLUS31437-AUTOSAVE --vulkan_device=1
 ```
 
-Without `--state-dir`, this selects a separate `souls-of-the-reaper-tu2-ps3-import`
+Without `--state-dir`, this selects a separate `souls-of-the-reaper-update-ps3-import`
 application-data directory. On first launch it imports the source; later launches
 reuse the imported save without replacing subsequent gameplay progress. An
 existing directory without a matching import report is rejected. To start another
 import, select a new `--state-dir`.
 
-This uses the imported state rather than your usual TU2 state. Future game saves
+This uses the imported state rather than your usual update state. Future game saves
 write to that imported state. The importer never mounts the RPCS3 source as a
 writable save location.
 

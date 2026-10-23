@@ -1,4 +1,4 @@
-# TU2-specific leaf at 0x82517CA0; ends at the zero padding at 0x82517D24.
+# update-specific leaf at 0x82517CA0; ends at the zero padding at 0x82517D24.
 # The internal return block 0x82517CB4 is reached from 0x82517CCC.
 # Without an explicit extent, gap filling splits the shared return block and
 # validation treats this backward branch as an unresolved tail call.

@@ -40,7 +40,7 @@ class Diablo3App : public rex::ReXApp {
   // ...]"). GetName() ("diablo3") is untouched on purpose - it also names the
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
-#if !defined(__linux__) && !defined(SOULS_TITLE_UPDATE_2)
+#if !defined(__linux__) && !defined(SOULS_TITLE_UPDATE)
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
@@ -75,12 +75,14 @@ class Diablo3App : public rex::ReXApp {
 #ifdef SOULS_GPU_PLUGIN
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
-#ifdef SOULS_TITLE_UPDATE_2
+#ifdef SOULS_TITLE_UPDATE
     // Overlay layout: the pristine disc is the game root and the patched
-    // executable sits in <game>/tu2 beside the update CPKs (mounted as update:).
+    // executable sits in <game>/update beside the update CPKs (mounted as update:).
     std::error_code ec;
-    if (std::filesystem::is_regular_file(game_data_root() / "tu2" / "Default.xex", ec)) {
-      xex_image = "game:\\tu2\\Default.xex";
+    if (std::filesystem::is_regular_file(game_data_root() / "update" / "Default.xex", ec)) {
+      xex_image = "game:\\update\\Default.xex";
+    } else if (std::filesystem::is_regular_file(game_data_root() / "tu2" / "Default.xex", ec)) {
+      xex_image = "game:\\tu2\\Default.xex";  // overlay staged before it was renamed
     }
 #endif
   }

@@ -23,11 +23,11 @@ optionally, the USA Title Update 2 package). The launcher's Build panel runs the
 python3 scripts/build_client.py --iso /path/to/disc.iso [--title-update /path/to/tu00000002_00000000]
 ```
 
-The matching USA TU2 can also be built separately; see the
-[title update setup](port/title_updates/tu2/README.md).
+The matching USA update can also be built separately; see the
+[title update setup](port/title_updates/update/README.md).
 
 A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existing
-interface on Linux and Windows and selects base, extras and TU2 builds. The
+interface on Linux and Windows and selects base, extras and update builds. The
 original PowerShell/WebView2 launcher remains available on Windows.
 
 ### Linux (Vulkan)

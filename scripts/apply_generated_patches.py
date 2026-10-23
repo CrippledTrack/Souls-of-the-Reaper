@@ -21,7 +21,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
     D3RequestGameExit();
 }""",
     }
-    if title_update == "tu2":
+    if title_update == "usa":
         relocated = {"sub_831583B0": "sub_83161AD0",
                      "sub_83158680": "sub_83161DA0",
                      "sub_82632E00": "sub_826374E8"}
@@ -29,7 +29,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
                         for symbol, body in replacements.items()}
     elif title_update is not None:
         raise ValueError(f"Unsupported title update: {title_update}")
-    exit_symbol = "sub_826374E8" if title_update == "tu2" else "sub_82632E00"
+    exit_symbol = "sub_826374E8" if title_update == "usa" else "sub_82632E00"
     edits = {}
     for symbol, replacement in replacements.items():
         pattern = re.compile(r"DEFINE_REX_FUNC\(" + symbol + r"\) \{.*?^\}", re.S | re.M)
@@ -51,7 +51,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
         edits[path] = text
     # Run the host setjmp in each caller's frame (see D3_GUEST_SETJMP): a
     # longjmp into the returned replacement function corrupts the host stack.
-    setjmp_symbol = "sub_83161AD0" if title_update == "tu2" else "sub_831583B0"
+    setjmp_symbol = "sub_83161AD0" if title_update == "usa" else "sub_831583B0"
     call = re.compile(r"\b" + setjmp_symbol + r"\(ctx, base\);")
     uses = 0
     for path in directory.glob("*_recomp.*.cpp"):
@@ -76,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", nargs="?", type=pathlib.Path,
                         default=ROOT / "port/generated/base")
-    parser.add_argument("--title-update", choices=["tu2"])
+    parser.add_argument("--title-update", choices=["usa"])
     args = parser.parse_args()
     try:
         patch_generated(args.directory, args.title_update)

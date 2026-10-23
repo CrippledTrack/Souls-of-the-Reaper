@@ -9,7 +9,7 @@
   const settings = window.LAUNCHER_SETTINGS;
   const status = document.getElementById('launchStatus');
   const panel = document.getElementById('setup');
-  const fields = ['gameDir', 'userDataRoot', 'userDataRootTu2', 'username', 'vulkanDevice'];
+  const fields = ['gameDir', 'userDataRoot', 'userDataRootUpdate', 'vulkanDevice'];
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {
@@ -75,17 +75,17 @@
     document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update 2 package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
   }
   document.getElementById('openBuild').hidden = !caps.canBuild;
-  // TU2 is an overlay on the base game, and each variant is a full separate
-  // compile, so a TU2 build replaces its base counterpart instead of joining it.
+  // The title update is an overlay on the base game, and each variant is a full separate
+  // compile, so an update build replaces its base counterpart instead of joining it.
   // Only these events switch the selection; the user can still tick Base again.
   const variantBox = value => variantBoxes.find(b => b.value === value);
-  const BASE_OF = { tu2: 'base', 'tu2-plain': 'base-plain' };
+  const BASE_OF = { update: 'base', 'update-plain': 'base-plain' };
   function titleUpdateAdded() {
     const bases = Object.entries(BASE_OF).filter(([, base]) => variantBox(base).checked);
     if (bases.length) {
       bases.forEach(([tu, base]) => { variantBox(base).checked = false; variantBox(tu).checked = true; });
-    } else if (!variantBoxes.some(b => b.checked && b.value.startsWith('tu2'))) {
-      variantBox('tu2').checked = true;
+    } else if (!variantBoxes.some(b => b.checked && b.value.startsWith('update'))) {
+      variantBox('update').checked = true;
     }
   }
   variantBoxes.forEach(box => box.addEventListener('change', () => {
@@ -126,7 +126,7 @@
       const path = await invoke('pick_file', { kind });
       if (!path) return;
       button.previousElementSibling.value = path;
-      // A title update means a TU2 build is wanted, in place of the base one.
+      // A title update means an update build is wanted, in place of the base one.
       if (kind === 'titleUpdate') titleUpdateAdded();
     } catch (error) { buildStep.textContent = String(error); }
   }));
@@ -155,11 +155,11 @@
       buildStep.textContent = String(error);
     } finally { setBuilding(false); }
   });
-  // Same signal as the launcher's TU2 autoselect (caps.tu2Installed): once the
-  // update is there, the Build panel opens on TU2 instead of Base so a rebuild
+  // Same signal as the launcher's update autoselect (caps.updateInstalled): once the
+  // update is there, the Build panel opens on update instead of Base so a rebuild
   // does not make both. A saved package path counts too. Applied once, so a
   // deliberate Base tick later is left alone.
-  if (caps.tu2Installed || (settings.buildTitleUpdate ?? '').trim()) titleUpdateAdded();
+  if (caps.updateInstalled || (settings.buildTitleUpdate ?? '').trim()) titleUpdateAdded();
   if (!caps.builds.length && caps.canBuild) openBuild();
 
   window.LAUNCHER_HOST = {
@@ -168,6 +168,12 @@
         if (message.type !== 'play') { await invoke('window_action', { action: message.type }); return; }
         // Only Save applies the panel fields; Play keeps the saved folders.
         settings.uiState = uiState();
+        // The player name is a main-screen row; keep it with the other saved settings.
+        const name = String(message.config.username ?? '').trim();
+        if (name !== settings.username) {
+          settings.username = name;
+          invoke('save_settings', { settings }).catch(error => showStatus(String(error)));
+        }
         const button = document.getElementById('playBtn');
         button.disabled = true; showStatus('Starting game…');
         try { await invoke('launch_game', { settings, options: message.config }); }

@@ -42,9 +42,9 @@ struct Caps<'a> {
     builds: &'a [Build],
     defaults: &'a Defaults,
     can_build: bool,
-    /// The TU2 update is in the game folder (drives the TU2 autoselect and the
+    /// The title update is in the game folder (drives the update autoselect and the
     /// Build panel's default variant).
-    tu2_installed: bool,
+    update_installed: bool,
 }
 
 fn load_settings(path: &Path) -> Settings {
@@ -209,8 +209,8 @@ async fn start_build(
         .repo
         .clone()
         .ok_or("Building needs the Souls of the Reaper source checkout.")?;
-    let (game, game_tu2) = launch::game_folders(&settings, &host.defaults);
-    let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_tu2)?;
+    let (game, game_update) = launch::game_folders(&settings, &host.defaults);
+    let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
     write_settings(&host.settings_file, &settings)?;
 
     let mut command = python();
@@ -368,9 +368,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         settings.ui_state = serde_json::json!({ "res": -1, "display": -1 });
     }
 
-    // TU2 is an overlay in the base game folder: once its files are there, open on it.
-    let tu2 = launch::tu2_installed(&builds, &settings, &defaults);
-    launch::apply_default_build(&mut settings.ui_state, &builds, tu2);
+    // The title update is an overlay in the base game folder: once its files are there, open on it.
+    let update = launch::update_installed(&builds, &settings, &defaults);
+    launch::apply_default_build(&mut settings.ui_state, &builds, update);
 
     let caps = Caps {
         platform: platform.name(),
@@ -381,13 +381,18 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         builds: &builds,
         defaults: &defaults,
         can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file()),
-        tu2_installed: tu2,
+        update_installed: update,
     };
+    // The page shows its Player Name row from the name reported here.
+    let mut saved_state = settings.ui_state.clone();
+    if let Some(state) = saved_state.as_object_mut() {
+        state.insert("username".into(), settings.username.clone().into());
+    }
     let init = format!(
         "window.LAUNCHER_CAPS={};window.LAUNCHER_SETTINGS={};window.SAVED_STATE={};",
         serde_json::to_string(&caps)?,
         serde_json::to_string(&settings)?,
-        serde_json::to_string(&settings.ui_state)?,
+        serde_json::to_string(&saved_state)?,
     );
     app.manage(Host {
         platform,

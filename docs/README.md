@@ -8,7 +8,7 @@
 Related notes that live next to the code:
 
 - [Linux integration notes](../port/base/README.md): diagnostics, saves, GPU selection, input
-- [Title Update 2 setup](../port/title_updates/tu2/README.md)
+- [Title Update 2 setup](../port/title_updates/update/README.md)
 - [Optional PC features](../port/extra-features.md)
 - [Tauri launcher reference](../launcher/tauri/README.md): options, launch settings, tests
 

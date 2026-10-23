@@ -1,7 +1,7 @@
 # Optional PC features
 
 The optional PC features modify the base game on Windows and Linux, and the
-verified USA TU2 build:
+verified USA update build:
 
 - The press-button launch screen appends ` + Extras` to the original version.
 - An Options > Video left/right selector, `Render resolution (restart required)`,
@@ -23,7 +23,7 @@ stay **off at launch** until the `extra_features` cvar is set
 `--extra-features` / `-ExtraFeatures` / "Base + Extras"). Without it every hook
 hands straight back to the original game function, so the game keeps its
 existing menus, autosave wording and version label, and one executable serves
-both modes. The base disc and TU2 still need separate executables because they
+both modes. The base disc and update still need separate executables because they
 use separate audited address maps with shared hook logic.
 
 To compile **without** any of the extra code, build a plain executable with
@@ -99,27 +99,27 @@ are not available. The graphical launcher exposes the choice as Image Scaling.
 An SDK built before this patch does not know the flag; rebuild it with
 `--build-sdk`.
 
-### Linux TU2
+### Linux update
 
-Use the staged TU2 executable and assets:
+Use the staged update executable and assets:
 
 ```sh
-python3 scripts/build_linux.py --title-update tu2 \
+python3 scripts/build_linux.py --title-update usa \
   --sdk-prefix /path/to/rexglue-install \
-  --game-dir /path/to/updated-tu2-disc \
+  --game-dir /path/to/updated-disc \
   --cmake /path/to/cmake
-python3 scripts/run_linux.py --title-update tu2 --extra-features --vulkan_device=1 \
-  --game-dir /path/to/updated-tu2-disc
+python3 scripts/run_linux.py --title-update usa --extra-features --vulkan_device=1 \
+  --game-dir /path/to/updated-disc
 ```
 
-The binary is `port/out/build/linux-amd64-tu2-relwithdebinfo/diablo3`
-(`linux-amd64-tu2-plain-relwithdebinfo` with `--no-extra-features`). It uses the
-TU2 user-data directory, and ignores the saved render scale unless launched
+The binary is `port/out/build/linux-amd64-update-relwithdebinfo/diablo3`
+(`linux-amd64-update-plain-relwithdebinfo` with `--no-extra-features`). It uses the
+update user-data directory, and ignores the saved render scale unless launched
 with `--extra-features`. For direct
-CMake builds, enable both `SOULS_TITLE_UPDATE_2` and `SOULS_ENABLE_EXTRA_FEATURES`
-and set `SOULS_BASE_XEX` to the patched TU2 `Default.xex`. Its required SHA-256 is
+CMake builds, enable both `SOULS_TITLE_UPDATE` and `SOULS_ENABLE_EXTRA_FEATURES`
+and set `SOULS_BASE_XEX` to the patched update `Default.xex`. Its required SHA-256 is
 `447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f`.
-Windows TU2 uses the same shared codegen and hooks; Windows build/runtime validation is pending.
+Windows The title update uses the same shared codegen and hooks; Windows build/runtime validation is pending.
 
 ## Saved settings and game behavior
 
@@ -183,7 +183,7 @@ validated by CMake for optional builds on both platforms. Regenerate Windows
 sources from this same base disc before enabling the hooks.
 
 The base-disc generated calls confirm the string and descriptor helpers used
-here. The TU2 address audit below records the corresponding updated functions.
+here. The update address audit below records the corresponding updated functions.
 
 | Purpose | Base-disc address |
 | --- | --- |
@@ -232,12 +232,12 @@ with the `%s` format at `0x82003ED0`. That call supplies the build string to
 It preserves the returned guest context, checks buffer capacity, and leaves
 other formatting calls and the game's actual version data untouched.
 
-## TU2 address audit
+## update address audit
 
 Every game-build-specific value (guest function addresses, data addresses,
 structure offsets and the expected `Default.xex` SHA-256) lives in one profile
 per build, [`src/features/versions/<id>.json`](src/features/versions/). CMake
-reads the selected profile (`base`, or `tu2` with `SOULS_TITLE_UPDATE_2`;
+reads the selected profile (`base`, or `update-usa` with `SOULS_TITLE_UPDATE`;
 override with `-DSOULS_FEATURE_VERSION=<id>`), verifies the executable hash and
 generated symbols, and writes the header the hooks compile against. Supporting
 another build means adding a profile with the same names; no C++ changes.
@@ -245,8 +245,8 @@ another build means adding a profile with the same names; no C++ changes.
 To generate a candidate profile for a new executable from a verified one:
 
 ```sh
-python3 scripts/find_feature_addresses.py --reference tu2 \
-  --reference-xex game/tu2/Default.xex --target-xex /path/to/new/Default.xex --id mybuild
+python3 scripts/find_feature_addresses.py --reference update \
+  --reference-xex game/update/Default.xex --target-xex /path/to/new/Default.xex --id mybuild
 ```
 
 It decodes both executables (`d3-image`, built from `scripts/d3-patch`), finds
@@ -254,15 +254,15 @@ each function by its masked instruction body, and re-derives data addresses
 from the same code. Entries that are not a unique body match are flagged
 (`weak`, `ambiguous`, `unresolved`) and must be checked by hand. Run
 `--sign <id> --target-xex <xex>` to refresh a profile's runtime signatures.
-Reproducing the audited TU2 profile from the base disc is part of the test
+Reproducing the audited update profile from the base disc is part of the test
 suite. At runtime the hooks check each profile function's leading
 instructions in guest memory and disable the extras (with a log warning) on a
 mismatch; the log reports how many signatures were verified.
-[`extra-features-audit.json`](title_updates/tu2/extra-features-audit.json)
+[`extra-features-audit.json`](title_updates/update/extra-features-audit.json)
 records the instruction-context matches, corroborating generated call sites,
 and the unchanged descriptor/control layouts.
 
-| Purpose | Base disc | TU2 |
+| Purpose | Base disc | update |
 | --- | --- | --- |
 | Options initialization | `0x826FD808` | `0x82703EF0` |
 | Selector count / initialization | `0x826FBFF0` / `0x826FC030` | `0x827026D8` / `0x82702718` |
@@ -285,9 +285,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 Tests cover save/load and failure handling, autosave wording, invalid settings,
 command-line precedence, custom user-data directories and normal-build
 isolation. The native logic test requires a C++23 compiler. Desktop visual checks and a relaunch at a newly saved scale remain to be
-verified. The TU2 device-1 runtime log confirms the option was added, saved 2×
-was applied at startup, PC autosave wording was used, and a selection of 1×
-was saved during a clean 97-second run.
+verified.
 
 An SDK integration test verifies applying the saved scale after GPU cvar
 registration, explicit override handling and invalid-setting fallback. It needs
@@ -307,6 +305,6 @@ options, and bounds checks for the active descriptor using simulated helpers.
 The same CMake test project supports the Windows SDK. Native Windows
 compilation and desktop visual checks require a Windows development machine.
 
-To run those SDK tests against TU2 generated hooks, configure a separate test
+To run those SDK tests against update generated hooks, configure a separate test
 build with `-DSOULS_TEST_TITLE_UPDATE_2=ON`. Both variants test the version suffix
 and English autosave wording in addition to selector behavior.

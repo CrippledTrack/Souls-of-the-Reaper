@@ -12,7 +12,7 @@
 param(
     [switch]$ExtraFeatures,
     [switch]$Plain,
-    [ValidateSet("tu2")]
+    [ValidateSet("usa")]
     [string]$TitleUpdate,
     [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
     [string]$Config = 'RelWithDebInfo',
@@ -42,9 +42,14 @@ $suffix = $Config.ToLowerInvariant()
 if ($Plain -and $ExtraFeatures) { throw '-ExtraFeatures needs the default build; drop -Plain.' }
 $buildName = if ($Plain) { "win-amd64-plain-$suffix" } else { "win-amd64-$suffix" }
 if ($TitleUpdate) {
-    $variant = if ($Plain) { 'tu2-plain' } else { 'tu2' }
+    $variant = if ($Plain) { 'update-plain' } else { 'update' }
     $buildName = "win-amd64-$variant-$suffix"
-    if (-not $PSBoundParameters.ContainsKey('UserDataRoot')) { $UserDataRoot += '-tu2' }
+    if (-not $PSBoundParameters.ContainsKey('UserDataRoot')) {
+        # Saves created before the folder was renamed (-tu2) stay in use.
+        $legacySaves = "$UserDataRoot-tu2"
+        $UserDataRoot += '-update'
+        if (-not (Test-Path -LiteralPath $UserDataRoot) -and (Test-Path -LiteralPath $legacySaves)) { $UserDataRoot = $legacySaves }
+    }
 }
 $buildDir = Join-Path $root "port\out\build\$buildName"
 $exe = Join-Path $buildDir 'diablo3.exe'
@@ -54,23 +59,25 @@ if (-not (Test-Path -LiteralPath $exe)) {
     throw "Executable missing. Build with: python scripts/build_windows.py$tuArg$plainArg"
 }
 $game = (Resolve-Path -LiteralPath $GameDir).Path
-# TU2 is either an overlay (<game>\tu2 holds the patched executable and update CPKs) or a full staged copy.
+# The title update is either an overlay (<game>\update holds the patched executable and update CPKs) or a full staged copy.
 $updateRoot = $game
 $xex = Join-Path $game 'Default.xex'
-if ($TitleUpdate -and (Test-Path -LiteralPath (Join-Path $game 'tu2\Default.xex'))) {
-    $updateRoot = Join-Path $game 'tu2'
+# The overlay was staged as <game>\tu2 before it was renamed; that folder still works.
+$overlay = @('update', 'tu2') | Where-Object { Test-Path -LiteralPath (Join-Path $game "$_\Default.xex") } | Select-Object -First 1
+if ($TitleUpdate -and $overlay) {
+    $updateRoot = Join-Path $game $overlay
     $xex = Join-Path $updateRoot 'Default.xex'
 }
 if (-not (Test-Path -LiteralPath $xex)) {
-    throw 'GameDir must contain Default.xex (for TU2: build or stage TU2 first).'
+    throw 'GameDir must contain Default.xex (for update: build or stage the update first).'
 }
 if ($TitleUpdate) {
     $expected = '447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f'
     if ((Get-FileHash -LiteralPath $xex -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
         if ($updateRoot -eq $game) {
-            throw "TU2 is not installed in $game (there is no tu2\Default.xex). Add it with: python scripts/build_client.py --title-update <Title Update 2 package> --game-dir `"$game`" --variants tu2"
+            throw "The title update is not installed in $game (there is no update\Default.xex). Add it with: python scripts/build_client.py --title-update <Title Update 2 package> --game-dir `"$game`" --variants update"
         }
-        throw 'The executable in GameDir\tu2 is not the verified USA TU2 executable.'
+        throw 'The executable in GameDir\update is not the verified USA update executable.'
     }
 }
 $state = [System.IO.Path]::GetFullPath($UserDataRoot)

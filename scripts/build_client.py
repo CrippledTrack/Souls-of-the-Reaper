@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build playable clients from a Diablo III disc image and, optionally, the USA TU2 package.
+"""Build playable clients from a Diablo III disc image and, optionally, the USA update package.
 
 Each step is skipped when its output already exists and verifies, so an
 interrupted build can be resumed with the same command. Progress lines of the
@@ -19,17 +19,17 @@ import sys
 import build_windows
 import extract_disc
 import extract_update
-from stage_title_update import TU2_PACKAGE_SHA256, stage, stage_overlay
-from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
+from stage_title_update import USA_UPDATE_PACKAGE_SHA256, stage, stage_overlay
+from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-TU2_CPKS = ("Patch.cpk", "Patch2.cpk", "enUS_Patch.cpk", "enUS_Patch2.cpk")
+UPDATE_CPKS = ("Patch.cpk", "Patch2.cpk", "enUS_Patch.cpk", "enUS_Patch2.cpk")
 # Variant id -> (title update, plain). Normal builds carry the optional PC features and
 # switch them on at launch with --extra_features; "plain" omits them from the executable.
-VARIANTS = {"base": (False, False), "tu2": (True, False),
-            "base-plain": (False, True), "tu2-plain": (True, True)}
-LABELS = {"base": "Base", "tu2": "TU2", "base-plain": "Base (no extras)", "tu2-plain": "TU2 (no extras)"}
+VARIANTS = {"base": (False, False), "update": (True, False),
+            "base-plain": (False, True), "update-plain": (True, True)}
+LABELS = {"base": "Base", "update": "Update", "base-plain": "Base (no extras)", "update-plain": "Update (no extras)"}
 WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
 # Rough upper bounds measured on Linux RelWithDebInfo builds.
@@ -63,17 +63,17 @@ def base_ready(game_dir):
     return (game_dir / "disc-manifest.json").is_file() and xex.is_file() and sha256(xex) == DISC_SHA256
 
 
-def tu2_ready(game_dir):
-    """True for a complete overlay (`<game>/tu2`) or a complete separately staged folder."""
-    _, update_root, xex = tu2_layout(game_dir)
+def update_ready(game_dir):
+    """True for a complete overlay (`<game>/update`) or a complete separately staged folder."""
+    _, update_root, xex = update_layout(game_dir)
     return ((update_root / "applied-update-manifest.json").is_file() and xex.is_file()
-            and sha256(xex) == TU2_SHA256
-            and all((update_root / "CPKs" / name).is_file() for name in TU2_CPKS))
+            and sha256(xex) == USA_UPDATE_SHA256
+            and all((update_root / "CPKs" / name).is_file() for name in UPDATE_CPKS))
 
 
-def tu2_dir(args):
-    """The folder TU2 is built and run from: --game-dir-tu2, else the base folder (overlay)."""
-    return args.game_dir_tu2 or args.game_dir
+def game_update_dir(args):
+    """The folder update is built and run from: --game-dir-update, else the base folder (overlay)."""
+    return args.game_dir_update or args.game_dir
 
 
 def stamp_matches(variant_dir, expected):
@@ -135,8 +135,8 @@ def verify_iso(iso):
         found = extract_disc.file_sha256(iso, "Default.xex")
     except ValueError as error:
         raise BuildError(f"{iso.name} is not a readable Xbox 360 game disc image ({error}).")
-    if found == TU2_SHA256:
-        raise BuildError("That image already contains the TU2 executable; choose the original disc image.")
+    if found == USA_UPDATE_SHA256:
+        raise BuildError("That image already contains the update executable; choose the original disc image.")
     if found != DISC_SHA256:
         raise BuildError(f"{iso.name} is not the USA Diablo III: Reaper of Souls - Ultimate Evil Edition disc "
                          "(Default.xex does not match). Other regions are not supported yet.")
@@ -145,9 +145,9 @@ def verify_iso(iso):
 def verify_package(package):
     if not package.is_file():
         raise BuildError(f"Title update package not found: {package}")
-    if sha256(package) != TU2_PACKAGE_SHA256:
+    if sha256(package) != USA_UPDATE_PACKAGE_SHA256:
         raise BuildError(f"{package.name} is not the verified USA Title Update 2 package "
-                         f"(expected SHA-256 {TU2_PACKAGE_SHA256}).")
+                         f"(expected SHA-256 {USA_UPDATE_PACKAGE_SHA256}).")
 
 
 def build_patcher(args):
@@ -169,20 +169,20 @@ def build_patcher(args):
 
 
 def build_variant(args, variant):
-    tu2, plain = VARIANTS[variant]
-    game = tu2_dir(args) if tu2 else args.game_dir
+    update, plain = VARIANTS[variant]
+    game = game_update_dir(args) if update else args.game_dir
     command = [sys.executable, SCRIPTS / ("build_windows.py" if WINDOWS else "build_linux.py"),
                "--game-dir", game, "--sdk-prefix", args.sdk_prefix, "--jobs", args.jobs]
     if WINDOWS:
         command += ["--sdk-source", args.sdk_source]  # CMake, Ninja and Clang come from PATH
     else:
         command += ["--cmake", args.cmake]
-    if tu2:
-        command += ["--title-update", "tu2"]
+    if update:
+        command += ["--title-update", "usa"]
     if plain:
         command.append("--no-extra-features")
     # Reuse sources generated earlier in this or a previous run for the same executable.
-    if not args.regenerate and stamp_matches("tu2" if tu2 else "base", TU2_SHA256 if tu2 else DISC_SHA256):
+    if not args.regenerate and stamp_matches("update" if update else "base", USA_UPDATE_SHA256 if update else DISC_SHA256):
         command.append("--skip-codegen")
     run(*command)
 
@@ -190,35 +190,35 @@ def build_variant(args, variant):
 def plan(args):
     """Return [(title, action)] for the work still to do, after checking inputs."""
     steps = []
-    wanted_tu2 = any(VARIANTS[v][0] for v in args.variants) or (args.data_only and args.title_update)
+    wanted_update = any(VARIANTS[v][0] for v in args.variants) or (args.data_only and args.title_update)
     need_base = not base_ready(args.game_dir)
-    overlay = args.game_dir_tu2 is None
-    need_tu2 = wanted_tu2 and not tu2_ready(tu2_dir(args))
+    overlay = args.game_dir_update is None
+    need_update = wanted_update and not update_ready(game_update_dir(args))
     compile_needed = bool(args.variants) and not args.data_only
     need_sdk = compile_needed and not sdk_installed(args)
 
     if need_base and not args.iso:
         raise BuildError(f"No extracted disc in {args.game_dir}; choose your disc image (ISO).")
-    if need_tu2:
-        incomplete = args.game_dir / "tu2" if overlay else args.game_dir_tu2
+    if need_update:
+        incomplete = args.game_dir / "update" if overlay else args.game_dir_update
         if incomplete.exists():
-            raise BuildError(f"{incomplete} exists but is not a complete staged TU2; "
-                             "move it aside or choose another TU2 game folder.")
+            raise BuildError(f"{incomplete} exists but is not a complete staged update; "
+                             "move it aside or choose another update game folder.")
         if not args.title_update:
-            raise BuildError("TU2 builds need the USA Title Update 2 package (tu00000002_00000000).")
-    problems = missing_tools(args, compile_needed, need_tu2 and not args.patcher)
+            raise BuildError("update builds need the USA Title Update 2 package (tu00000002_00000000).")
+    problems = missing_tools(args, compile_needed, need_update and not args.patcher)
     if problems:
         raise BuildError("\n".join(problems))
 
     if need_base:
         verify_iso(args.iso)
-    if need_tu2:
+    if need_update:
         verify_package(args.title_update)
 
     disc = disc_bytes(args.iso) if need_base else sum(
         f.stat().st_size for f in args.game_dir.rglob("*") if f.is_file())
     needed = disc if need_base else 0
-    if need_tu2 and not overlay and not same_filesystem(args.game_dir, args.game_dir_tu2):
+    if need_update and not overlay and not same_filesystem(args.game_dir, args.game_dir_update):
         needed += disc
     if compile_needed:
         needed += (SDK_BYTES if need_sdk else 0) + VARIANT_BYTES * len(args.variants) + CODEGEN_BYTES * 2
@@ -229,18 +229,18 @@ def plan(args):
 
     if need_base:
         steps.append(("Extract disc image", lambda: extract_disc.extract(args.iso, args.game_dir)))
-    if need_tu2:
-        update_dir = ROOT / "port/out/tu2-update"
+    if need_update:
+        update_dir = ROOT / "port/out/update-staging"
         steps.append(("Extract title update", lambda: extract_update.extract(args.title_update, update_dir)))
         patcher = [args.patcher]
         if not args.patcher:
             def patcher_step():
                 patcher[0] = build_patcher(args)
-            steps.append(("Build TU2 patch tool", patcher_step))
+            steps.append(("Build update patch tool", patcher_step))
         if overlay:
-            steps.append(("Apply TU2", lambda: stage_overlay(args.game_dir, update_dir, patcher[0])))
+            steps.append(("Apply update", lambda: stage_overlay(args.game_dir, update_dir, patcher[0])))
         else:
-            steps.append(("Apply TU2", lambda: stage(args.game_dir, update_dir, args.game_dir_tu2, patcher[0])))
+            steps.append(("Apply update", lambda: stage(args.game_dir, update_dir, args.game_dir_update, patcher[0])))
     if need_sdk:
         sdk = argparse.Namespace(sdk_source=args.sdk_source, sdk_prefix=args.sdk_prefix, jobs=args.jobs)
         if WINDOWS:
@@ -261,14 +261,14 @@ def main(argv=None):
     parser.add_argument("--title-update", type=pathlib.Path, metavar="PACKAGE",
                         help="USA Title Update 2 package (tu00000002_00000000)")
     parser.add_argument("--variants", default=None,
-                        help="Comma-separated builds: base, tu2, base-plain, tu2-plain "
-                             "(default: base, plus tu2 when a title update is given)")
+                        help="Comma-separated builds: base, update, base-plain, update-plain "
+                             "(default: base, plus update when a title update is given)")
     parser.add_argument("--data-only", action="store_true",
                         help="Only prepare the game folders; do not compile")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
-    parser.add_argument("--game-dir-tu2", type=pathlib.Path, default=None,
-                        help="Stage TU2 as a complete separate folder here. By default TU2 is a small "
-                             "tu2/ overlay inside --game-dir (an existing ./game-tu2 is still used)")
+    parser.add_argument("--game-dir-update", type=pathlib.Path, default=None,
+                        help="Stage the update as a complete separate folder here. By default the update is a small "
+                             "update/ overlay inside --game-dir (an existing ./game-update is still used)")
     host = "win" if WINDOWS else "linux"
     parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / f"tools/rexglue-sdk-{host}")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / f"tools/rexglue-install-{host}")
@@ -281,16 +281,16 @@ def main(argv=None):
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if args.variants is None:
-        args.variants = ["base"] + (["tu2"] if args.title_update else [])
+        args.variants = ["base"] + (["update"] if args.title_update else [])
     else:
         args.variants = [v.strip() for v in args.variants.split(",") if v.strip()]
         unknown = [v for v in args.variants if v not in VARIANTS]
         if unknown:
             parser.error(f"unknown variant(s): {', '.join(unknown)}")
-    legacy = ROOT / "game-tu2"
-    if args.game_dir_tu2 is None and legacy.exists() and tu2_ready(legacy):
-        args.game_dir_tu2 = legacy
-    for name in ("iso", "title_update", "game_dir", "game_dir_tu2", "sdk_source", "sdk_prefix", "patcher"):
+    for legacy in (ROOT / "game-update", ROOT / "game-tu2"):  # game-tu2 predates the rename
+        if args.game_dir_update is None and legacy.exists() and update_ready(legacy):
+            args.game_dir_update = legacy
+    for name in ("iso", "title_update", "game_dir", "game_dir_update", "sdk_source", "sdk_prefix", "patcher"):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, value.expanduser().resolve())

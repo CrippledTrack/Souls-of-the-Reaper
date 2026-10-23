@@ -12,8 +12,8 @@
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
 #endif
-#ifdef SOULS_TITLE_UPDATE_2
-#include "generated/tu2/diablo3_pch.h"
+#ifdef SOULS_TITLE_UPDATE
+#include "generated/update/diablo3_pch.h"
 #else
 #include "generated/base/diablo3_pch.h"
 #endif

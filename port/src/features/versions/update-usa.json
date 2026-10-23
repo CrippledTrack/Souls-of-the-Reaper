@@ -1,6 +1,6 @@
 {
-  "id": "tu2",
-  "description": "Verified USA TU2 executable",
+  "id": "update-usa",
+  "description": "Verified USA update executable",
   "executable_sha256": "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f",
   "functions": {
     "version_format_call": {
@@ -319,15 +319,15 @@
   "data": {
     "options_owner": {
       "address": "8330340C",
-      "evidence": "TU2 selector change handler: lis r10,-31952; lwz r11,13324(r10)."
+      "evidence": "update selector change handler: lis r10,-31952; lwz r11,13324(r10)."
     },
     "selector_text": {
       "address": "82080A1C",
-      "evidence": "TU2 label handler: lis r11,-32248; addi r5,r11,2588; string is SelectorTemplateText."
+      "evidence": "update label handler: lis r11,-32248; addi r5,r11,2588; string is SelectorTemplateText."
     },
     "version_call_return": {
       "address": "8247E340",
-      "evidence": "TU2 launch-screen formatting call at 8247E33C to 823BD130, with r4=82003ED0 (%s)."
+      "evidence": "update launch-screen formatting call at 8247E33C to 823BD130, with r4=82003ED0 (%s)."
     },
     "version_format": {
       "address": "82003ED0"

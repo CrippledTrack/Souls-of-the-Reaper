@@ -9,11 +9,11 @@ does not apply to Linux.
 
 ## Title updates
 
-A separate [verified USA TU2 setup](../title_updates/tu2/README.md) stages the updated executable
+A separate [verified USA update setup](../title_updates/update/README.md) stages the updated executable
 and assets, with dedicated codegen, binary and user-data paths. Use
-`--title-update tu2` with the staged `--game-dir` to build or launch it.
+`--title-update usa` with the staged `--game-dir` to build or launch it.
 The default remains the unmodified base disc. Add `--extra-features` when
-launching TU2 to switch on the PC menu features; Windows uses the same TU2
+launching update to switch on the PC menu features; Windows uses the same update
 guest configuration.
 
 ## Build and run
@@ -27,11 +27,11 @@ The simplest route is one command from your disc image (the
 
 ```sh
 python3 scripts/build_client.py --iso /path/to/disc.iso \
-  [--title-update /path/to/tu00000002_00000000] [--variants base,tu2,base-plain,tu2-plain]
+  [--title-update /path/to/tu00000002_00000000] [--variants base,update,base-plain,update-plain]
 ```
 
-It checks the disc, extracts it to `game/`, optionally adds TU2 as a small
-`game/tu2/` overlay, builds the pinned SDK, and compiles the selected builds. Finished
+It checks the disc, extracts it to `game/`, optionally adds update as a small
+`game/update/` overlay, builds the pinned SDK, and compiles the selected builds. Finished
 steps are skipped, so you can run it again after an interruption. Use `--check`
 to validate the inputs and list the remaining steps.
 

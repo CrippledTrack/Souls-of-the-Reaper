@@ -10,8 +10,8 @@ const tauriHtml = readFileSync(new URL('./dist/index.html', import.meta.url), 'u
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 const BUILDS = [
-  { id: 'base', label: 'Base', tu2: false, extras: false, executable: '/r/linux-amd64-relwithdebinfo/diablo3' },
-  { id: 'tu2-extras', label: 'TU2 + Extras', tu2: true, extras: true, executable: '/r/linux-amd64-tu2-extras-relwithdebinfo/diablo3' },
+  { id: 'base', label: 'Base', update: false, extras: false, executable: '/r/linux-amd64-relwithdebinfo/diablo3' },
+  { id: 'update-extras', label: 'Update + Extras', update: true, extras: true, executable: '/r/linux-amd64-update-extras-relwithdebinfo/diablo3' },
 ];
 
 function page(html, globals) {
@@ -38,9 +38,9 @@ function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved =
   const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
     __TAURI__: { core: { invoke }, event: { listen } },
-    LAUNCHER_CAPS: { platform, tu2Installed: !!settings.tu2Installed, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirTu2: '/r/game', userDataRoot: '/d/sotr', userDataRootTu2: '/d/sotr-tu2' } },
-    LAUNCHER_SETTINGS: { gameDir: '', gameDirTu2: '', userDataRoot: '', userDataRootTu2: '', vulkanDevice: -1, ...settings },
-    SAVED_STATE: saved,
+    LAUNCHER_CAPS: { platform, updateInstalled: !!settings.updateInstalled, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirUpdate: '/r/game', userDataRoot: '/d/sotr', userDataRootUpdate: '/d/sotr-update' } },
+    LAUNCHER_SETTINGS: { gameDir: '', gameDirUpdate: '', userDataRoot: '', userDataRootUpdate: '', vulkanDevice: -1, ...settings },
+    SAVED_STATE: { ...saved, username: settings.username ?? '' },
   });
   const emit = (event, payload) => listeners[event]({ payload });
   return { ...p, calls, emit };
@@ -67,7 +67,7 @@ test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => 
 test('Linux shows Vulkan rows and hides D3D12-only options', () => {
   const { rows } = tauriPage();
   assert.deepEqual(rows().map(r => r.label),
-    ['Game Version', 'Render Path', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
+    ['Game Version', 'Render Path', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Player Name', 'Remap Controls ›']);
   assert.equal(rows()[1].value, 'FSI');
   assert.equal(rows()[3].value, 'Off');
 });
@@ -99,7 +99,7 @@ test('Extras builds offer In-game resolution and display; normal builds do not',
   assert.equal(row('Internal Resolution').value, '1×', 'normal build falls back to an explicit scale');
   assert.equal(row('Display').value, 'Fullscreen');
   next('Game Version');
-  assert.equal(row('Game Version').value, 'TU2 + Extras');
+  assert.equal(row('Game Version').value, 'Update + Extras');
   assert.equal(row('Internal Resolution').value, 'In-game');
   assert.equal(row('Display').value, 'In-game');
   next('Internal Resolution');
@@ -107,19 +107,33 @@ test('Extras builds offer In-game resolution and display; normal builds do not',
 });
 
 test('Play sends the selected build, in-game choices and saved menu state', async () => {
-  const { doc, click, next, calls } = tauriPage({ settings: { gameDirTu2: '/games/tu2' } });
+  const { doc, click, next, calls } = tauriPage({ settings: { gameDirUpdate: '/games/update' } });
   next('Game Version');
   click(doc.getElementById('playBtn'));
   await tick();
   const launch = calls.find(c => c.command === 'launch_game');
-  assert.equal(launch.args.options.build, 'tu2-extras');
+  assert.equal(launch.args.options.build, 'update-extras');
   assert.equal(launch.args.options.resScale, 0);
   assert.equal(launch.args.options.fullscreen, null);
   assert.equal(launch.args.options.vkPath, 'fsi');
   assert.equal(launch.args.options.vsync, true);
-  assert.equal(launch.args.settings.gameDirTu2, '/games/tu2');
-  assert.equal(launch.args.settings.uiState.build, 'tu2-extras');
+  assert.equal(launch.args.settings.gameDirUpdate, '/games/update');
+  assert.equal(launch.args.settings.uiState.build, 'update-extras');
   assert.equal(launch.args.settings.uiState.view, undefined);
+});
+
+test('Player Name is a main-screen row, filled from settings and saved on Play', async () => {
+  const { doc, click, row, calls } = tauriPage({ settings: { username: 'Nephalem' } });
+  assert.equal(doc.getElementById('setup').querySelector('#username'), null, 'no longer in the launch settings panel');
+  const input = doc.querySelector('.opt-row[data-key="username"] input.opt-name');
+  assert.equal(input.value, 'Nephalem');
+  assert.equal(input.maxLength, 15);
+  input.value = '  Reaper ';
+  input.dispatchEvent(new doc.defaultView.Event('input'));
+  click(doc.getElementById('playBtn'));
+  await tick();
+  assert.equal(calls.find(c => c.command === 'launch_game').args.settings.username, 'Reaper');
+  assert.equal(calls.find(c => c.command === 'save_settings').args.settings.username, 'Reaper');
 });
 
 test('The font credit under Play opens in the default browser', async () => {
@@ -143,9 +157,9 @@ test('Launch settings show defaults and save a blank Vulkan device as automatic'
   const { doc, click, calls } = tauriPage();
   click(doc.getElementById('setupBtn'));
   assert.equal(doc.getElementById('setup').hidden, false);
-  assert.equal(doc.getElementById('gameDirTu2'), null);
+  assert.equal(doc.getElementById('gameDirUpdate'), null);
   assert.equal(doc.getElementById('vulkanDevice').value, '');
-  assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras: .*tu2-extras/);
+  assert.match(doc.getElementById('buildList').textContent, /Update \+ Extras: .*update-extras/);
   doc.getElementById('userDataRoot').value = ' /saves ';
   click(doc.getElementById('saveSetup'));
   await tick();
@@ -183,12 +197,12 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   click(doc.querySelector('[data-pick="titleUpdate"]'));
   await tick();
   assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/tu00000002_00000000');
-  assert.equal(doc.querySelector('#buildVariants input[value="tu2"]').checked, true, 'choosing a title update selects TU2');
+  assert.equal(doc.querySelector('#buildVariants input[value="update"]').checked, true, 'choosing a title update selects update');
   assert.equal(doc.querySelector('#buildVariants input[value="base"]').checked, false, 'and replaces Base so one build is made');
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['tu2'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/tu00000002_00000000', cmake: '', variants: ['update'] });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);
@@ -202,39 +216,39 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   assert.equal(doc.getElementById('cancelBuild').hidden, true);
   assert.equal(rows()[0].label, 'Game Version');
   assert.equal(row('Game Version').value, 'Base');
-  assert.match(doc.getElementById('buildList').textContent, /TU2 \+ Extras/);
+  assert.match(doc.getElementById('buildList').textContent, /Update \+ Extras/);
   assert.equal(doc.getElementById('launchStatus').textContent, '');
 });
 
-test('Ticking TU2 unticks Base, and Base can still be chosen again on purpose', () => {
+test('Ticking update unticks Base, and Base can still be chosen again on purpose', () => {
   const { doc } = tauriPage({ builds: [] });
   const box = value => doc.querySelector(`#buildVariants input[value="${value}"]`);
   assert.equal(box('base').checked, true);
-  box('tu2').checked = true;
-  box('tu2').dispatchEvent(new doc.defaultView.Event('change'));
+  box('update').checked = true;
+  box('update').dispatchEvent(new doc.defaultView.Event('change'));
   assert.equal(box('base').checked, false);
   box('base').checked = true;
   box('base').dispatchEvent(new doc.defaultView.Event('change'));
-  assert.equal(box('tu2').checked, true, 'an explicit Base choice is not fought');
+  assert.equal(box('update').checked, true, 'an explicit Base choice is not fought');
   const title = doc.getElementById('buildTitleUpdate');
-  box('tu2').checked = false;
+  box('update').checked = false;
   box('base-plain').checked = true;
   title.value = '/isos/tu00000002_00000000';
   title.dispatchEvent(new doc.defaultView.Event('change'));
-  assert.equal(box('tu2-plain').checked, true, 'a plain base build swaps to the plain TU2 build');
+  assert.equal(box('update-plain').checked, true, 'a plain base build swaps to the plain update build');
   assert.equal(box('base-plain').checked, false);
 });
 
-test('TU2 already installed opens the Build panel on TU2 only, like the Game Version default', () => {
-  const { doc } = tauriPage({ builds: [], settings: { tu2Installed: true } });
+test('update already installed opens the Build panel on update only, like the Game Version default', () => {
+  const { doc } = tauriPage({ builds: [], settings: { updateInstalled: true } });
   const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
-  assert.deepEqual(checked, ['tu2']);
+  assert.deepEqual(checked, ['update']);
 });
 
-test('A saved title update package opens the Build panel on TU2 only', () => {
+test('A saved title update package opens the Build panel on update only', () => {
   const { doc } = tauriPage({ builds: [], settings: { buildIso: '/i.iso', buildTitleUpdate: '/isos/tu00000002_00000000' } });
   const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
-  assert.deepEqual(checked, ['tu2']);
+  assert.deepEqual(checked, ['update']);
 });
 
 test('Build failures and cancellation are reported in the panel', async () => {

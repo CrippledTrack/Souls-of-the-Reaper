@@ -291,7 +291,7 @@ class TitleUpdateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_patch_source(broken_base, broken_patch)
 
-    def test_tu2_hooks_and_repeat_runs(self):
+    def test_update_hooks_and_repeat_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             for index, symbol in enumerate(("sub_83161AD0", "sub_83161DA0", "sub_826374E8")):
@@ -299,9 +299,9 @@ class TitleUpdateTests(unittest.TestCase):
                     f"DEFINE_REX_FUNC({symbol}) {{\n  // original\n}}\n")
             (root / "diablo3_recomp.3.cpp").write_text(
                 "DEFINE_REX_FUNC(sub_82DAD168) {\n\tsub_83161AD0(ctx, base);\n}\n")
-            patch_generated(root, "tu2")
+            patch_generated(root, "usa")
             first = {p: p.read_bytes() for p in root.iterdir()}
-            patch_generated(root, "tu2")
+            patch_generated(root, "usa")
             self.assertEqual(first, {p: p.read_bytes() for p in root.iterdir()})
             text = "".join(p.read_text() for p in root.iterdir())
             self.assertIn("D3_GUEST_SETJMP(ctx);", text)
@@ -310,18 +310,18 @@ class TitleUpdateTests(unittest.TestCase):
             self.assertIn("D3RequestTitleUpdateExit();", text)
             self.assertNotIn("sub_831583B0", text)
 
-    def test_tu2_extra_features_flag_and_plain_binary(self):
+    def test_update_extra_features_flag_and_plain_binary(self):
         with tempfile.TemporaryDirectory() as directory:
             state = pathlib.Path(directory)
             (state / "pc-settings.ini").write_text("window_mode=1\nrender_scale=2\n")
             args = argparse.Namespace(probe=False, render_smoke=False, extra_features=True,
-                                      title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
+                                      title_update="usa", game_dir=pathlib.Path("/tmp/update-disc"),
                                       state_dir=state)
             command = launch_command(args, ["--vulkan_device=1"])
-            self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+            self.assertTrue(command[0].endswith("linux-amd64-update-relwithdebinfo/diablo3"))
             self.assertIn("--extra_features=true", command)
             self.assertIn("--resolution_scale=2", command)
-            self.assertIn("--update_data_root=/tmp/tu2-disc", command)
+            self.assertIn("--update_data_root=/tmp/update-disc", command)
             self.assertIn("--vulkan_device=1", command)
             command = launch_command(args, ["--draw_resolution_scale_x=3"])
             self.assertNotIn("--resolution_scale=2", command)
@@ -330,31 +330,31 @@ class TitleUpdateTests(unittest.TestCase):
             command = launch_command(args, [])
             self.assertNotIn("--resolution_scale=2", command)
             self.assertNotIn("--extra_features=true", command)
-            self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
+            self.assertTrue(command[0].endswith("linux-amd64-update-relwithdebinfo/diablo3"))
             args.plain = True
             command = launch_command(args, [])
-            self.assertTrue(command[0].endswith("linux-amd64-tu2-plain-relwithdebinfo/diablo3"))
+            self.assertTrue(command[0].endswith("linux-amd64-update-plain-relwithdebinfo/diablo3"))
 
-    def test_tu2_never_patches_base_symbols(self):
+    def test_update_never_patches_base_symbols(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             path = root / "diablo3_recomp.0.cpp"
             original = "DEFINE_REX_FUNC(sub_831583B0) {\n}\n"
             path.write_text(original)
             with self.assertRaises(ValueError):
-                patch_generated(root, "tu2")
+                patch_generated(root, "usa")
             self.assertEqual(original, path.read_text())
 
-    def test_shared_tu2_codegen_rejects_wrong_executable_before_mutation(self):
+    def test_shared_update_codegen_rejects_wrong_executable_before_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             (root / "Default.xex").write_bytes(b"wrong executable")
             with mock.patch.object(codegen_title_update.subprocess, "run") as run:
-                with self.assertRaisesRegex(ValueError, "verified USA TU2"):
-                    codegen_title_update.generate_tu2(root, "rexglue.exe")
+                with self.assertRaisesRegex(ValueError, "verified USA update"):
+                    codegen_title_update.generate_update(root, "rexglue.exe")
                 run.assert_not_called()
 
-    def test_shared_tu2_codegen_checks_stamp_before_patching(self):
+    def test_shared_update_codegen_checks_stamp_before_patching(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             game = root / "game"
@@ -362,17 +362,17 @@ class TitleUpdateTests(unittest.TestCase):
             data = b"test executable"
             (game / "Default.xex").write_bytes(data)
             digest = hashlib.sha256(data).hexdigest()
-            generated = root / "port/generated/tu2"
+            generated = root / "port/generated/update"
             generated.mkdir(parents=True)
-            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "TU2_SHA256", digest), mock.patch.object(codegen_title_update, "patch_generated") as patch:
+            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "USA_UPDATE_SHA256", digest), mock.patch.object(codegen_title_update, "patch_generated") as patch:
                 with self.assertRaisesRegex(ValueError, "missing or stale"):
-                    codegen_title_update.generate_tu2(game, "rexglue.exe", True)
+                    codegen_title_update.generate_update(game, "rexglue.exe", True)
                 patch.assert_not_called()
                 (generated / "source-xex.sha256").write_text(digest)
-                self.assertEqual(codegen_title_update.generate_tu2(game, "rexglue.exe", True), generated)
-                patch.assert_called_once_with(generated, "tu2")
+                self.assertEqual(codegen_title_update.generate_update(game, "rexglue.exe", True), generated)
+                patch.assert_called_once_with(generated, "usa")
 
-    def test_failed_tu2_regeneration_invalidates_existing_stamp(self):
+    def test_failed_update_regeneration_invalidates_existing_stamp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             game = root / "game"
@@ -380,28 +380,28 @@ class TitleUpdateTests(unittest.TestCase):
             data = b"test executable"
             (game / "Default.xex").write_bytes(data)
             digest = hashlib.sha256(data).hexdigest()
-            generated = root / "port/generated/tu2"
+            generated = root / "port/generated/update"
             generated.mkdir(parents=True)
             stamp = generated / "source-xex.sha256"
             stamp.write_text(digest)
-            manifest = root / "port/title_updates/tu2"
+            manifest = root / "port/title_updates/update"
             manifest.mkdir(parents=True)
-            (manifest / "diablo3_manifest.toml").write_text('game_root = "../../../game-tu2"')
-            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "TU2_SHA256", digest), mock.patch.object(codegen_title_update.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "rexglue")), mock.patch.object(codegen_title_update, "patch_generated") as patch:
+            (manifest / "diablo3_manifest.toml").write_text('game_root = "../../../game-update"')
+            with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "USA_UPDATE_SHA256", digest), mock.patch.object(codegen_title_update.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "rexglue")), mock.patch.object(codegen_title_update, "patch_generated") as patch:
                 with self.assertRaises(subprocess.CalledProcessError):
-                    codegen_title_update.generate_tu2(game, "rexglue.exe")
+                    codegen_title_update.generate_update(game, "rexglue.exe")
                 self.assertFalse(stamp.exists())
                 patch.assert_not_called()
 
-    def test_tu2_launch_selects_separate_binary(self):
+    def test_update_launch_selects_separate_binary(self):
         args = argparse.Namespace(probe=False, render_smoke=False, extra_features=False,
-                                  title_update="tu2", game_dir=pathlib.Path("/tmp/tu2-disc"),
-                                  state_dir=pathlib.Path("/tmp/tu2-state"))
+                                  title_update="usa", game_dir=pathlib.Path("/tmp/update-disc"),
+                                  state_dir=pathlib.Path("/tmp/update-state"))
         command = launch_command(args, [])
-        self.assertTrue(command[0].endswith("linux-amd64-tu2-relwithdebinfo/diablo3"))
-        self.assertIn("--game_data_root=/tmp/tu2-disc", command)
-        self.assertIn("--user_data_root=/tmp/tu2-state", command)
-        self.assertIn("--update_data_root=/tmp/tu2-disc", command)
+        self.assertTrue(command[0].endswith("linux-amd64-update-relwithdebinfo/diablo3"))
+        self.assertIn("--game_data_root=/tmp/update-disc", command)
+        self.assertIn("--user_data_root=/tmp/update-state", command)
+        self.assertIn("--update_data_root=/tmp/update-disc", command)
 
 
 
@@ -465,7 +465,7 @@ class Ps3SaveImportTests(unittest.TestCase):
         self.assertEqual(self.before, {p.name: p.read_bytes() for p in self.source.iterdir()})
         # Compare against the output as an Xbox reference on a second inspection.
         _, compared, _ = import_ps3_save.inspect_source(self.source, package)
-        self.assertTrue(compared["known_tu2_versions_match"])
+        self.assertTrue(compared["known_update_versions_match"])
 
     def test_launch_imports_once_and_preserves_subsequent_saves(self):
         output = self.root / "launch-state"
@@ -506,7 +506,7 @@ class Ps3SaveImportTests(unittest.TestCase):
         account = self.integer(1, 109) + self.message(2, self.integer(1, 1))
         (self.source / "ACCOUNT.DAT").write_bytes(self.encrypt(account))
         _, report, _ = import_ps3_save.inspect_source(self.source)
-        self.assertFalse(report["known_tu2_versions_match"])
+        self.assertFalse(report["known_update_versions_match"])
         with self.assertRaises(import_ps3_save.SaveError):
             import_ps3_save.import_save(self.source, self.root / "output", import_ps3_save.DEFAULT_XUID)
 
@@ -530,14 +530,14 @@ class BuildClientTests(unittest.TestCase):
 
     def args(self, **overrides):
         values = dict(iso=None, title_update=None, variants=["base"], data_only=False,
-                      game_dir=self.root / "game", game_dir_tu2=self.root / "game-tu2",
+                      game_dir=self.root / "game", game_dir_update=self.root / "game-update",
                       sdk_source=self.root / "sdk", sdk_prefix=self.root / "prefix", patcher=None,
                       cmake="cmake", jobs=2, regenerate=False)
         values.update(overrides)
         return argparse.Namespace(**values)
 
     def test_staging_never_writes_through_hardlinks_to_the_base_disc(self):
-        base, update, output = self.root / "base", self.root / "update", self.root / "out/tu2"
+        base, update, output = self.root / "base", self.root / "update", self.root / "out/update"
         (base / "CPKs").mkdir(parents=True)
         (base / "Default.xex").write_bytes(b"base")
         (base / "CPKs/Common.cpk").write_bytes(b"common")
@@ -554,8 +554,8 @@ class BuildClientTests(unittest.TestCase):
         patcher.write_text('#!/bin/sh\nprintf patched > "$3"\n')
         patcher.chmod(0o755)
         sha = lambda data: hashlib.sha256(data).hexdigest()
-        with mock.patch.multiple(stage_title_update, DISC_SHA256=sha(b"base"), TU2_SHA256=sha(b"patched"),
-                                 TU2_PACKAGE_SHA256="pkg", verify_patch_source=mock.DEFAULT):
+        with mock.patch.multiple(stage_title_update, DISC_SHA256=sha(b"base"), USA_UPDATE_SHA256=sha(b"patched"),
+                                 USA_UPDATE_PACKAGE_SHA256="pkg", verify_patch_source=mock.DEFAULT):
             stage_title_update.stage(base, update, output, patcher)
         self.assertEqual((base / "Default.xex").read_bytes(), b"base")
         self.assertEqual((output / "Default.xex").read_bytes(), b"patched")
@@ -574,35 +574,35 @@ class BuildClientTests(unittest.TestCase):
         with self.assertRaisesRegex(build_client.BuildError, "choose your disc image"):
             build_client.plan(self.args(data_only=True))
 
-    def test_incomplete_tu2_folder_is_never_replaced(self):
-        (self.root / "game-tu2").mkdir()
+    def test_incomplete_update_folder_is_never_replaced(self):
+        (self.root / "game-update").mkdir()
         with mock.patch.object(build_client, "base_ready", return_value=True):
             with self.assertRaisesRegex(build_client.BuildError, "move it aside"):
-                build_client.plan(self.args(variants=["tu2"], title_update=self.root / "tu"))
-            (self.root / "game-tu2").rmdir()
+                build_client.plan(self.args(variants=["update"], title_update=self.root / "tu"))
+            (self.root / "game-update").rmdir()
             with self.assertRaisesRegex(build_client.BuildError, "Title Update 2 package"):
-                build_client.plan(self.args(variants=["tu2"]))
+                build_client.plan(self.args(variants=["update"]))
 
     def test_finished_steps_are_skipped_and_codegen_is_reused(self):
         (self.root / "game").mkdir()
         (self.root / "prefix/bin").mkdir(parents=True)
         (self.root / "prefix/bin/rexglue").touch()
-        args = self.args(variants=["base", "tu2-plain"])
-        with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, tu2_ready=mock.DEFAULT,
+        args = self.args(variants=["base", "update-plain"])
+        with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, update_ready=mock.DEFAULT,
                                  missing_tools=mock.DEFAULT) as mocks:
-            mocks["base_ready"].return_value = mocks["tu2_ready"].return_value = True
+            mocks["base_ready"].return_value = mocks["update_ready"].return_value = True
             mocks["missing_tools"].return_value = []
             steps = build_client.plan(args)
         self.assertEqual([title for title, _ in steps],
-                         ["Build Base (codegen and compile)", "Build TU2 (no extras) (codegen and compile)"])
+                         ["Build Base (codegen and compile)", "Build Update (no extras) (codegen and compile)"])
         for regenerate, stamped in ((False, True), (True, True), (False, False)):
             args.regenerate = regenerate
             with mock.patch.object(build_client, "stamp_matches", return_value=stamped), \
                     mock.patch.object(build_client, "run") as run:
-                build_client.build_variant(args, "tu2-plain")
+                build_client.build_variant(args, "update-plain")
             command = [str(arg) for arg in run.call_args.args]
             self.assertIn("--no-extra-features", command)
-            self.assertEqual(command[command.index("--title-update") + 1], "tu2")
+            self.assertEqual(command[command.index("--title-update") + 1], "usa")
             self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
 
 

@@ -1,7 +1,7 @@
 // diablo3 - ReXGlue Recompiled Project
 
-#ifdef SOULS_TITLE_UPDATE_2
-#include "generated/tu2/diablo3_init.h"
+#ifdef SOULS_TITLE_UPDATE
+#include "generated/update/diablo3_init.h"
 #else
 #include "generated/base/diablo3_init.h"
 #endif

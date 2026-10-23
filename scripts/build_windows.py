@@ -18,9 +18,9 @@ import subprocess
 import sys
 
 from apply_generated_patches import patch_generated
-from codegen_title_update import generate_tu2
+from codegen_title_update import generate_update
 from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk
-from title_updates import DISC_SHA256, TU2_SHA256, tu2_layout
+from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VS_CMAKE = pathlib.Path(r"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE"
@@ -91,7 +91,7 @@ def main():
     parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / "tools/rexglue-sdk-win")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-win")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
-    parser.add_argument("--title-update", choices=["tu2"], help="Build the verified USA TU2 executable separately")
+    parser.add_argument("--title-update", choices=["usa"], help="Build the verified USA update executable separately")
     parser.add_argument("--no-extra-features", dest="plain", action="store_true",
                         help="Compile without the optional PC features (separate -plain directory). "
                              "By default they are built in and switched on at launch with --extra_features")
@@ -111,13 +111,13 @@ def main():
         rexglue = codegen_exe(args)
         if not (args.sdk_prefix / "lib/cmake/rexglue").is_dir():
             raise ValueError("SDK not installed; use --build-sdk")
-        xex = tu2_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
-        expected = TU2_SHA256 if args.title_update else DISC_SHA256
+        xex = update_layout(args.game_dir)[2] if args.title_update else args.game_dir / "Default.xex"
+        expected = USA_UPDATE_SHA256 if args.title_update else DISC_SHA256
         if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
             raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
-        generated = ROOT / "port/generated" / ("tu2" if args.title_update else "base")
+        generated = ROOT / "port/generated" / ("update" if args.title_update else "base")
         if args.title_update:
-            generate_tu2(args.game_dir, rexglue, args.skip_codegen)
+            generate_update(args.game_dir, rexglue, args.skip_codegen)
         else:
             if not args.skip_codegen:
                 manifest_dir = ROOT / "port/base"
@@ -133,10 +133,10 @@ def main():
                 generated.mkdir(parents=True, exist_ok=True)
                 (generated / "source-xex.sha256").write_text(expected + "\n")
             patch_generated(generated)
-        variant = ("tu2-" if args.title_update else "") + ("" if args.extra_features else "plain-")
+        variant = ("update-" if args.title_update else "") + ("" if args.extra_features else "plain-")
         build = ROOT / f"port/out/build/win-amd64-{variant}relwithdebinfo"
         options = [f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
-                   f"-DSOULS_TITLE_UPDATE_2={'ON' if args.title_update else 'OFF'}"]
+                   f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}"]
         if args.extra_features:
             options.append(f"-DSOULS_BASE_XEX={xex}")
         run("cmake", "-S", ROOT / "port", "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo",

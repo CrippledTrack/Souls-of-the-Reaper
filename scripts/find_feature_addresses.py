@@ -327,7 +327,7 @@ def build_profile(profile_ref, report, new_id, target_digest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--reference", help="Existing profile id to match from (e.g. base, tu2)")
+    parser.add_argument("--reference", help="Existing profile id to match from (e.g. base, update-usa)")
     parser.add_argument("--reference-xex", type=pathlib.Path, help="Executable that profile describes")
     parser.add_argument("--target-xex", type=pathlib.Path, help="New executable to find addresses in")
     parser.add_argument("--id", help="Id for the new profile (file name without .json)")
