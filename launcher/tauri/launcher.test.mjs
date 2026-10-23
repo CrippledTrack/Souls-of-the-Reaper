@@ -27,7 +27,7 @@ function page(html, globals) {
 }
 
 function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved = { res: -1, display: -1 }, failLaunch = false,
-  canBuild = true, responses = {} } = {}) {
+  canBuild = true, responses = {}, caps = {} } = {}) {
   const calls = [];
   const listeners = {};
   const invoke = async (command, args) => {
@@ -38,7 +38,7 @@ function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved =
   const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
     __TAURI__: { core: { invoke }, event: { listen } },
-    LAUNCHER_CAPS: { platform, updateInstalled: !!settings.updateInstalled, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirUpdate: '/r/game', userDataRoot: '/d/sotr', userDataRootUpdate: '/d/sotr-update' } },
+    LAUNCHER_CAPS: { platform, updateInstalled: !!settings.updateInstalled, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirUpdate: '/r/game', userDataRoot: '/d/sotr', userDataRootUpdate: '/d/sotr-update' }, ...caps },
     LAUNCHER_SETTINGS: { gameDir: '', gameDirUpdate: '', userDataRoot: '', userDataRootUpdate: '', vulkanDevice: -1, ...settings },
     SAVED_STATE: { ...saved, username: settings.username ?? '' },
   });
@@ -70,6 +70,20 @@ test('Linux shows Vulkan rows and hides D3D12-only options', () => {
     ['Game Version', 'Render Path', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Player Name', 'Remap Controls ›']);
   assert.equal(rows()[1].value, 'FSI');
   assert.equal(rows()[3].value, 'Off');
+});
+
+test('Linux Display Server is a launch setting, saved from the settings panel and sent on Play', async () => {
+  const { doc, click, calls } = tauriPage({ settings: { videoDriver: 'x11' } });
+  assert.equal(doc.getElementById('videoLabel').hidden, false);
+  click(doc.getElementById('setupBtn'));
+  assert.equal(doc.getElementById('videoDriver').value, 'x11');
+  assert.equal(doc.querySelector('[data-video].on').dataset.video, 'x11');
+  click(doc.querySelector('[data-video="wayland"]'));
+  assert.equal(doc.querySelector('[data-video].on').dataset.video, 'wayland');
+  click(doc.getElementById('saveSetup'));
+  await tick();
+  assert.equal(calls.find(c => c.command === 'save_settings').args.settings.videoDriver, 'wayland');
+  assert.equal(tauriPage({ platform: 'windows' }).doc.getElementById('videoLabel').hidden, true);
 });
 
 test('Windows keeps the D3D12 rows and adds the build selector', () => {
@@ -197,15 +211,16 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   click(doc.querySelector('[data-pick="titleUpdate"]'));
   await tick();
   assert.equal(doc.getElementById('buildTitleUpdate').value, '/isos/title-update');
-  assert.equal(doc.querySelector('#buildVariants input[value="update"]').checked, true, 'choosing a title update selects update');
-  assert.equal(doc.querySelector('#buildVariants input[value="base"]').checked, false, 'and replaces Base so one build is made');
+  assert.equal(doc.getElementById('optUpdate').checked, true, 'choosing a title update selects it');
+  assert.match(doc.getElementById('buildSummary').textContent, /^Will compile: Update\./);
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'], downloadSdk: false });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);
+  assert.equal(doc.getElementById('toolsLabel').hidden, true, 'the log replaces the tool list while building');
   emit('build-output', '::step::2/5::Extract title update');
   emit('build-output', 'CPKs/Patch.cpk: 3,774,503 bytes');
   assert.equal(doc.getElementById('buildStep').textContent, 'Step 2 of 5: Extract title update…');
@@ -214,41 +229,53 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   await tick(); await tick();
   assert.equal(doc.getElementById('playBtn').disabled, false);
   assert.equal(doc.getElementById('cancelBuild').hidden, true);
+  assert.equal(doc.getElementById('toolsLabel').hidden, false);
   assert.equal(rows()[0].label, 'Game Version');
   assert.equal(row('Game Version').value, 'Base');
   assert.match(doc.getElementById('buildList').textContent, /Update \+ Extras/);
-  assert.equal(doc.getElementById('launchStatus').textContent, '');
+  assert.equal(doc.getElementById('buildPanel').hidden, true, 'a finished build returns to the main screen');
+  assert.equal(doc.getElementById('launchStatus').textContent, 'Build complete. Choose it under Game Version.');
 });
 
-test('Ticking update unticks Base, and Base can still be chosen again on purpose', () => {
+const tick1 = (doc, el, on) => { el.checked = on; el.dispatchEvent(new doc.defaultView.Event('change')); };
+
+test('The Build panel asks what to build and summarises it', () => {
   const { doc } = tauriPage({ builds: [] });
-  const box = value => doc.querySelector(`#buildVariants input[value="${value}"]`);
-  assert.equal(box('base').checked, true);
-  box('update').checked = true;
-  box('update').dispatchEvent(new doc.defaultView.Event('change'));
-  assert.equal(box('base').checked, false);
-  box('base').checked = true;
-  box('base').dispatchEvent(new doc.defaultView.Event('change'));
-  assert.equal(box('update').checked, true, 'an explicit Base choice is not fought');
+  const summary = () => doc.getElementById('buildSummary').textContent;
+  assert.equal(doc.getElementById('optUpdate').checked, false);
+  assert.equal(doc.getElementById('optBase'), null, 'Base is not a separate choice');
+  assert.match(summary(), /^Will compile: Base\.$/);
+  tick1(doc, doc.getElementById('optUpdate'), true);
+  assert.match(summary(), /^Will compile: Update\. The update runs on top of the base game/);
+  tick1(doc, doc.getElementById('optExtras'), false);
+  assert.match(summary(), /^Will compile: Update \(no extras\)\./);
+});
+
+test('Choosing a title update package selects the update build', () => {
+  const { doc } = tauriPage({ builds: [] });
   const title = doc.getElementById('buildTitleUpdate');
-  box('update').checked = false;
-  box('base-plain').checked = true;
   title.value = '/isos/title-update';
   title.dispatchEvent(new doc.defaultView.Event('change'));
-  assert.equal(box('update-plain').checked, true, 'a plain base build swaps to the plain update build');
-  assert.equal(box('base-plain').checked, false);
+  assert.equal(doc.getElementById('optUpdate').checked, true);
 });
 
-test('update already installed opens the Build panel on update only, like the Game Version default', () => {
+test('Build requests carry the single matching variant', async () => {
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { start_build: async () => [] } });
+  tick1(doc, doc.getElementById('optUpdate'), true);
+  tick1(doc, doc.getElementById('optExtras'), false);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.find(c => c.command === 'start_build').args.request.variants)), ['update-plain']);
+});
+
+test('update already installed opens the Build panel on the update', () => {
   const { doc } = tauriPage({ builds: [], settings: { updateInstalled: true } });
-  const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
-  assert.deepEqual(checked, ['update']);
+  assert.equal(doc.getElementById('optUpdate').checked, true);
 });
 
-test('A saved title update package opens the Build panel on update only', () => {
+test('A saved title update package opens the Build panel on the update', () => {
   const { doc } = tauriPage({ builds: [], settings: { buildIso: '/i.iso', buildTitleUpdate: '/isos/title-update' } });
-  const checked = [...doc.querySelectorAll('#buildVariants input')].filter(b => b.checked).map(b => b.value);
-  assert.deepEqual(checked, ['update']);
+  assert.equal(doc.getElementById('optUpdate').checked, true);
 });
 
 test('Build failures and cancellation are reported in the panel', async () => {
@@ -279,4 +306,47 @@ test('Cancelled settings edits are not used by Play', async () => {
   click(doc.getElementById('playBtn'));
   await tick();
   assert.equal(calls.find(c => c.command === 'launch_game').args.settings.gameDir, '/games/base');
+});
+
+test('Launch settings show the launcher build revision when the host reports it', () => {
+  const { doc } = tauriPage({ caps: { version: { commit: 'c94f5ebdcb3c9d1a460ca48e04f9758448f8d518', dirty: true, label: 'c94f5ebd (modified)' } } });
+  assert.equal(doc.getElementById('launcherVersion').textContent, 'Launcher build c94f5ebd (modified)');
+  assert.equal(tauriPage().doc.getElementById('launcherVersion').textContent, '');
+});
+
+const TOOL = (id, found) => ({ id, label: id.toUpperCase(), found, path: '', url: found ? '' : `https://example.test/${id}`, note: '' });
+const SDK = installed => ({ installed, repository: 'https://example.test/sdk.git', commit: 'c94f5ebdcb3c9d1a460ca48e04f9758448f8d518' });
+
+test('Missing build tools are listed with download links and block the build', async () => {
+  const report = { ready: false, tools: [TOOL('python', false), TOOL('git', true)], sdk: SDK(true) };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report } });
+  await tick();
+  const items = [...doc.querySelectorAll('#toolList li')];
+  assert.equal(items.length, 3);
+  assert.equal(items[0].className, 'miss');
+  assert.equal(items[0].querySelector('a').href, 'https://example.test/python');
+  assert.equal(items[1].className, 'ok');
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(calls.some(c => c.command === 'start_build'), false);
+  assert.match(doc.getElementById('buildStep').textContent, /missing tools/);
+});
+
+test('A missing SDK is only downloaded after the user agrees', async () => {
+  const report = { ready: true, tools: [TOOL('git', true)], sdk: SDK(false) };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });
+  await tick();
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(doc.getElementById('sdkPrompt').hidden, false);
+  assert.match(doc.getElementById('sdkPromptText').textContent, /c94f5ebd/);
+  click(doc.getElementById('sdkNo'));
+  await tick(); await tick();
+  assert.equal(calls.some(c => c.command === 'start_build'), false);
+  assert.match(doc.getElementById('buildStep').textContent, /Nothing was downloaded/);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  click(doc.getElementById('sdkYes'));
+  await tick(); await tick();
+  assert.equal(calls.find(c => c.command === 'start_build').args.request.downloadSdk, true);
 });

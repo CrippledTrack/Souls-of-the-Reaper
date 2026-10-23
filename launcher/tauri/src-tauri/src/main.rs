@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod build_info;
 mod launch;
+mod tools;
 
 use launch::{Build, BuildRequest, Defaults, GameOptions, Platform, Settings};
 use serde::Serialize;
@@ -45,6 +47,8 @@ struct Caps<'a> {
     /// The title update is in the game folder (drives the update autoselect and the
     /// Build panel's default variant).
     update_installed: bool,
+    /// Source revision the launcher was built from.
+    version: build_info::BuildInfo,
 }
 
 fn load_settings(path: &Path) -> Settings {
@@ -88,8 +92,10 @@ async fn launch_game(
     window: tauri::WebviewWindow,
     host: tauri::State<'_, Host>,
     settings: Settings,
-    options: GameOptions,
+    mut options: GameOptions,
 ) -> Result<(), String> {
+    // A launch setting (Launch settings panel), not a menu choice.
+    options.video_driver = settings.video_driver.trim().to_string();
     let build = {
         let builds = host.builds.lock().unwrap();
         match &options.build {
@@ -211,6 +217,14 @@ async fn start_build(
         .ok_or("Building needs the Souls of the Reaper source checkout.")?;
     let (game, game_update) = launch::game_folders(&settings, &host.defaults);
     let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
+    let report = tools::detect(host.platform, &repo, &request.cmake);
+    if !report.ready {
+        let missing: Vec<_> = report.tools.iter().filter(|t| !t.found).map(|t| t.label.as_str()).collect();
+        return Err(format!("Missing build tools: {}.", missing.join(", ")));
+    }
+    if !report.sdk.installed && !request.download_sdk {
+        return Err("The ReXGlue SDK is not built yet. Approve the download to continue.".into());
+    }
     write_settings(&host.settings_file, &settings)?;
 
     let mut command = python();
@@ -218,6 +232,7 @@ async fn start_build(
         .args(&args)
         .current_dir(&repo)
         .env("PYTHONUNBUFFERED", "1")
+        .envs(tools::path_with(&report.path_dirs).map(|p| ("PATH", p)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -275,6 +290,22 @@ async fn start_build(
     let builds = launch::discover_builds(host.platform, &host.launcher_dir, &host.search);
     *host.builds.lock().unwrap() = builds.clone();
     Ok(builds)
+}
+
+/// Build tools and SDK state for the Build panel; `cmake` is its CMake field.
+#[tauri::command]
+async fn check_build_tools(
+    host: tauri::State<'_, Host>,
+    cmake: String,
+) -> Result<tools::ToolReport, String> {
+    let repo = host
+        .repo
+        .clone()
+        .ok_or("Building needs the Souls of the Reaper source checkout.")?;
+    let platform = host.platform;
+    tauri::async_runtime::spawn_blocking(move || tools::detect(platform, &repo, &cmake))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -382,6 +413,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         defaults: &defaults,
         can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file()),
         update_installed: update,
+        version: build_info::BuildInfo::current(),
     };
     // The page shows its Player Name row from the name reported here.
     let mut saved_state = settings.ui_state.clone();
@@ -425,6 +457,7 @@ fn main() {
             launch_game,
             start_build,
             cancel_build,
+            check_build_tools,
             pick_file,
             open_external,
             window_action

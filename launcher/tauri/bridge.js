@@ -9,13 +9,23 @@
   const settings = window.LAUNCHER_SETTINGS;
   const status = document.getElementById('launchStatus');
   const panel = document.getElementById('setup');
-  const fields = ['gameDir', 'userDataRoot', 'userDataRootUpdate', 'vulkanDevice'];
+  const fields = ['gameDir', 'userDataRoot', 'userDataRootUpdate', 'vulkanDevice', 'videoDriver'];
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {
     const { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend } = state;
     return { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend, build: curBuild() ? curBuild().id : null };
   };
+  // Display server: three buttons around a hidden field that readSettings/fillSettings use.
+  const videoField = document.getElementById('videoDriver');
+  const videoButtons = [...document.querySelectorAll('[data-video]')];
+  function showVideo() {
+    videoButtons.forEach(b => {
+      const on = b.dataset.video === videoField.value;
+      b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on));
+    });
+  }
+  videoButtons.forEach(b => b.addEventListener('click', () => { videoField.value = b.dataset.video; showVideo(); }));
   function fillSettings() {
     fields.forEach(key => {
       const field = document.getElementById(key);
@@ -23,6 +33,7 @@
       field.value = key === 'vulkanDevice' && value < 0 ? '' : value;
       if (caps.defaults[key] !== undefined) field.placeholder = caps.defaults[key];
     });
+    showVideo();
   }
   function readSettings() {
     fields.forEach(key => {
@@ -42,12 +53,15 @@
   });
 
   document.getElementById('deviceLabel').hidden = !(caps.backends || []).includes('vulkan');
+  // The display server (X11/Wayland) only exists on Linux.
+  document.getElementById('videoLabel').hidden = caps.platform !== 'linux';
   function listBuilds() {
     document.getElementById('buildList').textContent = caps.builds.length
       ? caps.builds.map(b => `${b.label}: ${b.executable}`).join('\n')
       : 'No game build found next to the launcher or under port/out/build.';
   }
   listBuilds();
+  if (caps.version) document.getElementById('launcherVersion').textContent = `Launcher build ${caps.version.label}`;
   if (!caps.builds.length) {
     showStatus(caps.canBuild ? 'No game build found. Build it from your disc image.'
       : 'No game build found. Open launch settings (⚙) for details.');
@@ -65,7 +79,8 @@
   // folders above and refreshes Game Version when it finishes.
   const buildPanel = document.getElementById('buildPanel');
   const buildInputs = { buildIso: 'buildIso', buildTitleUpdate: 'buildTitleUpdate', buildCmake: 'buildCmake' };
-  const variantBoxes = [...document.querySelectorAll('#buildVariants input')];
+  const optUpdate = document.getElementById('optUpdate');
+  const optExtras = document.getElementById('optExtras');
   const buildStep = document.getElementById('buildStep');
   const buildLog = document.getElementById('buildLog');
   const logLines = [];
@@ -75,32 +90,82 @@
     document.getElementById('buildIntro').textContent = 'Builds the game from your disc image and, optionally, the USA Title Update package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.';
   }
   document.getElementById('openBuild').hidden = !caps.canBuild;
-  // The title update is an overlay on the base game, and each variant is a full separate
-  // compile, so an update build replaces its base counterpart instead of joining it.
-  // Only these events switch the selection; the user can still tick Base again.
-  const variantBox = value => variantBoxes.find(b => b.value === value);
-  const BASE_OF = { update: 'base', 'update-plain': 'base-plain' };
-  function titleUpdateAdded() {
-    const bases = Object.entries(BASE_OF).filter(([, base]) => variantBox(base).checked);
-    if (bases.length) {
-      bases.forEach(([tu, base]) => { variantBox(base).checked = false; variantBox(tu).checked = true; });
-    } else if (!variantBoxes.some(b => b.checked && b.value.startsWith('update'))) {
-      variantBox('update').checked = true;
-    }
+  // The title update is an overlay on the base game files (always extracted, never
+  // modified), so the panel asks for what to compile, not for four peer builds. It
+  // compiles the update, or the base game without it, and the optional PC features
+  // apply to either. The result is one build_client.py variant id.
+  function selectedVariants() {
+    return [`${optUpdate.checked ? 'update' : 'base'}${optExtras.checked ? '' : '-plain'}`];
   }
-  variantBoxes.forEach(box => box.addEventListener('change', () => {
-    const base = BASE_OF[box.value];
-    if (base && box.checked) variantBox(base).checked = false;
-  }));
+  function updateSummary() {
+    const [variant] = selectedVariants();
+    document.getElementById('buildSummary').textContent =
+      `Will compile: ${variant.startsWith('update') ? 'Update' : 'Base'}${variant.endsWith('-plain') ? ' (no extras)' : ''}.` +
+      (optUpdate.checked ? ' The update runs on top of the base game files, which are always extracted.' : '');
+  }
+  [optUpdate, optExtras].forEach(box => box.addEventListener('change', updateSummary));
+  function titleUpdateAdded() { optUpdate.checked = true; updateSummary(); }
   document.getElementById('buildTitleUpdate').addEventListener('change', event => {
     if (event.target.value.trim()) titleUpdateAdded();
   });
+  updateSummary();
+  // Build tools: the host looks for Python, Git, a compiler, CMake and Ninja before
+  // anything runs and the panel links to the download of each one that is missing.
+  const toolList = document.getElementById('toolList');
+  const sdkPrompt = document.getElementById('sdkPrompt');
+  function renderTools(report) {
+    toolList.textContent = '';
+    if (!report) { toolList.textContent = 'Could not check the build tools.'; return; }
+    const add = (ok, text, note, url) => {
+      const item = document.createElement('li');
+      item.className = ok ? 'ok' : 'miss';
+      item.append(`${ok ? '✓' : '✗'} ${text}`);
+      if (!ok && url) {
+        const link = document.createElement('a');
+        link.href = url; link.textContent = ' Get it';
+        item.append(link);
+      }
+      if (!ok && note) { const small = document.createElement('small'); small.textContent = note; item.append(small); }
+      toolList.append(item);
+    };
+    report.tools.forEach(t => add(t.found, t.label, t.note, t.url));
+    const sdk = report.sdk;
+    add(sdk.installed, `ReXGlue SDK${sdk.commit ? ` (pinned ${sdk.commit.slice(0, 8)})` : ''}`,
+      'Not built yet. Starting the build asks before it is downloaded.');
+  }
+  async function checkTools() {
+    let report = null;
+    try { report = await invoke('check_build_tools', { cmake: document.getElementById('buildCmake').value.trim() }) || null; }
+    catch (error) { buildStep.textContent = String(error); }
+    renderTools(report);
+    return report;
+  }
+  // Resolves true when the user agrees to fetch and build the SDK.
+  function askSdkDownload(sdk) {
+    document.getElementById('sdkPromptText').textContent =
+      `The ReXGlue SDK (${sdk.repository}, commit ${sdk.commit.slice(0, 8)}) is needed to compile the game. ` +
+      'Download that exact version and build it now? It needs about 3 GB and the first build takes 12+ minutes.';
+    sdkPrompt.hidden = false;
+    document.getElementById('startBuild').disabled = true;
+    return new Promise(resolve => {
+      const done = answer => {
+        sdkPrompt.hidden = true; document.getElementById('startBuild').disabled = false; resolve(answer);
+      };
+      document.getElementById('sdkYes').onclick = () => done(true);
+      document.getElementById('sdkNo').onclick = () => done(false);
+    });
+  }
+  document.getElementById('recheckTools').addEventListener('click', checkTools);
+  document.getElementById('buildCmake').addEventListener('change', checkTools);
   function openBuild() {
     Object.keys(buildInputs).forEach(key => { document.getElementById(key).value = settings[key] ?? ''; });
     panel.hidden = true; buildPanel.hidden = false;
+    checkTools();
   }
   function setBuilding(on) {
     document.getElementById('startBuild').hidden = on;
+    // The running build's log sits right after the tool list and takes its place.
+    document.getElementById('toolsLabel').hidden = on;
     document.getElementById('cancelBuild').hidden = !on;
     document.getElementById('closeBuild').disabled = on;
     document.getElementById('setupBtn').disabled = on;
@@ -139,9 +204,20 @@
     settings.uiState = uiState();
     const request = {
       iso: settings.buildIso, titleUpdate: settings.buildTitleUpdate, cmake: settings.buildCmake,
-      variants: variantBoxes.filter(b => b.checked).map(b => b.value),
+      variants: selectedVariants(), downloadSdk: false,
     };
     logLines.length = 0; buildLog.textContent = '';
+    buildStep.textContent = 'Checking build tools…';
+    // An unavailable check (null) is left to the host, which checks again before it runs anything.
+    const report = await checkTools();
+    if (report && !report.ready) {
+      buildStep.textContent = 'Install the missing tools listed above, then press Build again.';
+      return;
+    }
+    if (report && !report.sdk.installed) {
+      request.downloadSdk = await askSdkDownload(report.sdk);
+      if (!request.downloadSdk) { buildStep.textContent = 'Nothing was downloaded. The build needs the ReXGlue SDK.'; return; }
+    }
     buildStep.textContent = 'Checking inputs…';
     setBuilding(true);
     try {
@@ -149,8 +225,9 @@
       // The page reads CAPS.builds (its copy of LAUNCHER_CAPS) on each render.
       caps.builds = CAPS.builds = builds;
       listBuilds(); render();
-      buildStep.textContent = 'Build complete. Choose it under Game Version.';
-      showStatus('');
+      // Back to the main screen; failures and cancellations stay in the panel.
+      buildPanel.hidden = true;
+      showStatus('Build complete. Choose it under Game Version.');
     } catch (error) {
       buildStep.textContent = String(error);
     } finally { setBuilding(false); }

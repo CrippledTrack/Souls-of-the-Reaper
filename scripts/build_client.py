@@ -209,6 +209,8 @@ def plan(args):
     problems = missing_tools(args, compile_needed, need_update and not args.patcher)
     if problems:
         raise BuildError("\n".join(problems))
+    if need_sdk and args.no_sdk_download:
+        raise BuildError("The pinned ReXGlue SDK is not built yet and downloading it was not approved.")
 
     if need_base:
         verify_iso(args.iso)
@@ -276,6 +278,9 @@ def main(argv=None):
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
     parser.add_argument("--regenerate", action="store_true", help="Rerun codegen even if sources are current")
+    parser.add_argument("--no-sdk-download", action="store_true",
+                        help="Fail instead of cloning and building the pinned SDK when it is missing "
+                             "(the launcher passes this until the user approves the download)")
     parser.add_argument("--check", action="store_true", help="Validate inputs and tools, list the steps, and stop")
     args = parser.parse_args(argv)
     if args.jobs < 1:

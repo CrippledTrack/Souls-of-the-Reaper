@@ -208,6 +208,8 @@ pub struct Settings {
     pub username: String,
     /// Linux only; -1 lets the SDK choose.
     pub vulkan_device: i32,
+    /// Linux display server: "" (automatic), "wayland" or "x11".
+    pub video_driver: String,
     /// Last inputs of the Build panel (scripts/build_client.py).
     pub build_iso: String,
     pub build_title_update: String,
@@ -224,6 +226,7 @@ impl Default for Settings {
             user_data_root_update: String::new(),
             username: String::new(),
             vulkan_device: -1,
+            video_driver: String::new(),
             build_iso: String::new(),
             build_title_update: String::new(),
             build_cmake: String::new(),
@@ -451,6 +454,9 @@ pub struct BuildRequest {
     pub title_update: String,
     pub variants: Vec<String>,
     pub cmake: String,
+    /// The user agreed to fetch and build the pinned ReXGlue SDK when it is missing.
+    #[serde(default)]
+    pub download_sdk: bool,
 }
 
 /// Arguments for scripts/build_client.py, writing into the launcher's game
@@ -491,6 +497,9 @@ pub fn build_client_arguments(
         return Err("Choose at least one build.".into());
     }
     args.push(format!("--variants={}", request.variants.join(",")));
+    if !request.download_sdk {
+        args.push("--no-sdk-download".into());
+    }
     Ok(args)
 }
 
@@ -514,6 +523,9 @@ pub struct GameOptions {
     /// Windows renderer: "d3d12" (also when absent) or "vulkan". Linux is always Vulkan.
     #[serde(default)]
     pub backend: String,
+    /// Linux display server, filled from the saved settings (the page does not send it).
+    #[serde(default)]
+    pub video_driver: String,
 }
 
 /// Image scaling for the Vulkan presenter. The effect is only compiled into
@@ -564,6 +576,11 @@ pub fn launch_arguments(
             args.push(format!("--present_effect={}", vulkan_present(options)?));
             if vulkan_device >= 0 {
                 args.push(format!("--vulkan_device={vulkan_device}"));
+            }
+            match options.video_driver.as_str() {
+                "" => {}
+                driver @ ("wayland" | "x11") => args.push(format!("--video_driver={driver}")),
+                _ => return Err("Unsupported display server.".into()),
             }
         }
         Platform::Windows => {
@@ -668,6 +685,7 @@ mod tests {
             rtp: "rtv".into(),
             vk_path: "fsi".into(),
             backend: String::new(),
+            video_driver: String::new(),
         }
     }
 
@@ -677,6 +695,7 @@ mod tests {
             title_update: String::new(),
             variants: variants.iter().map(|v| v.to_string()).collect(),
             cmake: String::new(),
+            download_sdk: false,
         }
     }
 
@@ -699,8 +718,20 @@ mod tests {
                 "--game-dir-update=/g/update",
                 "--iso=/isos/d3 usa.iso",
                 "--variants=base,update-plain",
+                "--no-sdk-download",
             ]
         );
+        let mut approved = request(&["base"]);
+        approved.download_sdk = true;
+        let args = build_client_arguments(
+            Platform::Linux,
+            Path::new("/repo"),
+            &approved,
+            Path::new("/g"),
+            Path::new("/g"),
+        )
+        .unwrap();
+        assert!(!args.contains(&"--no-sdk-download".to_string()));
     }
 
     #[test]
@@ -755,6 +786,28 @@ mod tests {
         )
         .unwrap();
         assert!(!base.iter().any(|a| a.starts_with("--update_data_root")));
+    }
+
+    #[test]
+    fn display_server_setting_loads_and_defaults_to_automatic() {
+        assert_eq!(parse_settings(br#"{"videoDriver":"x11"}"#).video_driver, "x11");
+        assert_eq!(parse_settings(br#"{"gameDir":"/g"}"#).video_driver, "");
+    }
+
+    #[test]
+    fn linux_display_server_is_passed_only_when_chosen() {
+        let run = |platform, driver: &str| {
+            let mut o = options();
+            o.video_driver = driver.into();
+            launch_arguments(platform, &build(false, false), Path::new("/g"), Path::new("/s"), &o, -1)
+        };
+        let auto = run(Platform::Linux, "").unwrap();
+        assert!(!auto.iter().any(|a| a.starts_with("--video_driver")));
+        assert!(run(Platform::Linux, "wayland").unwrap().contains(&"--video_driver=wayland".into()));
+        assert!(run(Platform::Linux, "x11").unwrap().contains(&"--video_driver=x11".into()));
+        assert!(run(Platform::Linux, "mir").is_err());
+        let windows = run(Platform::Windows, "wayland").unwrap();
+        assert!(!windows.iter().any(|a| a.starts_with("--video_driver")), "Windows ignores it");
     }
 
     #[test]
@@ -1235,6 +1288,7 @@ mod tests {
             title_update: String::new(),
             variants: vec!["update".into()],
             cmake: String::new(),
+            download_sdk: false,
         };
         let args = build_client_arguments(Platform::Linux, Path::new("/r"), &request, &game, &game).unwrap();
         assert!(!args.iter().any(|a| a.starts_with("--game-dir-update")));

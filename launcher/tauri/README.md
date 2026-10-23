@@ -27,6 +27,9 @@ game launch through the Windows launcher has not been tested yet.
   image is scaled to the window, not the internal resolution, and need an SDK
   built with `patches/linux/rexglue-present-effects.patch`; rebuild the SDK
   after updating (older builds reject the flag). `Off` is the default.
+- **Linux** launch settings (⚙) have a Display server choice: `Auto` passes
+  nothing and lets SDL choose, `Wayland` and `X11` pass
+  `--video_driver=wayland|x11`. It is saved with the other launch settings.
 - **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV, frame limit and
   FSR/CAS. Vulkan (`--gpu_backend=vulkan`) shows the same render path and device
   options as Linux, plus VSync and the same Image Scaling choice.
@@ -47,7 +50,7 @@ by itself when no build is found. Choose:
 
 - the USA Ultimate Evil Edition disc image (ISO);
 - optionally, the USA Title Update package;
-- which builds to compile: Base, update, and optionally `(no extras)` versions compiled without the optional PC code.
+- what to build: **Title Update** (an overlay on the base game files, which are always extracted and never modified) and **Optional PC features** (off compiles the `(no extras)` versions). A "Will compile:" line spells out the result.
 
 The script writes into the game folders from Launch settings (`game/` and
 `game/update/` by default; an existing `game-update/` is still used). It runs these steps and skips any that are already done:
@@ -59,6 +62,25 @@ The script writes into the game folders from Launch settings (`game/` and
 3. Build the pinned ReXGlue SDK once (`tools/`).
 4. Generate code and compile each selected build. Generated code is reused for
    later builds of the same executable.
+
+The launcher embeds the source revision it was built from (`build.rs` reads
+`git rev-parse HEAD` and whether the tree has changes) and shows it in the
+launch settings. Without git data it reads `unknown`; CI or a source archive
+can set `SOTR_COMMIT` and `SOTR_DIRTY=0|1` instead. Release builds should set
+`SOTR_REQUIRE_CLEAN=1`, which fails the build for a modified tree or an
+unknown revision.
+
+Before it runs anything, the launcher itself (not the Python scripts, since
+Windows may have no Python) checks for Python 3, Git, Clang, CMake 3.25+, Ninja
+and, on Windows, the Visual Studio C++ tools. The panel lists each one with a
+download link when it is missing, and **Build** stays blocked until they are
+found (**Check tools** rechecks after an install). Clang, CMake and Ninja
+installed in the usual Visual Studio or LLVM folders are found and passed on to
+the build even when they are not on `PATH`. The ReXGlue SDK is not a tool you
+install: when it is not built yet, the panel asks before fetching the pinned
+commit (`port/base/rexglue.lock.json`) and building it, which takes about 3 GB
+and 12+ minutes. Answering *Not now* downloads nothing; the script itself is
+also told not to (`--no-sdk-download`) unless the panel got a yes.
 
 Progress and output appear in the panel. **Cancel build** stops the script and
 the compilers it started, and so does closing the launcher; running it again
