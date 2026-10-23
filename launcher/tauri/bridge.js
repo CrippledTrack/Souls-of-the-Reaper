@@ -32,6 +32,15 @@
   }
   function showStatus(text) { status.textContent = text; }
 
+  // External links (the font credit under Play) open in the default browser;
+  // a Tauri webview ignores target="_blank" on its own.
+  document.addEventListener('click', e => {
+    const link = e.target.closest && e.target.closest('a[href]');
+    if (!link || !/^https:\/\//i.test(link.getAttribute('href'))) return;
+    e.preventDefault();
+    invoke('open_external', { url: link.href }).catch(error => showStatus(String(error)));
+  });
+
   document.getElementById('deviceLabel').hidden = !(caps.backends || []).includes('vulkan');
   function listBuilds() {
     document.getElementById('buildList').textContent = caps.builds.length

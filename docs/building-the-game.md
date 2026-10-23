@@ -1,0 +1,121 @@
+# Building the game
+
+The game is an AOT recompilation of the Xbox 360 executable using a pinned [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) (commit recorded in [`port/base/rexglue.lock.json`](../port/base/rexglue.lock.json)). A full build does, in order:
+
+1. Extract the disc image into `game/` (verifying `Default.xex`).
+2. Optionally stage Title Update 2 as a small overlay in `game/tu2/`.
+3. Clone, patch and build the pinned SDK into `tools/` (one-time).
+4. Run codegen into `port/generated/`, apply the hand patches (`scripts/apply_generated_patches.py`).
+5. Compile the game into `port/out/build/<variant>/`.
+
+Every step is skipped when its output already exists, so an interrupted build can be resumed with the same command. Budget roughly 15 GiB of disk for a first build with TU2, and 12+ minutes for the first SDK build and codegen.
+
+## Inputs
+
+- **Disc image**: USA Ultimate Evil Edition (`.iso`). Or an already-extracted folder holding `Default.xex` and `CPKs/` (the filename must be exactly `Default.xex`).
+- **Title update** (optional): the USA TU2 package, `tu00000002_00000000`.
+
+## Windows
+
+### Requirements
+
+- Windows 10/11 x64
+- Visual Studio 2022 (Community is fine) with the **C++** and **CMake** workloads
+- LLVM/Clang **22+** (`C:\Program Files\LLVM\bin` is found automatically)
+- Git and Python 3
+- Ninja (shipped with the Visual Studio CMake workload)
+
+`scripts/build_windows.py` adds the default install folders of Clang, CMake and Ninja to `PATH` if they are missing. It stops with `Not found on PATH: ...` if something is still unavailable. Run it from a regular PowerShell; Visual Studio's folder is only searched at the default `2022\Community` location, so for other editions put CMake and Ninja on `PATH` yourself.
+
+### One command (from the disc image)
+
+```powershell
+python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\tu00000002_00000000
+```
+
+Drop `--title-update` for a base-only build. `--variants base,tu2,base-plain,tu2-plain` selects which executables to compile (`-plain` omits the optional PC features). `--check` validates inputs and lists the remaining steps without building.
+
+### Step by step
+
+If you already have an extracted disc in `game\`:
+
+```powershell
+python scripts\build_windows.py --build-sdk --game-dir game
+```
+
+- `--build-sdk` clones, patches and builds the SDK (`tools\rexglue-sdk-win`, installed to `tools\rexglue-install-win`). Omit it on later builds.
+- `--skip-codegen` reuses generated sources, for when only host code (`port\src`) changed.
+- `--title-update tu2` builds the TU2 executable (needs the staged overlay, see the [TU2 guide](../port/title_updates/tu2/README.md)).
+- `--no-extra-features` compiles without the optional PC features.
+- `--jobs N` sets build parallelism (default: CPU count).
+
+Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
+
+The SDK is patched with `patches/common/*` and `patches/windows/*`. The Direct3D 12 and Vulkan renderers are compiled into the same executable and chosen at launch.
+
+### Run
+
+```powershell
+pwsh -File scripts\run_windows.ps1 -ExtraFeatures
+```
+
+Useful flags: `-Backend vulkan` (default is Direct3D 12), `-VulkanPath fsi|host`, `-VulkanDevice N`, `-Username "Name"` (max 15 characters). Saves go to `Documents\diablo3`.
+
+## Linux
+
+### Requirements
+
+- Linux x86-64, Python 3
+- Clang 18+, CMake 3.25+, Ninja, Git
+- The SDK's development packages (SDL/Vulkan/X11/Wayland-related; see the SDK repository for your distribution)
+- A Vulkan driver
+
+Use `--cmake /path/to/cmake` if CMake is not on `PATH`. The CPU baseline is x86-64-v2.
+
+### One command (from the disc image)
+
+```sh
+python3 scripts/build_client.py --iso /path/to/disc.iso \
+  [--title-update /path/to/tu00000002_00000000] \
+  [--variants base,tu2,base-plain,tu2-plain]
+```
+
+### Step by step
+
+```sh
+# Optional: extract the disc (existing files are verified)
+python3 scripts/extract_disc.py /path/to/disc.iso game
+
+# Clone the pinned SDK, patch/build/install it, run codegen and compile
+python3 scripts/build_linux.py --build-sdk
+
+python3 scripts/run_linux.py
+```
+
+- Use `--game-dir /path/to/extracted/disc` to point at a disc extracted elsewhere.
+- Use `--sdk-prefix /path/to/installed/sdk` to reuse an installed SDK. It must already include the tracked patches in `patches/common/`; `--build-sdk` is what applies them.
+- `--skip-codegen`, `--title-update tu2`, `--no-extra-features` and `--jobs N` behave as on Windows.
+- `--probe` builds the asset-free GPU diagnostics instead of the game.
+
+Output: `port/out/build/linux-amd64-relwithdebinfo/diablo3`. Saves, logs and caches live in `$XDG_DATA_HOME/souls-of-the-reaper` (default `~/.local/share/souls-of-the-reaper`); override with `--state-dir`.
+
+More run options, diagnostics and input notes are in the [Linux integration notes](../port/base/README.md).
+
+## Build outputs and variants
+
+| Variant | Directory under `port/out/build/` |
+| --- | --- |
+| Base | `<platform>-amd64-relwithdebinfo` |
+| TU2 | `<platform>-amd64-tu2-relwithdebinfo` |
+| Base, no extras | `<platform>-amd64-plain-relwithdebinfo` |
+| TU2, no extras | `<platform>-amd64-tu2-plain-relwithdebinfo` |
+
+`<platform>` is `win` or `linux`. Normal builds contain the optional [PC features](../port/extra-features.md); they are switched on at launch with `--extra_features` (`-ExtraFeatures` in `run_windows.ps1`).
+
+## Troubleshooting
+
+- **`SHA-256 mismatch` / `Default.xex missing`**: only the unmodified USA Ultimate Evil Edition disc (and USA TU2) is supported at this time.
+- **`SDK revision mismatch`**: delete `tools/rexglue-sdk-*` and rerun with `--build-sdk`.
+- **Stale generated code after pulling changes** to manifests, `config/*.toml` or SDK patches: rerun without `--skip-codegen`.
+- **Windows and Linux SDKs are separate** (`tools/rexglue-sdk-win` vs `tools/rexglue-sdk-linux`); do not share a prefix between them. Generated sources in `port/generated/` are shared.
+- **Tests**: `python3 -m unittest discover -s tests -p test_linux_tools.py`

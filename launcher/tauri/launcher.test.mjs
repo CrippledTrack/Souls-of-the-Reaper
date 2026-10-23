@@ -122,6 +122,15 @@ test('Play sends the selected build, in-game choices and saved menu state', asyn
   assert.equal(launch.args.settings.uiState.view, undefined);
 });
 
+test('The font credit under Play opens in the default browser', async () => {
+  const { doc, click, calls } = tauriPage();
+  const link = doc.querySelector('.foot a.fontlink');
+  assert.match(link.href, /^https:\/\/fernandoforeroart\.com\//);
+  click(link);
+  await tick();
+  assert.deepEqual(calls.filter(c => c.command === 'open_external').map(c => c.args.url), [link.href]);
+});
+
 test('Launch failures stay visible and restore the Play button', async () => {
   const { doc, click } = tauriPage({ failLaunch: true });
   click(doc.getElementById('playBtn'));

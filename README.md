@@ -2,7 +2,7 @@
 
 Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE.
 
-**Windows status:** Playable and stable (RelWithDebInfo / -O2). Two render paths: ROV (faithful, 60fps) and RTV (fast, up to 240fps with lighting and artifacts fixed). **Linux:** experimental Vulkan integration; see the Linux build notes below.
+**Windows status:** Playable and stable (RelWithDebInfo / -O2) with the Direct3D 12 renderer: ROV (faithful, 60fps) or RTV (fast, up to 240fps with lighting and artifacts fixed). The Vulkan renderer is built into the same executable and is selected at launch (see [Vulkan renderer](#vulkan-renderer)). **Linux:** runs on Vulkan; see the Linux build notes below.
 
 ---
 
@@ -13,6 +13,8 @@ Download the latest release from the [Releases](../../releases) page, extract th
 ---
 
 ## Option B — Build from source
+
+Detailed guides live in [`docs/`](docs/README.md): [building the game](docs/building-the-game.md) and [building the launcher](docs/building-the-launcher.md).
 
 On Linux, one command builds everything from your own disc image (and,
 optionally, the USA Title Update 2 package). The launcher's Build panel runs the same script:
@@ -28,13 +30,13 @@ A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existin
 interface on Linux and Windows and selects base, extras and TU2 builds. The
 original PowerShell/WebView2 launcher remains available on Windows.
 
-### Linux (experimental Vulkan path)
+### Linux (Vulkan)
 
 The Linux integration shares this port's game application and imports the
 ReXGlue/Vulkan recomp work, including texture-color and object-lifetime fixes,
 audited function entries, GPU diagnostics, fullscreen and frame telemetry.
 It uses a separately pinned SDK and the unmodified USA Ultimate Evil Edition
-base disc. Combined Linux gameplay still needs validation.
+base disc.
 
 ```sh
 python3 scripts/build_linux.py --build-sdk --game-dir /path/to/extracted/disc
@@ -64,14 +66,14 @@ the normal executable and switched on at launch: `--extra-features` on Linux,
 #### Steps
 
 The optional features are already built in. Launch with them using
-`pwsh -File scriptsun_windows.ps1 -ExtraFeatures`; add `--no-extra-features`
+`pwsh -File scripts\run_windows.ps1 -ExtraFeatures`; add `--no-extra-features`
 to the build command in step 1 to compile without them.
 See [optional game features](port/extra-features.md) for details.
 
 **1. Build** (one command; the first run also clones, patches and builds the pinned SDK, and
 runs codegen, ~12 min)
 ```powershell
-python scriptsuild_windows.py --build-sdk --game-dir game
+python scripts\build_windows.py --build-sdk --game-dir game
 ```
 
 This applies the shared patches in `patches/common/` and the Windows patches in
@@ -80,17 +82,27 @@ codegen into `port/generated/base`, applies the hand patches to the generated
 code (`scripts/apply_generated_patches.py`) and compiles the game. Later builds
 can drop `--build-sdk`, and `--skip-codegen` reuses generated sources.
 
-Output: `port\outuild\win-amd64-relwithdebinfo\diablo3.exe`
+Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
 
 The [graphical launcher](launcher/tauri/README.md) runs the same script from its
 Build panel when given the ISO and title update.
 
 **2. Run**
 ```powershell
-pwsh -File scriptsun_windows.ps1 -ExtraFeatures
+pwsh -File scripts\run_windows.ps1 -ExtraFeatures
 ```
 
 Pass `-Username "Name"` to set the in-game player name (up to 15 characters).
+
+#### Vulkan renderer
+
+The Windows build compiles the Direct3D 12 and Vulkan renderers into one executable (`patches/windows/rexglue-gpu-backend.patch` adds the `gpu_backend` setting), so no separate build is needed. Pick one at launch:
+
+```powershell
+pwsh -File scripts\run_windows.ps1 -Backend vulkan -ExtraFeatures
+```
+
+`-VulkanPath fsi` (default, faithful; needs fragment shader interlock) or `host` chooses the render-target path, and `-VulkanDevice N` picks a GPU by index. The graphical launcher offers the same choice as a Renderer option. It needs a Vulkan-capable GPU and driver.
 
 **3. Build the PowerShell launcher (optional)**
 

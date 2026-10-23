@@ -3,8 +3,9 @@
 A Tauri 2 launcher for Linux and Windows. It shows the same page as the
 Windows `Launcher.ps1` (`../v6_borderless_final.html`) and replaces the
 PowerShell/WebView2 host with Rust. Linux has been built and run on a desktop.
-Windows has not been built or validated yet, and no complete game launch
-through this launcher has been tested.
+The Windows launcher builds (Release build checked on Windows 11) and its
+Build panel drives the same `scripts/build_client.py` as Linux, but a complete
+game launch through the Windows launcher has not been tested yet.
 
 ## What it offers
 
@@ -26,8 +27,9 @@ through this launcher has been tested.
   image is scaled to the window, not the internal resolution, and need an SDK
   built with `patches/linux/rexglue-present-effects.patch`; rebuild the SDK
   after updating (older builds reject the flag). `Off` is the default.
-- **Windows** keeps the D3D12 options: ROV/RTV, frame limit and FSR/CAS. With
-  the Vulkan renderer it offers VSync and the same Image Scaling choice.
+- **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV, frame limit and
+  FSR/CAS. Vulkan (`--gpu_backend=vulkan`) shows the same render path and device
+  options as Linux, plus VSync and the same Image Scaling choice.
 - **Play** checks that `Default.xex` matches the selected build (base disc or
   staged TU2). For TU2 it also checks the four update CPKs and mounts the folder
   as `update:`. It then starts the game and closes the launcher. If the game
@@ -64,14 +66,17 @@ continues where it stopped. When the build finishes, Game Version lists the new
 builds.
 
 Requirements: Python 3, git, CMake 3.25+ (choose its path in the panel if it
-is not on `PATH`), Ninja, Clang, and the SDK's Linux development packages.
-Allow about 15 GiB of free space for a first build with TU2. On Windows the panel only
-prepares the game folders; compile with the README steps. A release install
-has no sources, so the panel is not shown there.
+is not on `PATH`), Ninja and Clang. Linux also needs the SDK's development
+packages. On Windows install Visual Studio 2022 with the C++ and CMake
+workloads and LLVM Clang 22+; the usual install folders of Clang, CMake and
+Ninja are added to `PATH` automatically, and the build runs
+`scripts/build_windows.py` (the one-time SDK build and the compile both happen
+in the panel). Allow about 15 GiB of free space for a first build with TU2. A
+release install has no sources, so the panel is not shown there.
 
 ## Launch settings (⚙)
 
-Game folder, save folders for base and TU2 builds, and the Vulkan device on Linux. TU2 has no game folder of its own: it uses the base game folder, whose `tu2/` folder holds the update (an older full `game-tu2/` copy is still used if present).
+Game folder, save folders for base and TU2 builds, and the Vulkan device (Linux, and Windows when the Vulkan renderer is selected). TU2 has no game folder of its own: it uses the base game folder, whose `tu2/` folder holds the update (an older full `game-tu2/` copy is still used if present).
 Empty fields use these defaults:
 
 | | Game folder | Save folder |
@@ -91,7 +96,8 @@ is `diablo3.log` there.
 
 Install Rust, Node.js/npm and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Linux needs
-the GTK 3 and WebKitGTK 4.1 development packages.
+the GTK 3 and WebKitGTK 4.1 development packages; Windows needs the MSVC build
+tools and the WebView2 runtime (included with Edge on Windows 10/11).
 
 ```sh
 cd launcher/tauri
@@ -99,7 +105,8 @@ npm ci
 npm run dev          # or: npm run build (Release, no installer bundle)
 ```
 
-The debug executable is `src-tauri/target/debug/sotr-launcher`. Run it from
+The debug executable is `src-tauri/target/debug/sotr-launcher` (`.exe` on
+Windows); `npm run build` produces `src-tauri/target/release/sotr-launcher`. Run it from
 anywhere inside the checkout, or place a Release build beside an installed
 `diablo3`. `prepare-ui.mjs` generates `dist/index.html` and icons; generated
 files, dependencies and build outputs are ignored.
@@ -119,11 +126,12 @@ Rust tests cover both platforms' arguments on any host.
 
 - On Wayland with NVIDIA, the launcher window captured blank in a desktop test
   but rendered correctly under XWayland (`GDK_BACKEND=x11`).
-- Windows: untested. Focus hand-off to the game uses `AllowSetForegroundWindow`
+- Windows: the launcher compiles, but a full run (Build panel through Play)
+  has not been validated. Focus hand-off to the game uses `AllowSetForegroundWindow`
   only; `Launcher.ps1` also polled and raised the game window.
 - The Remap Controls screen still does not send its bindings, as in
   `Launcher.ps1`; use the in-game F4 menu.
 - The installer and `setup.ps1` still package and start `Launcher.ps1`'s
   `SoulsOfTheReaper.exe`.
-- Building needs a source checkout and Python. Compiling is automated only on
-  Linux, and only the USA disc and USA TU2 are accepted.
+- Building needs a source checkout and Python. Compiling is automated on Linux
+  and Windows, and only the USA disc and USA TU2 are accepted.

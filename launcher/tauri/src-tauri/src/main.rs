@@ -302,6 +302,33 @@ async fn pick_file(app: tauri::AppHandle, kind: String) -> Result<Option<String>
         .map(|p| p.display().to_string()))
 }
 
+/// Opens a page link in the default browser. WebView2 (Launcher.ps1) handled
+/// target="_blank" itself; a Tauri webview ignores it, so the page asks here.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !launch::is_external_url(&url) {
+        return Err("Only https links can be opened.".into());
+    }
+    let mut command = if cfg!(target_os = "windows") {
+        // No cmd.exe: its own parsing would treat & in a URL as a command separator.
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else {
+        Command::new("xdg-open")
+    };
+    command
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Unable to open the link: {e}"))
+}
+
 #[tauri::command]
 fn window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -394,6 +421,7 @@ fn main() {
             start_build,
             cancel_build,
             pick_file,
+            open_external,
             window_action
         ])
         .build(tauri::generate_context!())
