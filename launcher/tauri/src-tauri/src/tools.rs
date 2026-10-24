@@ -111,6 +111,24 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
     })
 }
 
+/// Python 3: the first interpreter in `dirs` that runs and reports 3.x (the
+/// Microsoft Store `python.exe` stub on Windows does not), else on Windows the
+/// interpreter the `py` launcher picks, which needs no PATH entry.
+fn find_python(platform: Platform, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let is_python3 = |p: &Path| {
+        output_of(p, &["--version"])
+            .and_then(|v| parse_version(&v))
+            .is_some_and(|v| v.0 >= 3)
+    };
+    let name = exe(if platform == Platform::Windows { "python" } else { "python3" }, platform);
+    let on_path = dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file() && is_python3(p));
+    on_path.or_else(|| {
+        let py = find_program("py", platform, dirs).filter(|_| platform == Platform::Windows)?;
+        let found = output_of(&py, &["-3", "-c", "import sys; print(sys.executable)"])?;
+        Some(PathBuf::from(found.trim())).filter(|p| p.is_file() && is_python3(p))
+    })
+}
+
 /// Visual Studio install that has the C++ x64 tools, via vswhere.
 fn visual_studio() -> Option<PathBuf> {
     let files = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from)?;
@@ -163,8 +181,7 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         find_program(name, platform, &dirs).or_else(|| find_program(name, platform, &extra))
     };
 
-    let python = lookup(if platform == Platform::Windows { "python" } else { "python3" })
-        .filter(|p| output_of(p, &["--version"]).and_then(|v| parse_version(&v)).is_some_and(|v| v.0 >= 3));
+    let python = find_python(platform, &dirs);
     let git = lookup("git");
     let min_clang = if platform == Platform::Windows { MIN_CLANG_WINDOWS } else { MIN_CLANG_LINUX };
     let clang_found = lookup("clang").zip(lookup("clang++")).map(|(_, plus)| plus);
@@ -329,10 +346,19 @@ fn free_bytes(path: &Path) -> Option<u64> {
         .then(|| stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
-/// The build script checks the exact need on Windows.
-#[cfg(not(unix))]
-fn free_bytes(_path: &Path) -> Option<u64> {
-    None
+#[cfg(windows)]
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+    }
+    let existing = path.ancestors().find(|p| p.exists())?;
+    let wide: Vec<u16> = existing.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: wide is NUL-terminated and free a valid out-pointer; the others may be null.
+    (unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) } != 0)
+        .then_some(free)
 }
 
 /// Asks scripts/build_client.py, which owns the install paths and the stamp of
@@ -447,9 +473,7 @@ mod tests {
     #[test]
     fn free_space_is_read_for_missing_folders_too() {
         let dir = scratch("free");
-        #[cfg(unix)]
         assert!(free_bytes(&dir.join("not/created/yet")).is_some_and(|b| b > 0));
-        let _ = dir;
     }
 
     #[test]

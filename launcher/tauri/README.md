@@ -103,12 +103,20 @@ existed, shows as out of date and is rebuilt after the same kind of approval.
 A launcher outside a source checkout can still build when it was compiled from a
 clean, fully pushed commit (`BuildInfo::fetchable`). On Build it asks once to
 download the game sources for that commit (and the SDK, if needed), then
-clones them with `git fetch --depth 1` into `SoulsOfTheReaper/sources/<commit>`
-under the per-user data folder (`~/.local/share` on Linux, `%APPDATA%` on
+clones them with `git fetch --depth 1` into `build/sources/<commit>` beside the
+launcher, where `<commit>` is the first 12 characters of the commit id (a folder
+named after the full id, from earlier launchers, is still used). A launcher in a
+folder it cannot write to uses `SoulsOfTheReaper/sources/<commit>` under the
+per-user data folder instead (`~/.local/share` on Linux, `%LOCALAPPDATA%` on
 Windows). Without git it downloads GitHub's archive of that commit with `curl`
 and `tar` instead; git is still required afterwards, because the build script
 clones the SDK with it. The SDK, XenonRecomp and `port/out` live inside that
 folder. Delete the commit's folder to start over.
+
+On Windows the clones turn on `core.longpaths`: the SDK checkout inside the
+fetched sources passes the 260-character path limit when the launcher sits in
+a deep folder. Keep the launcher's folder path short (under about 60
+characters) all the same, since not every compiler tool handles long paths.
 
 The remote comes from `SOTR_REPO` at launcher build time, defaulting to the
 `origin` remote, so set it to the canonical repository for releases and make

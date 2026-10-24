@@ -53,18 +53,20 @@ def checkout_pinned_sdk(sdk, run, config=()):
     """Clone the SDK if missing, check out the pinned commit and verify it.
 
     `run` is the caller's command runner; `config` holds git settings (e.g.
-    core.autocrlf=false) applied to the clone before checkout.
+    core.autocrlf=false) applied to the clone before checkout. Submodules do not
+    read the clone's config, so they get the same settings on the command line.
     """
     lock = json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
+    options = [a for c in config for a in ("-c", c)]
     if not sdk.exists():
-        run("git", *(a for c in config for a in ("-c", c)), "clone", "--no-checkout", lock["repository"], sdk)
+        run("git", *options, "clone", "--no-checkout", lock["repository"], sdk)
         for c in config:
             run("git", "-C", sdk, "config", *c.split("=", 1))
         run("git", "-C", sdk, "checkout", "--detach", lock["commit"])
     actual = subprocess.check_output(["git", "-C", str(sdk), "rev-parse", "HEAD"], text=True).strip()
     if actual != lock["commit"]:
         raise ValueError(f"SDK revision mismatch: {actual}; expected {lock['commit']}")
-    run("git", "-C", sdk, "submodule", "update", "--init", "--recursive")
+    run("git", *options, "-C", sdk, "submodule", "update", "--init", "--recursive")
     return lock
 
 

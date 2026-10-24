@@ -9,8 +9,18 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// Characters of the commit id that name its sources folder. Windows paths
+/// stop at 260 characters, and the SDK checkout inside this folder already
+/// needs about 180 of them.
+const FOLDER_COMMIT_LEN: usize = 12;
+
 /// Where the sources for `commit` live below `base`.
 pub fn managed_root(base: &Path, commit: &str) -> PathBuf {
+    base.join("sources").join(&commit[..commit.len().min(FOLDER_COMMIT_LEN)])
+}
+
+/// Folders named after the full commit id, which earlier launchers created.
+fn legacy_root(base: &Path, commit: &str) -> PathBuf {
     base.join("sources").join(commit)
 }
 
@@ -30,7 +40,10 @@ pub fn managed_root_for(launcher_dir: &Path, data_dir: Option<&Path>, commit: &s
     let beside = launcher_dir.join("build");
     let per_user = data_dir.map(|d| d.join("SoulsOfTheReaper"));
     let candidates: Vec<PathBuf> = std::iter::once(beside.clone()).chain(per_user.clone()).collect();
-    let existing = candidates.iter().map(|b| managed_root(b, commit)).find(|r| is_complete(r));
+    let existing = candidates
+        .iter()
+        .flat_map(|b| [managed_root(b, commit), legacy_root(b, commit)])
+        .find(|r| is_complete(r));
     existing.or_else(|| {
         let base = if writable(launcher_dir) { beside } else { per_user? };
         Some(managed_root(&base, commit))
@@ -77,6 +90,9 @@ fn run(program: &Path, args: &[&str], dir: &Path, log: &dyn Fn(&str)) -> Result<
 
 fn clone_with_git(git: &Path, url: &str, commit: &str, dest: &Path, log: &dyn Fn(&str)) -> Result<(), String> {
     run(git, &["init", "--quiet"], dest, log)?;
+    // Git for Windows defaults: no paths over 260 characters, and CRLF line endings.
+    run(git, &["config", "core.longpaths", "true"], dest, log)?;
+    run(git, &["config", "core.autocrlf", "false"], dest, log)?;
     run(git, &["remote", "add", "origin", url], dest, log)?;
     run(git, &["fetch", "--depth", "1", "origin", commit], dest, log)?;
     run(git, &["checkout", "--quiet", "FETCH_HEAD"], dest, log)?;
@@ -92,18 +108,46 @@ fn clone_with_git(git: &Path, url: &str, commit: &str, dest: &Path, log: &dyn Fn
     Ok(())
 }
 
-/// Downloads GitHub's archive of `commit` with curl and unpacks it with tar
-/// (both ship with Windows 10 and later), dropping the top-level folder.
+/// curl and tar from System32 on Windows (both ship with Windows 10 and
+/// later): Git's GNU tar, when on PATH, reads `C:\...` as a remote host.
+fn system_tool(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let path = PathBuf::from(root).join("System32").join(format!("{name}.exe"));
+        if path.is_file() {
+            return path;
+        }
+    }
+    PathBuf::from(name)
+}
+
+/// Windows refuses to rename a folder while antivirus or the search indexer
+/// still has a just-written file open, so give them a moment.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if attempt < 5 && e.kind() == std::io::ErrorKind::PermissionDenied => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Downloads GitHub's archive of `commit` with curl and unpacks it with tar,
+/// dropping the top-level folder.
 fn download_archive(url: &str, commit: &str, dest: &Path, log: &dyn Fn(&str)) -> Result<(), String> {
     let archive = dest.join("sources.tar.gz");
     let archive_name = archive.to_string_lossy().into_owned();
     run(
-        Path::new("curl"),
+        &system_tool("curl"),
         &["--fail", "--location", "--silent", "--show-error", "--output", &archive_name, &format!("{url}/archive/{commit}.tar.gz")],
         dest,
         log,
     )?;
-    run(Path::new("tar"), &["-xzf", &archive_name, "--strip-components=1"], dest, log)?;
+    run(&system_tool("tar"), &["-xzf", &archive_name, "--strip-components=1"], dest, log)?;
     let _ = fs::remove_file(archive);
     Ok(())
 }
@@ -142,7 +186,7 @@ pub fn ensure(
         })
         .and_then(|()| {
             let _ = fs::remove_dir_all(root);
-            fs::rename(&partial, root).map_err(|e| format!("Unable to move sources into place: {e}"))
+            rename_with_retry(&partial, root).map_err(|e| format!("Unable to move sources into place: {e}"))
         })
         .inspect_err(|_| {
             let _ = fs::remove_dir_all(&partial);
@@ -168,6 +212,17 @@ mod tests {
     fn sources_are_keyed_by_commit() {
         let root = managed_root(Path::new("/data"), "abc");
         assert!(root.ends_with("sources/abc"));
+        let id = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518";
+        assert!(managed_root(Path::new("/data"), id).ends_with("sources/c94f5ebdcb3c"));
+    }
+
+    #[test]
+    fn sources_fetched_under_the_full_commit_are_still_used() {
+        let (launcher, data) = (scratch("launcher4"), scratch("data4"));
+        let id = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518";
+        let old = launcher.join("build/sources").join(id);
+        make_complete(&old);
+        assert_eq!(managed_root_for(&launcher, Some(&data), id).unwrap(), old);
     }
 
     fn scratch(name: &str) -> PathBuf {

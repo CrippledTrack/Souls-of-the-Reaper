@@ -63,7 +63,9 @@ def restore_symlinks(sdk):
 
 def build_sdk(args):
     sdk = args.sdk_source
-    lock = checkout_pinned_sdk(sdk, run, config=("core.autocrlf=false",))
+    # Long paths: a launcher's fetched sources sit deeper than a checkout, and the
+    # SDK's vulkan-loader test files then pass Windows' 260-character limit.
+    lock = checkout_pinned_sdk(sdk, run, config=("core.autocrlf=false", "core.longpaths=true"))
     restore_symlinks(sdk)
     apply_common_patches(sdk)
     apply_patch(sdk, ROOT / "patches/windows/rexglue-windows.patch")

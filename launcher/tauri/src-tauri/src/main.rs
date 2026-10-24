@@ -166,10 +166,6 @@ async fn launch_game(
     window.close().map_err(|e| e.to_string())
 }
 
-fn python() -> Command {
-    Command::new(if cfg!(target_os = "windows") { "python" } else { "python3" })
-}
-
 /// Stops the build script and the CMake/Ninja/compiler processes it started.
 fn stop_build(host: &Host) {
     let Some(pid) = host.build_pid.lock().unwrap().take() else {
@@ -225,15 +221,21 @@ async fn start_build(
     let repo = host
         .build_root()
         .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
-    if host.repo.is_none() && !sources::is_complete(&repo) {
+    let (game, game_update) = launch::game_folders(&settings, &host.defaults);
+    let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
+    // Checked before downloading anything, so a missing tool costs no download.
+    let report = tools::detect(host.platform, &repo, &request.cmake);
+    if !report.ready {
+        let missing: Vec<_> = report.tools.iter().filter(|t| !t.found).map(|t| t.label.as_str()).collect();
+        return Err(format!("Missing build tools: {}.", missing.join(", ")));
+    }
+    let tool_path = |id: &str| report.tools.iter().find(|t| t.id == id).map(|t| PathBuf::from(&t.path));
+    let fetch = host.repo.is_none() && !sources::is_complete(&repo);
+    if fetch {
         if !request.download_sources {
             return Err("The game sources are not downloaded yet. Approve the download to continue.".into());
         }
-        let git = tools::detect(host.platform, &repo, &request.cmake)
-            .tools
-            .iter()
-            .find(|t| t.id == "git" && t.found)
-            .map(|t| PathBuf::from(&t.path));
+        let git = tool_path("git");
         let (root, app) = (repo.clone(), app.clone());
         tauri::async_runtime::spawn_blocking(move || {
             sources::ensure(
@@ -249,19 +251,16 @@ async fn start_build(
         .await
         .map_err(|e| e.to_string())??;
     }
-    let (game, game_update) = launch::game_folders(&settings, &host.defaults);
-    let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
-    let report = tools::detect(host.platform, &repo, &request.cmake);
-    if !report.ready {
-        let missing: Vec<_> = report.tools.iter().filter(|t| !t.found).map(|t| t.label.as_str()).collect();
-        return Err(format!("Missing build tools: {}.", missing.join(", ")));
-    }
+    // The SDK state comes from the sources' build script, which only now exists.
+    let python = tool_path("python").unwrap_or_default();
+    let report = if fetch { tools::detect(host.platform, &repo, &request.cmake) } else { report };
     if !report.sdk.installed && !request.download_sdk {
         return Err("The ReXGlue SDK needs to be built. Approve the download to continue.".into());
     }
     write_settings(&host.settings_file, &settings)?;
 
-    let mut command = python();
+    // The interpreter the tool check accepted, not whatever "python" resolves to.
+    let mut command = Command::new(&python);
     command
         .args(&args)
         .current_dir(&repo)
@@ -425,7 +424,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let repo = launch::repository_root(&search);
     let info = build_info::BuildInfo::current();
     let managed = (repo.is_none() && info.fetchable())
-        .then(|| sources::managed_root_for(&launcher_dir, app.path().data_dir().ok().as_deref(), &info.commit))
+        // Local, not roaming, app data on Windows: a build takes about 15 GB.
+        .then(|| sources::managed_root_for(&launcher_dir, app.path().local_data_dir().ok().as_deref(), &info.commit))
         .flatten();
     // Builds made from fetched sources land inside them.
     search.extend(managed.clone());
