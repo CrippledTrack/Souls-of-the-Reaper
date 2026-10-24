@@ -3,9 +3,9 @@
 A Tauri 2 launcher for Linux and Windows. It shows the same page as the
 Windows `Launcher.ps1` (`../v6_borderless_final.html`) and replaces the
 PowerShell/WebView2 host with Rust. Linux has been built and run on a desktop.
-The Windows launcher builds (Release build checked on Windows 11) and its
-Build panel drives the same `scripts/build_client.py` as Linux, but a complete
-game launch through the Windows launcher has not been tested yet.
+On Windows 11 a Release launcher outside a source checkout has fetched its
+sources, built the SDK and compiled the game through the Build panel (the same
+`scripts/build_client.py` as Linux), then started the game with Play.
 
 ## What it offers
 
@@ -75,7 +75,16 @@ Before it runs anything, the launcher itself (not the Python scripts, since
 Windows may have no Python) checks for Python 3, Git, Clang, CMake 3.25+, Ninja
 and, on Windows, the Visual Studio C++ tools. The panel lists each one with a
 download link when it is missing, and **Build** stays blocked until they are
-found (**Check tools** rechecks after an install). Clang, CMake and Ninja
+found (**Check tools** rechecks after an install). On Windows with winget, the
+panel also offers **Install missing tools with winget**, which installs each
+missing one in turn (`Python.Python.3.13` per user and on `PATH`, `Git.Git`,
+`LLVM.LLVM`, `Kitware.CMake` pinned to 3.31.8 because CMake 4 rejects old
+third-party minimums, `Ninja-build.Ninja`, and last
+`Microsoft.VisualStudio.2022.BuildTools` with the C++ workload and the Windows
+SDK). Its note says that it accepts the packages' license agreements; Windows
+asks for administrator approval for most of them. The tool check reads the user
+and machine `PATH` from the registry, so tools installed while the launcher is
+open are found without a restart. Clang, CMake and Ninja
 installed in the usual Visual Studio or LLVM folders are found and passed on to
 the build even when they are not on `PATH`. The ReXGlue SDK is not a tool you
 install: when it is not built yet, the panel asks before fetching the pinned
@@ -188,9 +197,10 @@ Rust tests cover both platforms' arguments on any host.
 
 - On Wayland with NVIDIA, the launcher window captured blank in a desktop test
   but rendered correctly under XWayland (`GDK_BACKEND=x11`).
-- Windows: the launcher compiles, but a full run (Build panel through Play)
-  has not been validated. Focus hand-off to the game uses `AllowSetForegroundWindow`
-  only; `Launcher.ps1` also polled and raised the game window.
+- Windows: installing the tools by hand (download links, no winget) has not been
+  tried on a machine that lacks them, and neither has a machine that already has
+  CMake 4. Focus hand-off to the game uses `AllowSetForegroundWindow` only;
+  `Launcher.ps1` also polled and raised the game window.
 - The Remap Controls screen still does not send its bindings, as in
   `Launcher.ps1`; use the in-game F4 menu.
 - The installer and `setup.ps1` still package and start `Launcher.ps1`'s
@@ -198,5 +208,5 @@ Rust tests cover both platforms' arguments on any host.
 - Building needs Python 3 and git, from a source checkout or via the fetched
   sources above. Compiling is automated on Linux and Windows, and only the
   USA disc and USA update are accepted.
-- Fetching sources has been tried on Linux only. An SDK built before stamps
-  existed is rebuilt once.
+- Fetching sources has been tried on Linux and Windows. An SDK built before
+  stamps existed is rebuilt once.

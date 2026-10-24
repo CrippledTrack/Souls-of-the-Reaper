@@ -59,6 +59,9 @@ const panelStyle = `<style>
   #toolList a{color:#e2d7bd}
   #sdkPrompt{margin:8px 0;padding:8px 10px;border:1px solid rgba(158,43,28,.55);background:rgba(46,30,24,.55)}
   #sdkPrompt[hidden]{display:none}
+  #wingetRow{margin:6px 0 0}
+  #wingetRow[hidden]{display:none}
+  #wingetRow small{display:block;margin-top:4px;color:var(--muted)}
 </style>`;
 
 inject('<div class="stage">', `${panelStyle}
@@ -88,6 +91,7 @@ inject('<div class="stage">', `${panelStyle}
     </fieldset>
     <label id="cmakeLabel">CMake 3.25+ (blank = from PATH)<span class="pick"><input id="buildCmake" type="text" spellcheck="false"><button type="button" data-pick="cmake" aria-label="Browse for CMake">…</button></span></label>
     <label id="toolsLabel">Build tools<ul id="toolList"></ul></label>
+    <div id="wingetRow" hidden><button id="installTools" type="button">Install missing tools with winget</button><small id="wingetNote"></small></div>
     <pre id="buildLog"></pre>
     <div id="sdkPrompt" role="alertdialog" aria-label="Download the ReXGlue SDK" hidden>
       <span id="sdkPromptText"></span>

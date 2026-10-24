@@ -187,18 +187,20 @@ fn stop_build(host: &Host) {
 }
 
 /// Sends each output line to the page as a build-output event and keeps the
-/// last lines for the error message.
+/// last lines for the error message. `clean` rewrites a line or drops it.
 fn forward_output(
     app: tauri::AppHandle,
     stream: impl Read + Send + 'static,
     tail: Arc<Mutex<VecDeque<String>>>,
+    clean: fn(&str) -> Option<String>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         let mut buffer = Vec::new();
         while reader.read_until(b'\n', &mut buffer).is_ok_and(|n| n > 0) {
-            let line = String::from_utf8_lossy(&buffer).trim_end().to_string();
+            let line = clean(String::from_utf8_lossy(&buffer).trim_end());
             buffer.clear();
+            let Some(line) = line else { continue };
             let _ = app.emit("build-output", &line);
             let mut tail = tail.lock().unwrap();
             if tail.len() == 20 {
@@ -291,9 +293,10 @@ async fn start_build(
         child
     };
     let tail = Arc::new(Mutex::new(VecDeque::new()));
+    let keep = |line: &str| Some(line.to_string());
     let readers = [
-        forward_output(app.clone(), child.stdout.take().unwrap(), tail.clone()),
-        forward_output(app.clone(), child.stderr.take().unwrap(), tail.clone()),
+        forward_output(app.clone(), child.stdout.take().unwrap(), tail.clone(), keep),
+        forward_output(app.clone(), child.stderr.take().unwrap(), tail.clone(), keep),
     ];
     let status = tauri::async_runtime::spawn_blocking(move || {
         let status = child.wait();
@@ -348,6 +351,75 @@ async fn check_build_tools(
     })
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Installs the missing build tools with winget, one after another, streaming
+/// its output like a build, and returns the tool report afterwards. The page
+/// only calls this after the user pressed the install button, whose text says
+/// that it accepts the packages' license agreements.
+#[tauri::command]
+async fn install_tools(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, Host>,
+    cmake: String,
+) -> Result<tools::ToolReport, String> {
+    if host.platform != Platform::Windows {
+        return Err("Installing tools is only offered on Windows.".into());
+    }
+    let repo = host
+        .build_root()
+        .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
+    if host.build_pid.lock().unwrap().is_some() {
+        return Err("A build is running.".into());
+    }
+    let platform = host.platform;
+    let (dir, app_handle, cmake_choice) = (repo.clone(), app.clone(), cmake.clone());
+    let failed = tauri::async_runtime::spawn_blocking(move || {
+        let report = tools::detect(platform, &dir, &cmake);
+        let missing = tools::install_order(&report);
+        let mut failed = Vec::new();
+        for (index, tool) in missing.iter().enumerate() {
+            let _ = app_handle.emit(
+                "build-output",
+                format!("::step::{}/{}::Installing {}", index + 1, missing.len(), tool.label),
+            );
+            let mut command = Command::new("winget");
+            command
+                .args(tools::winget_arguments(tool.winget))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            let status = command.spawn().and_then(|mut child| {
+                let tail = Arc::new(Mutex::new(VecDeque::new()));
+                let readers = [
+                    forward_output(app_handle.clone(), child.stdout.take().unwrap(), tail.clone(), tools::clean_winget_line),
+                    forward_output(app_handle.clone(), child.stderr.take().unwrap(), tail, tools::clean_winget_line),
+                ];
+                let status = child.wait();
+                for reader in readers {
+                    let _ = reader.join();
+                }
+                status
+            });
+            // winget reports "already installed" and "restart needed" as failures too;
+            // the tool check below decides what is really missing.
+            if !status.is_ok_and(|s| s.success()) {
+                failed.push(tool.label.clone());
+            }
+        }
+        failed
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if !failed.is_empty() {
+        let _ = app.emit("build-output", format!("winget did not finish cleanly for: {}.", failed.join(", ")));
+    }
+    check_build_tools(host, cmake_choice).await
 }
 
 #[tauri::command]
@@ -509,6 +581,7 @@ fn main() {
             start_build,
             cancel_build,
             check_build_tools,
+            install_tools,
             pick_file,
             open_external,
             window_action

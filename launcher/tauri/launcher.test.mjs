@@ -332,6 +332,37 @@ test('Missing build tools are listed with download links and block the build', a
   assert.match(doc.getElementById('buildStep').textContent, /missing tools/);
 });
 
+test('Windows offers to install missing tools with winget and says it accepts their licenses', async () => {
+  const missing = { ...TOOL('msvc', false), label: 'Visual Studio 2022 C++ tools', winget: 'Microsoft.VisualStudio.2022.BuildTools' };
+  const report = { ready: false, winget: true, tools: [missing, { ...TOOL('git', true), winget: 'Git.Git' }], sdk: SDK(true) };
+  const after = { ...report, ready: true, tools: [{ ...missing, found: true }, report.tools[1]] };
+  const { doc, click, calls } = tauriPage({ platform: 'windows', builds: [],
+    responses: { check_build_tools: () => report, install_tools: async () => after } });
+  await tick();
+  assert.equal(doc.getElementById('wingetRow').hidden, false);
+  const note = doc.getElementById('wingetNote').textContent;
+  assert.match(note, /Visual Studio 2022 C\+\+ tools/);
+  assert.match(note, /accepts their license agreements/);
+  assert.doesNotMatch(note, /\bGIT\b/);
+  click(doc.getElementById('installTools'));
+  await tick(); await tick();
+  assert.equal(calls.filter(c => c.command === 'install_tools').length, 1);
+  assert.equal(doc.getElementById('wingetRow').hidden, true);
+  assert.match(doc.getElementById('buildStep').textContent, /installed/);
+  assert.equal(doc.querySelector('#toolList li').className, 'ok');
+});
+
+test('The winget button stays hidden without winget or missing tools', async () => {
+  for (const report of [
+    { ready: false, winget: false, tools: [{ ...TOOL('git', false), winget: 'Git.Git' }], sdk: SDK(true) },
+    { ready: true, winget: true, tools: [{ ...TOOL('git', true), winget: 'Git.Git' }], sdk: SDK(true) },
+  ]) {
+    const { doc } = tauriPage({ platform: 'windows', builds: [], responses: { check_build_tools: () => report } });
+    await tick();
+    assert.equal(doc.getElementById('wingetRow').hidden, true);
+  }
+});
+
 test('A missing SDK is only downloaded after the user agrees', async () => {
   const report = { ready: true, tools: [TOOL('git', true)], sdk: SDK(false) };
   const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });

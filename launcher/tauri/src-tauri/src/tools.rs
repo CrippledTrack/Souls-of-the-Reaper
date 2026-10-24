@@ -31,6 +31,8 @@ pub struct Tool {
     /// Where to download it; empty when the system package manager is the way.
     pub url: &'static str,
     pub note: String,
+    /// winget package that installs it (Windows); empty when there is none.
+    pub winget: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -63,6 +65,8 @@ pub struct ToolReport {
     pub warnings: Vec<String>,
     /// Every required tool was found.
     pub ready: bool,
+    /// winget can install the missing tools (Windows 10 1809+ with App Installer).
+    pub winget: bool,
     /// Folders of tools found off PATH (Visual Studio's CMake, LLVM); the build
     /// script's PATH needs them too.
     #[serde(skip)]
@@ -149,7 +153,136 @@ fn tool(id: &'static str, label: &str, path: Option<&Path>, url: &'static str, n
         path: path.map(|p| p.display().to_string()).unwrap_or_default(),
         url,
         note: note.into(),
+        winget: "",
     }
+}
+
+/// Visual Studio Build Tools with the C++ workload; --includeRecommended adds the
+/// Windows SDK. --passive shows the Visual Studio installer's progress window.
+const VS_BUILD_TOOLS_OVERRIDE: &str =
+    "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended";
+/// The Python installer leaves PATH alone unless asked; per-user needs no admin.
+const PYTHON_OVERRIDE: &str = "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1";
+/// CMake 4 rejects projects that ask for a minimum below 3.5, which older
+/// third-party code in the SDK may do; the builds so far used 3.31.
+const CMAKE_VERSION: &str = "3.31.8";
+
+/// winget package for each build tool.
+pub fn winget_package(id: &str) -> &'static str {
+    match id {
+        "python" => "Python.Python.3.13",
+        "git" => "Git.Git",
+        "msvc" => "Microsoft.VisualStudio.2022.BuildTools",
+        "clang" => "LLVM.LLVM",
+        "cmake" => "Kitware.CMake",
+        "ninja" => "Ninja-build.Ninja",
+        _ => "",
+    }
+}
+
+/// Arguments for `winget` to install `package` without questions. Only used
+/// after the user pressed the Build panel's install button, which says that it
+/// accepts the packages' license agreements.
+pub fn winget_arguments(package: &str) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "install",
+        "--id",
+        package,
+        "--exact",
+        "--source",
+        "winget",
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity",
+    ]
+    .map(String::from)
+    .into();
+    let installer = match package {
+        "Microsoft.VisualStudio.2022.BuildTools" => Some(VS_BUILD_TOOLS_OVERRIDE),
+        "Python.Python.3.13" => Some(PYTHON_OVERRIDE),
+        _ => None,
+    };
+    if let Some(value) = installer {
+        args.extend(["--override".into(), value.into()]);
+    }
+    if package == "Kitware.CMake" {
+        args.extend(["--version".into(), CMAKE_VERSION.into()]);
+    }
+    args
+}
+
+/// winget is installed and runs (it is an app alias, so a file check is not enough).
+fn winget_available() -> bool {
+    output_of(Path::new("winget"), &["--version"]).is_some()
+}
+
+/// Missing tools in the order to install them: Visual Studio last, since it is
+/// by far the largest.
+pub fn install_order(report: &ToolReport) -> Vec<&Tool> {
+    let mut missing: Vec<&Tool> = report.tools.iter().filter(|t| !t.found && !t.winget.is_empty()).collect();
+    missing.sort_by_key(|t| t.id == "msvc");
+    missing
+}
+
+/// One line of winget output for the log: progress redraws with carriage
+/// returns, so only the last state of a line is kept, and spinner frames and
+/// progress bars are dropped.
+pub fn clean_winget_line(line: &str) -> Option<String> {
+    let last = line.rsplit('\r').map(str::trim).find(|s| !s.is_empty())?;
+    let noise = |c: char| c.is_whitespace() || "-\\|/\u{2588}\u{2592}".contains(c);
+    // Bars end in a size or percentage, e.g. "███▒▒▒  12.0 MB / 40.0 MB".
+    let bar = last.starts_with(['\u{2588}', '\u{2592}']);
+    (last.chars().any(|c| !noise(c)) && !bar).then(|| last.to_string())
+}
+
+/// Folders in the user and machine PATH as saved in the registry. Installers
+/// change those, not the PATH this process started with, so tools installed
+/// while the launcher is open are only found this way.
+#[cfg(windows)]
+fn registry_path() -> Vec<PathBuf> {
+    let keys = [r"HKCU\Environment", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"];
+    keys.iter()
+        .filter_map(|key| output_of(Path::new("reg"), &["query", key, "/v", "Path"]))
+        .filter_map(|text| parse_reg_value(&text))
+        .flat_map(|value| std::env::split_paths(&expand_env(&value)).collect::<Vec<_>>())
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn registry_path() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// The data of a `reg query /v` line: "    Path    REG_EXPAND_SZ    C:\a;%X%".
+fn parse_reg_value(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (_, rest) = line.split_once("REG_EXPAND_SZ").or_else(|| line.split_once("REG_SZ"))?;
+        Some(rest.trim().to_string())
+    })
+}
+
+/// Replaces %NAME% with the environment variable; unknown names stay as written.
+fn expand_env(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let name = &after[..end];
+        match std::env::var(name).ok().filter(|_| !name.is_empty()) {
+            Some(value) => out.push_str(&value),
+            None => out.push_str(&format!("%{name}%")),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn package_hint(packages: &str) -> String {
@@ -159,9 +292,19 @@ fn package_hint(packages: &str) -> String {
 /// Status of every tool a build needs. `cmake_choice` is the Build panel's
 /// CMake field (blank = look it up).
 pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport {
-    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+    // The PATH the build script inherits, then the registry's (tools installed
+    // since the launcher started).
+    let inherited: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    let mut dirs = inherited.clone();
+    if platform == Platform::Windows {
+        for dir in registry_path() {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
     let mut extra = Vec::new();
     let studio = (platform == Platform::Windows).then(visual_studio).flatten();
     if platform == Platform::Windows {
@@ -169,6 +312,12 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
         extra.push(program_files.join("LLVM/bin"));
+        // Where the winget packages install when they leave PATH alone.
+        extra.push(program_files.join("CMake/bin"));
+        extra.push(program_files.join("Git/cmd"));
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            extra.push(PathBuf::from(local).join("Microsoft/WinGet/Links"));
+        }
         let mut roots = vec![program_files.join("Microsoft Visual Studio/2022/Community")];
         roots.extend(studio.clone());
         for root in roots {
@@ -227,7 +376,7 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
             "Visual Studio 2022 C++ tools",
             studio.as_deref(),
             "https://visualstudio.microsoft.com/downloads/",
-            "Free Community edition; install the 'Desktop development with C++' workload.",
+            "Free Build Tools or Community edition with the 'Desktop development with C++' workload.",
         ));
     }
     tools.push(tool(
@@ -261,11 +410,18 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         &if linux { package_hint("apt install ninja-build, pacman -S ninja") } else { "Also included with the Visual Studio 'C++ CMake tools' component.".into() },
     ));
 
-    // Only folders the machine's own PATH lacks need adding for the build script.
+    if platform == Platform::Windows {
+        for t in &mut tools {
+            t.winget = winget_package(t.id);
+        }
+    }
+
+    // Only folders the inherited PATH lacks need adding for the build script,
+    // which runs git and the compilers by name.
     let mut path_dirs = Vec::new();
-    for found in [&clang, &cmake, &ninja].into_iter().flatten() {
+    for found in [&python, &git, &clang, &cmake, &ninja].into_iter().flatten() {
         if let Some(dir) = found.parent() {
-            if !dirs.iter().any(|d| d == dir) && !path_dirs.iter().any(|d: &PathBuf| d == dir) {
+            if !inherited.iter().any(|d| d == dir) && !path_dirs.iter().any(|d: &PathBuf| d == dir) {
                 path_dirs.push(dir.to_path_buf());
             }
         }
@@ -282,9 +438,11 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         ));
     }
 
+    let ready = tools.iter().all(|t| t.found);
     ToolReport {
         warnings,
-        ready: tools.iter().all(|t| t.found),
+        ready,
+        winget: platform == Platform::Windows && !ready && winget_available(),
         tools,
         sdk: python
             .as_deref()
@@ -510,6 +668,53 @@ mod tests {
         assert!(!linux.ready);
         let windows = detect(Platform::Windows, &repo, "");
         assert!(windows.tools.iter().any(|t| t.id == "msvc" && t.url.starts_with("https://")));
+    }
+
+    #[test]
+    fn winget_installs_quietly_with_installer_overrides() {
+        let git = winget_arguments("Git.Git");
+        assert_eq!(&git[..4], ["install", "--id", "Git.Git", "--exact"]);
+        assert!(git.iter().any(|a| a == "--accept-package-agreements"));
+        assert!(!git.iter().any(|a| a == "--override"));
+        let vs = winget_arguments(winget_package("msvc"));
+        let value = &vs[vs.iter().position(|a| a == "--override").unwrap() + 1];
+        assert!(value.contains("Microsoft.VisualStudio.Workload.VCTools") && value.contains("--includeRecommended"));
+        let python = winget_arguments(winget_package("python"));
+        assert!(python.last().unwrap().contains("PrependPath=1"));
+        assert!(winget_arguments(winget_package("cmake")).ends_with(&["--version".into(), "3.31.8".into()]));
+    }
+
+    #[test]
+    fn missing_tools_install_with_visual_studio_last() {
+        let repo = scratch("order");
+        let mut report = detect(Platform::Windows, &repo, "/no/such/cmake");
+        for t in &mut report.tools {
+            t.found = !matches!(t.id, "msvc" | "cmake" | "git");
+        }
+        let ids: Vec<_> = install_order(&report).iter().map(|t| t.id).collect();
+        assert_eq!(ids, ["git", "cmake", "msvc"]);
+        assert!(detect(Platform::Linux, &repo, "").tools.iter().all(|t| t.winget.is_empty()));
+    }
+
+    #[test]
+    fn winget_progress_is_reduced_to_readable_lines() {
+        let found = "Found Git [Git.Git] Version 2.51.0";
+        assert_eq!(clean_winget_line(found).as_deref(), Some(found));
+        assert_eq!(clean_winget_line("  -\r  \\\r  |\r  /"), None);
+        assert_eq!(clean_winget_line("\u{2588}\u{2588}\u{2592}\u{2592}  1.00 MB / 64.0 MB"), None);
+        assert_eq!(clean_winget_line("  -\r  Successfully installed").as_deref(), Some("Successfully installed"));
+        assert_eq!(clean_winget_line(""), None);
+    }
+
+    #[test]
+    fn registry_path_values_are_parsed_and_expanded() {
+        let text = "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %SOTR_TEST_HOME%\\bin;C:\\x\r\n\r\n";
+        let value = parse_reg_value(text).unwrap();
+        assert_eq!(value, r"%SOTR_TEST_HOME%\bin;C:\x");
+        std::env::set_var("SOTR_TEST_HOME", r"D:\home");
+        assert_eq!(expand_env(&value), r"D:\home\bin;C:\x");
+        assert_eq!(expand_env("%SOTR_NOT_SET_ANYWHERE%;50%"), "%SOTR_NOT_SET_ANYWHERE%;50%");
+        assert_eq!(parse_reg_value("ERROR: not found"), None);
     }
 
     #[test]

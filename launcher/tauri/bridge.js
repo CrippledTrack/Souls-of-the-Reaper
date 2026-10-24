@@ -115,7 +115,7 @@
   const sdkPrompt = document.getElementById('sdkPrompt');
   function renderTools(report) {
     toolList.textContent = '';
-    if (!report) { toolList.textContent = 'Could not check the build tools.'; return; }
+    if (!report) { toolList.textContent = 'Could not check the build tools.'; showWinget(null); return; }
     const add = (ok, text, note, url) => {
       const item = document.createElement('li');
       item.className = ok ? 'ok' : 'miss';
@@ -141,7 +141,37 @@
     add(sdk.installed, `ReXGlue SDK${sdk.commit ? ` (pinned ${sdk.commit.slice(0, 8)})` : ''}`,
       sdk.stale ? 'Built from another version or patch set; it is rebuilt before the game. Starting the build asks first.'
         : 'Not built yet. Starting the build asks before it is downloaded.');
+    showWinget(report);
   }
+  // Windows with winget: one button installs every missing tool. Its note says
+  // what pressing it agrees to, since winget accepts the license agreements.
+  const wingetRow = document.getElementById('wingetRow');
+  function showWinget(report) {
+    const missing = report && report.winget ? report.tools.filter(t => !t.found && t.winget) : [];
+    wingetRow.hidden = !missing.length;
+    if (!missing.length) return;
+    const vs = missing.some(t => t.id === 'msvc');
+    document.getElementById('wingetNote').textContent =
+      `Installs ${missing.map(t => t.label).join(', ')} with winget and accepts their license agreements. ` +
+      'Windows asks for administrator approval for most of them.' +
+      (vs ? ' Visual Studio Build Tools is several GB and shows its own progress window.' : '');
+  }
+  document.getElementById('installTools').addEventListener('click', async () => {
+    logLines.length = 0; buildLog.textContent = '';
+    buildStep.textContent = 'Installing build tools…';
+    setBuilding(true);
+    // winget and the installers it starts are not stopped halfway.
+    document.getElementById('cancelBuild').hidden = true;
+    wingetRow.hidden = true;
+    let report = null;
+    try { report = await invoke('install_tools', { cmake: document.getElementById('buildCmake').value.trim() }) || null; }
+    catch (error) { buildStep.textContent = String(error); }
+    finally { setBuilding(false); }
+    if (!report) { checkTools(); return; }
+    renderTools(report);
+    buildStep.textContent = report.ready ? 'The build tools are installed. Press Build to continue.'
+      : 'Some tools are still missing (see above). If one was just installed, restart the launcher and press Check tools.';
+  });
   async function checkTools() {
     let report = null;
     try { report = await invoke('check_build_tools', { cmake: document.getElementById('buildCmake').value.trim() }) || null; }
