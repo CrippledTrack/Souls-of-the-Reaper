@@ -2,6 +2,7 @@
 
 mod build_info;
 mod launch;
+mod sources;
 mod tools;
 
 use launch::{Build, BuildRequest, Defaults, GameOptions, Platform, Settings};
@@ -29,8 +30,18 @@ struct Host {
     search: Vec<PathBuf>,
     /// Source checkout, needed to build the game.
     repo: Option<PathBuf>,
+    /// Where a launcher outside a checkout fetches the sources for its own
+    /// commit; None when that commit cannot be fetched.
+    managed: Option<PathBuf>,
     /// Process id of the running scripts/build_client.py.
     build_pid: Mutex<Option<u32>>,
+}
+
+impl Host {
+    /// Folder the build scripts run from: the checkout, else the fetched sources.
+    fn build_root(&self) -> Option<PathBuf> {
+        self.repo.clone().or_else(|| self.managed.clone())
+    }
 }
 
 /// Injected ahead of the page scripts as window.LAUNCHER_CAPS.
@@ -212,9 +223,32 @@ async fn start_build(
     request: BuildRequest,
 ) -> Result<Vec<Build>, String> {
     let repo = host
-        .repo
-        .clone()
-        .ok_or("Building needs the Souls of the Reaper source checkout.")?;
+        .build_root()
+        .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
+    if host.repo.is_none() && !sources::is_complete(&repo) {
+        if !request.download_sources {
+            return Err("The game sources are not downloaded yet. Approve the download to continue.".into());
+        }
+        let git = tools::detect(host.platform, &repo, &request.cmake)
+            .tools
+            .iter()
+            .find(|t| t.id == "git" && t.found)
+            .map(|t| PathBuf::from(&t.path));
+        let (root, app) = (repo.clone(), app.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            sources::ensure(
+                &root,
+                build_info::BuildInfo::repository(),
+                &build_info::BuildInfo::current().commit,
+                git.as_deref(),
+                &|line| {
+                    let _ = app.emit("build-output", line);
+                },
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
     let (game, game_update) = launch::game_folders(&settings, &host.defaults);
     let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
     let report = tools::detect(host.platform, &repo, &request.cmake);
@@ -223,7 +257,7 @@ async fn start_build(
         return Err(format!("Missing build tools: {}.", missing.join(", ")));
     }
     if !report.sdk.installed && !request.download_sdk {
-        return Err("The ReXGlue SDK is not built yet. Approve the download to continue.".into());
+        return Err("The ReXGlue SDK needs to be built. Approve the download to continue.".into());
     }
     write_settings(&host.settings_file, &settings)?;
 
@@ -299,11 +333,20 @@ async fn check_build_tools(
     cmake: String,
 ) -> Result<tools::ToolReport, String> {
     let repo = host
-        .repo
-        .clone()
-        .ok_or("Building needs the Souls of the Reaper source checkout.")?;
+        .build_root()
+        .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
     let platform = host.platform;
-    tauri::async_runtime::spawn_blocking(move || tools::detect(platform, &repo, &cmake))
+    let missing = host.repo.is_none() && !sources::is_complete(&repo);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = tools::detect(platform, &repo, &cmake);
+        if missing {
+            report.sources = Some(tools::Sources {
+                repository: build_info::BuildInfo::repository().into(),
+                commit: build_info::BuildInfo::current().commit,
+            });
+        }
+        report
+    })
         .await
         .map_err(|e| e.to_string())
 }
@@ -392,6 +435,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Platform::Linux => app.path().data_dir()?,
     };
     let defaults = launch::default_folders(platform, &base, &user_base);
+    let info = build_info::BuildInfo::current();
+    let managed = (repo.is_none() && info.fetchable())
+        .then(|| app.path().data_dir().ok())
+        .flatten()
+        .map(|dir| sources::managed_root(&dir, &info.commit));
     let settings_file = app.path().app_config_dir()?.join("launcher.json");
     let mut settings = load_settings(&settings_file);
     if settings.ui_state.is_null() {
@@ -411,7 +459,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         },
         builds: &builds,
         defaults: &defaults,
-        can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file()),
+        can_build: repo.as_ref().is_some_and(|r| r.join("scripts/build_client.py").is_file())
+            || (repo.is_none() && managed.is_some()),
         update_installed: update,
         version: build_info::BuildInfo::current(),
     };
@@ -434,6 +483,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         launcher_dir,
         search,
         repo,
+        managed,
         build_pid: Mutex::new(None),
     });
     // Sized to the v6 design's 500px stage (aspect 1088/1445), like Launcher.ps1.

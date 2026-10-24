@@ -129,9 +129,18 @@
       toolList.append(item);
     };
     report.tools.forEach(t => add(t.found, t.label, t.note, t.url));
+    // Warnings do not block Build; they explain failures that may come later.
+    (report.warnings ?? []).forEach(text => {
+      const item = document.createElement('li');
+      item.className = 'warn'; item.textContent = `! ${text}`;
+      toolList.append(item);
+    });
     const sdk = report.sdk;
+    if (report.sources) add(false, `Game sources (${report.sources.commit.slice(0, 8)})`,
+      'Not downloaded yet. Starting the build asks before they are fetched.');
     add(sdk.installed, `ReXGlue SDK${sdk.commit ? ` (pinned ${sdk.commit.slice(0, 8)})` : ''}`,
-      'Not built yet. Starting the build asks before it is downloaded.');
+      sdk.stale ? 'Built from another version or patch set; it is rebuilt before the game. Starting the build asks first.'
+        : 'Not built yet. Starting the build asks before it is downloaded.');
   }
   async function checkTools() {
     let report = null;
@@ -140,11 +149,16 @@
     renderTools(report);
     return report;
   }
-  // Resolves true when the user agrees to fetch and build the SDK.
-  function askSdkDownload(sdk) {
+  // Resolves true when the user agrees to download what is missing: the game
+  // sources (a launcher outside a checkout) and/or the ReXGlue SDK.
+  function askDownloads(report) {
+    const { sdk, sources } = report;
+    const parts = [];
+    if (sources) parts.push(`the game sources (${sources.repository}, commit ${sources.commit.slice(0, 8)}), a small download`);
+    if (sdk.stale) parts.push(`a rebuild of the ReXGlue SDK (commit ${sdk.commit.slice(0, 8)}), which was built from a different version or patch set and can take 12+ minutes`);
+    else if (!sdk.installed) parts.push(`the ReXGlue SDK (${sdk.repository || 'pinned version'}${sdk.commit ? `, commit ${sdk.commit.slice(0, 8)}` : ''}), about 3 GB, and the first build takes 12+ minutes`);
     document.getElementById('sdkPromptText').textContent =
-      `The ReXGlue SDK (${sdk.repository}, commit ${sdk.commit.slice(0, 8)}) is needed to compile the game. ` +
-      'Download that exact version and build it now? It needs about 3 GB and the first build takes 12+ minutes.';
+      `Compiling the game needs ${parts.join(' and ')}. Download ${parts.length > 1 ? 'them' : 'it'} and continue?`;
     sdkPrompt.hidden = false;
     document.getElementById('startBuild').disabled = true;
     return new Promise(resolve => {
@@ -204,7 +218,7 @@
     settings.uiState = uiState();
     const request = {
       iso: settings.buildIso, titleUpdate: settings.buildTitleUpdate, cmake: settings.buildCmake,
-      variants: selectedVariants(), downloadSdk: false,
+      variants: selectedVariants(), downloadSdk: false, downloadSources: false,
     };
     logLines.length = 0; buildLog.textContent = '';
     buildStep.textContent = 'Checking build tools…';
@@ -214,9 +228,11 @@
       buildStep.textContent = 'Install the missing tools listed above, then press Build again.';
       return;
     }
-    if (report && !report.sdk.installed) {
-      request.downloadSdk = await askSdkDownload(report.sdk);
-      if (!request.downloadSdk) { buildStep.textContent = 'Nothing was downloaded. The build needs the ReXGlue SDK.'; return; }
+    if (report && (report.sources || !report.sdk.installed)) {
+      const agreed = await askDownloads(report);
+      if (!agreed) { buildStep.textContent = 'Nothing was downloaded. The build needs the game sources and the ReXGlue SDK.'; return; }
+      request.downloadSdk = !report.sdk.installed;
+      request.downloadSources = Boolean(report.sources);
     }
     buildStep.textContent = 'Checking inputs…';
     setBuilding(true);

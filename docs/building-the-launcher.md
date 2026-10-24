@@ -43,6 +43,7 @@ Outputs:
 ### Where to run it
 
 - **Source checkout**: run it from anywhere inside the checkout. It finds `port/out/build/...` variants and offers **Build from disc image…** (in the ⚙ menu), which drives [`scripts/build_client.py`](../scripts/build_client.py) exactly as described in [Building the game](building-the-game.md). It needs Python, Git, CMake 3.25+, Ninja and Clang available (see that guide).
+- **No checkout**: a launcher built from a clean, pushed commit downloads the matching sources into the per-user data folder the first time you build (asking first) and builds from there; see [Without a checkout](../launcher/tauri/README.md#without-a-checkout). Set `SOTR_REPO` when building the launcher if `origin` is not the canonical repository.
 - **Release install**: place the Release executable beside `diablo3` / `diablo3.exe`. The build panel is not shown there.
 
 ### Checks

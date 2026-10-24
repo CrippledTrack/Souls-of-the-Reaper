@@ -54,6 +54,7 @@ const panelStyle = `<style>
   #toolList li{margin:3px 0}
   #toolList .miss{color:#e08a7a}
   #toolList .ok{color:#9bc48a}
+  #toolList .warn{color:#e2c07a}
   #toolList small{display:block;margin-left:16px;color:var(--muted)}
   #toolList a{color:#e2d7bd}
   #sdkPrompt{margin:8px 0;padding:8px 10px;border:1px solid rgba(158,43,28,.55);background:rgba(46,30,24,.55)}

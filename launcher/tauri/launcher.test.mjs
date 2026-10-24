@@ -216,7 +216,7 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'], downloadSdk: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'], downloadSdk: false, downloadSources: false });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);
@@ -349,4 +349,45 @@ test('A missing SDK is only downloaded after the user agrees', async () => {
   click(doc.getElementById('sdkYes'));
   await tick(); await tick();
   assert.equal(calls.find(c => c.command === 'start_build').args.request.downloadSdk, true);
+});
+
+test('Missing game sources are listed and downloaded only after the user agrees', async () => {
+  const sources = { repository: 'https://github.com/o/r', commit: 'a'.repeat(40) };
+  const report = { ready: true, tools: [TOOL('git', true)], sdk: SDK(true), sources };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });
+  await tick();
+  assert.match(doc.getElementById('toolList').textContent, /Game sources \(aaaaaaaa\)/);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.match(doc.getElementById('sdkPromptText').textContent, /game sources/);
+  assert.doesNotMatch(doc.getElementById('sdkPromptText').textContent, /ReXGlue SDK/);
+  click(doc.getElementById('sdkYes'));
+  await tick(); await tick();
+  const { request } = calls.find(c => c.command === 'start_build').args;
+  assert.equal(request.downloadSources, true);
+  assert.equal(request.downloadSdk, false);
+});
+
+test('A stale SDK is shown as needing a rebuild and asks before it is rebuilt', async () => {
+  const report = { ready: true, tools: [TOOL('git', true)], sdk: { ...SDK(false), stale: true } };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });
+  await tick();
+  assert.match(doc.getElementById('toolList').textContent, /another version or patch set/);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.match(doc.getElementById('sdkPromptText').textContent, /rebuild of the ReXGlue SDK/);
+  click(doc.getElementById('sdkYes'));
+  await tick(); await tick();
+  assert.equal(calls.find(c => c.command === 'start_build').args.request.downloadSdk, true);
+});
+
+test('Warnings are listed but do not block the build', async () => {
+  const report = { ready: true, tools: [TOOL('git', true)], sdk: SDK(true), warnings: ['No Vulkan driver was found.'] };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });
+  await tick();
+  const warn = doc.querySelector('#toolList li.warn');
+  assert.match(warn.textContent, /No Vulkan driver/);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(calls.some(c => c.command === 'start_build'), true);
 });

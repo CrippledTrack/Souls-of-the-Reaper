@@ -72,6 +72,8 @@ Useful flags: `-Backend vulkan` (default is Direct3D 12), `-VulkanPath fsi|host`
 
 Use `--cmake /path/to/cmake` if CMake is not on `PATH`. The CPU baseline is x86-64-v2.
 
+`python3 scripts/build_client.py --print-sdk-status` reports whether the SDK is `missing`, `stale` or `current`. After a build the SDK install folder holds `.sotr-sdk.json` (pinned commit and a hash of `patches/`); when either changes, the SDK counts as `stale` and the next build rebuilds it. An SDK reused with `--sdk-prefix` is trusted as given. The graphical launcher builds with the same script and keeps fetched sources in the per-user data folder when it is not in a checkout.
+
 ### One command (from the disc image)
 
 ```sh

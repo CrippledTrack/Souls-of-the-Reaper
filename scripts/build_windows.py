@@ -19,7 +19,7 @@ import sys
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_update
-from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk
+from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk, write_stamp
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -74,6 +74,7 @@ def build_sdk(args):
     build = sdk / "out/build/win-amd64"
     run("cmake", "--build", build, "--config", "RelWithDebInfo", "--parallel", args.jobs)
     run("cmake", "--install", build, "--config", "RelWithDebInfo", "--prefix", args.sdk_prefix)
+    write_stamp(args.sdk_prefix, "win")
     return sdk / "out/win-amd64/RelWithDebInfo/rexgluerd.exe"
 
 

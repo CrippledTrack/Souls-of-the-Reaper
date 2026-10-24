@@ -44,7 +44,8 @@ are never modified. Launch rules mirror `scripts/run_linux.py` and
 
 ## Build the game
 
-In a source checkout, **Build from disc image…** (in ⚙) runs
+In a source checkout, or in a launcher built from a clean pushed commit (see
+[Without a checkout](#without-a-checkout)), **Build from disc image…** (in ⚙) runs
 [`scripts/build_client.py`](../../scripts/build_client.py). The panel also opens
 by itself when no build is found. Choose:
 
@@ -87,6 +88,32 @@ the compilers it started, and so does closing the launcher; running it again
 continues where it stopped. When the build finishes, Game Version lists the new
 builds.
 
+The Clang found must be new enough (18+ on Linux, 22+ on Windows). Warnings
+that do not block Build are listed too: no Vulkan driver, no X11 or Wayland
+development files (Linux), and under 15 GiB free where the build runs.
+
+The SDK state comes from `scripts/build_client.py --print-sdk-status`, so the
+install paths live in one place. An SDK counts as built only when it matches the
+pinned commit and the current `patches/` (stamped in `.sotr-sdk.json` in the
+install folder). One built from another commit or patch set, or before stamps
+existed, shows as out of date and is rebuilt after the same kind of approval.
+
+### Without a checkout
+
+A launcher outside a source checkout can still build when it was compiled from a
+clean, fully pushed commit (`BuildInfo::fetchable`). On Build it asks once to
+download the game sources for that commit (and the SDK, if needed), then
+clones them with `git fetch --depth 1` into `SoulsOfTheReaper/sources/<commit>`
+under the per-user data folder (`~/.local/share` on Linux, `%APPDATA%` on
+Windows). Without git it downloads GitHub's archive of that commit with `curl`
+and `tar` instead; git is still required afterwards, because the build script
+clones the SDK with it. The SDK, XenonRecomp and `port/out` live inside that
+folder. Delete the commit's folder to start over.
+
+The remote comes from `SOTR_REPO` at launcher build time, defaulting to the
+`origin` remote, so set it to the canonical repository for releases and make
+sure the commit is pushed there.
+
 Requirements: Python 3, git, CMake 3.25+ (choose its path in the panel if it
 is not on `PATH`), Ninja and Clang. Linux also needs the SDK's development
 packages. On Windows install Visual Studio 2022 with the C++ and CMake
@@ -94,7 +121,7 @@ workloads and LLVM Clang 22+; the usual install folders of Clang, CMake and
 Ninja are added to `PATH` automatically, and the build runs
 `scripts/build_windows.py` (the one-time SDK build and the compile both happen
 in the panel). Allow about 15 GiB of free space for a first build with update. A
-release install has no sources, so the panel is not shown there.
+release install beside `diablo3` has no sources and no panel.
 
 ## Launch settings (⚙)
 
@@ -160,5 +187,8 @@ Rust tests cover both platforms' arguments on any host.
   `Launcher.ps1`; use the in-game F4 menu.
 - The installer and `setup.ps1` still package and start `Launcher.ps1`'s
   `SoulsOfTheReaper.exe`.
-- Building needs a source checkout and Python. Compiling is automated on Linux
-  and Windows, and only the USA disc and USA update are accepted.
+- Building needs Python 3 and git, from a source checkout or via the fetched
+  sources above. Compiling is automated on Linux and Windows, and only the
+  USA disc and USA update are accepted.
+- Fetching sources has been tried on Linux only. An SDK built before stamps
+  existed is rebuilt once.

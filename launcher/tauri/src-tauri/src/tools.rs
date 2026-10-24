@@ -13,6 +13,12 @@ use std::{
 };
 
 const MIN_CMAKE: (u32, u32) = (3, 25);
+/// Oldest Clang the SDK and port build with (docs/building-the-game.md).
+const MIN_CLANG_LINUX: u32 = 18;
+const MIN_CLANG_WINDOWS: u32 = 22;
+/// Free space a first build wants: SDK, two variants and codegen, with headroom
+/// (scripts/build_client.py computes the exact need and stops if it is short).
+const WARN_FREE_BYTES: u64 = 15 << 30;
 const VS_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -30,7 +36,18 @@ pub struct Tool {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sdk {
+    /// Built from the pinned commit and patches, so the build can use it.
     pub installed: bool,
+    /// Built, but from another commit or patch set; a rebuild is needed.
+    pub stale: bool,
+    pub repository: String,
+    pub commit: String,
+}
+
+/// Repository sources a launcher outside a checkout still has to download.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sources {
     pub repository: String,
     pub commit: String,
 }
@@ -40,6 +57,10 @@ pub struct Sdk {
 pub struct ToolReport {
     pub tools: Vec<Tool>,
     pub sdk: Sdk,
+    /// Set by the host when the sources are missing; detect() leaves it empty.
+    pub sources: Option<Sources>,
+    /// Problems that do not block Build but may make it fail later.
+    pub warnings: Vec<String>,
     /// Every required tool was found.
     pub ready: bool,
     /// Folders of tools found off PATH (Visual Studio's CMake, LLVM); the build
@@ -145,7 +166,14 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
     let python = lookup(if platform == Platform::Windows { "python" } else { "python3" })
         .filter(|p| output_of(p, &["--version"]).and_then(|v| parse_version(&v)).is_some_and(|v| v.0 >= 3));
     let git = lookup("git");
-    let clang = lookup("clang").zip(lookup("clang++")).map(|(_, plus)| plus);
+    let min_clang = if platform == Platform::Windows { MIN_CLANG_WINDOWS } else { MIN_CLANG_LINUX };
+    let clang_found = lookup("clang").zip(lookup("clang++")).map(|(_, plus)| plus);
+    let clang_version = clang_found
+        .as_deref()
+        .and_then(|p| output_of(p, &["--version"]))
+        .and_then(|v| parse_version(&v));
+    // A clang whose version cannot be read is let through; the build reports it.
+    let clang = clang_found.filter(|_| clang_version.is_none_or(|(major, _)| major >= min_clang));
     let cmake = match cmake_choice.trim() {
         "" => lookup("cmake"),
         chosen => Some(PathBuf::from(chosen)).filter(|p| p.is_file()),
@@ -190,7 +218,11 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         if linux { "Clang 18+" } else { "LLVM Clang 22+" },
         clang.as_deref(),
         if linux { "" } else { "https://github.com/llvm/llvm-project/releases/latest" },
-        &if linux { package_hint("apt install clang, pacman -S clang") } else { "Installer: LLVM-<version>-win64.exe.".into() },
+        &match (clang_version, clang.is_some()) {
+            (Some((major, _)), false) => format!("Found Clang {major}, which is older than {min_clang}."),
+            _ if linux => package_hint("apt install clang, pacman -S clang"),
+            _ => "Installer: LLVM-<version>-win64.exe.".into(),
+        },
     ));
     let cmake_note = match (&cmake, &cmake_ok) {
         (Some(_), None) => "Found, but older than CMake 3.25.".to_string(),
@@ -222,10 +254,26 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         }
     }
 
+    let mut warnings = Vec::new();
+    if linux {
+        warnings.extend(linux_warnings(Path::new("/usr/share/vulkan/icd.d"), Path::new("/etc/vulkan/icd.d"), &dirs));
+    }
+    if let Some(free) = free_bytes(repo).filter(|free| *free < WARN_FREE_BYTES) {
+        warnings.push(format!(
+            "Only {:.1} GiB is free where the build runs; a first build wants about 15 GiB.",
+            free as f64 / (1u64 << 30) as f64
+        ));
+    }
+
     ToolReport {
+        warnings,
         ready: tools.iter().all(|t| t.found),
         tools,
-        sdk: sdk_status(platform, repo),
+        sdk: python
+            .as_deref()
+            .and_then(|p| sdk_status_from_script(p, repo))
+            .unwrap_or_else(|| sdk_status(platform, repo)),
+        sources: None,
         path_dirs,
     }
 }
@@ -238,6 +286,88 @@ pub fn path_with(extra: &[PathBuf]) -> Option<OsString> {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let all = extra.iter().cloned().chain(std::env::split_paths(&inherited));
     std::env::join_paths(all).ok()
+}
+
+/// Linux packages the tool list cannot see. SDL builds for X11 or Wayland and
+/// needs their development files; playing needs a Vulkan driver (an ICD file).
+fn linux_warnings(icd_dir: &Path, etc_icd_dir: &Path, path: &[PathBuf]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let has_icd = |dir: &Path| fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some());
+    if !has_icd(icd_dir) && !has_icd(etc_icd_dir) {
+        warnings.push("No Vulkan driver was found (no files in /usr/share/vulkan/icd.d). The game needs one to run.".into());
+    }
+    let pkg_config = find_program("pkg-config", Platform::Linux, path);
+    let exists = |module: &str| {
+        pkg_config.as_deref().is_some_and(|p| {
+            Command::new(p)
+                .args(["--exists", module])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+    };
+    if !exists("x11") && !exists("wayland-client") {
+        warnings.push(
+            "X11 or Wayland development packages were not found (pkg-config x11 / wayland-client); \
+             building the SDK may fail. See docs/building-the-game.md."
+                .into(),
+        );
+    }
+    warnings
+}
+
+/// Free bytes on the volume holding `path` (or its nearest existing parent).
+#[cfg(unix)]
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let existing = path.ancestors().find(|p| p.exists())?;
+    let c_path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: c_path is a valid NUL-terminated string and stat a valid out-pointer.
+    (unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } == 0)
+        .then(|| stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+/// The build script checks the exact need on Windows.
+#[cfg(not(unix))]
+fn free_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// Asks scripts/build_client.py, which owns the install paths and the stamp of
+/// the commit and patches an SDK was built from. None when it cannot be run.
+pub fn sdk_status_from_script(python: &Path, repo: &Path) -> Option<Sdk> {
+    let script = repo.join("scripts/build_client.py");
+    if !script.is_file() {
+        return None;
+    }
+    let mut command = Command::new(python);
+    command
+        .arg(script)
+        .arg("--print-sdk-status")
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = command.output().ok().filter(|o| o.status.success())?;
+    parse_sdk_status(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_sdk_status(text: &str) -> Option<Sdk> {
+    let status: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let state = status["state"].as_str()?;
+    let text = |key: &str| status[key].as_str().unwrap_or_default().to_string();
+    Some(Sdk {
+        installed: state == "current",
+        stale: state == "stale",
+        repository: text("repository"),
+        commit: text("commit"),
+    })
 }
 
 /// Whether the patched SDK is built where scripts/build_client.py looks for it
@@ -259,6 +389,7 @@ pub fn sdk_status(platform: Platform, repo: &Path) -> Sdk {
     };
     Sdk {
         installed,
+        stale: false,
         repository: text("repository"),
         commit: text("commit"),
     }
@@ -311,6 +442,37 @@ mod tests {
         fs::write(repo.join("tools/rexglue-install-linux/bin/rexglue"), "").unwrap();
         assert!(sdk_status(Platform::Linux, &repo).installed);
         assert!(!sdk_status(Platform::Windows, &repo).installed);
+    }
+
+    #[test]
+    fn free_space_is_read_for_missing_folders_too() {
+        let dir = scratch("free");
+        #[cfg(unix)]
+        assert!(free_bytes(&dir.join("not/created/yet")).is_some_and(|b| b > 0));
+        let _ = dir;
+    }
+
+    #[test]
+    fn linux_warnings_flag_a_missing_vulkan_driver() {
+        let dir = scratch("icd");
+        let none = linux_warnings(&dir.join("a"), &dir.join("b"), &[]);
+        assert!(none.iter().any(|w| w.contains("Vulkan driver")));
+        fs::write(dir.join("radeon.json"), "{}").unwrap();
+        let some = linux_warnings(&dir, &dir.join("b"), &[]);
+        assert!(!some.iter().any(|w| w.contains("Vulkan driver")));
+        // Without pkg-config the windowing libraries cannot be confirmed.
+        assert!(some.iter().any(|w| w.contains("X11 or Wayland")));
+    }
+
+    #[test]
+    fn script_sdk_status_maps_its_state() {
+        let line = r#"{"state": "stale", "repository": "r", "commit": "c"}"#;
+        let sdk = parse_sdk_status(line).unwrap();
+        assert!(!sdk.installed && sdk.stale);
+        assert_eq!((sdk.repository.as_str(), sdk.commit.as_str()), ("r", "c"));
+        assert!(parse_sdk_status(r#"{"state": "current"}"#).unwrap().installed);
+        assert!(!parse_sdk_status(r#"{"state": "missing"}"#).unwrap().stale);
+        assert!(parse_sdk_status("not json").is_none());
     }
 
     #[test]

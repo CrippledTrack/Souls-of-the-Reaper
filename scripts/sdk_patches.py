@@ -1,4 +1,5 @@
 """Patches to the pinned ReXGlue SDK that both the Linux and Windows builds apply."""
+import hashlib
 import json
 import pathlib
 import shutil
@@ -12,6 +13,40 @@ COMMON_PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch"
                   "rexglue-wait-precision.patch", "rexglue-idle-toast.patch",
                   "rexglue-username.patch", "rexglue-systemlink-net.patch")
 LINUX_PATCHES = ("rexglue-present-effects.patch",)
+STAMP = ".sotr-sdk.json"
+# Folders under patches/ that go into the SDK, per host.
+PATCH_DIRS = {"linux": ("common", "systemlink", "linux"), "win": ("common", "systemlink", "windows")}
+
+
+def lock():
+    return json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
+
+
+def patch_hash(host):
+    """Digest of everything this port adds to the SDK for `host` ("linux" or "win")."""
+    digest = hashlib.sha256()
+    for name in PATCH_DIRS[host]:
+        base = ROOT / "patches" / name
+        for path in sorted(p for p in base.rglob("*") if p.is_file()):
+            digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
+            # Line endings differ between checkouts and must not change the digest.
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()
+
+
+def write_stamp(prefix, host):
+    """Record which SDK revision and patch set an install was built from."""
+    (prefix / STAMP).write_text(json.dumps({"commit": lock()["commit"], "patches": patch_hash(host)}) + "\n")
+
+
+def stamp_state(prefix, host):
+    """"current" when the install matches the pinned commit and patches, else "stale"
+    (an install from before stamps existed has no stamp and counts as stale)."""
+    try:
+        stamp = json.loads((prefix / STAMP).read_text())
+    except (OSError, ValueError):
+        return "stale"
+    return "current" if stamp == {"commit": lock()["commit"], "patches": patch_hash(host)} else "stale"
 
 
 def checkout_pinned_sdk(sdk, run, config=()):

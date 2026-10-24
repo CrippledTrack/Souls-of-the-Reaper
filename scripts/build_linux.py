@@ -9,7 +9,7 @@ import subprocess
 
 from apply_generated_patches import patch_generated
 from codegen_title_update import generate_update
-from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk
+from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk, write_stamp
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -42,6 +42,7 @@ def build_sdk(args, cmake):
         f"-Wl,-rpath,{output}", "-o", regression)
     run(regression)
     run(cmake, "--install", build)
+    write_stamp(args.sdk_prefix, "linux")
 
 
 def main():

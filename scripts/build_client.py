@@ -19,6 +19,7 @@ import sys
 import build_windows
 import extract_disc
 import extract_update
+import sdk_patches
 from stage_title_update import USA_UPDATE_PACKAGE_SHA256, stage, stage_overlay
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
@@ -110,11 +111,29 @@ def missing_tools(args, compile_needed, need_patcher):
     return problems
 
 
-def sdk_installed(args):
+HOST = "win" if WINDOWS else "linux"
+
+
+def sdk_state(args):
+    """"missing", "stale" (built from another SDK commit or patch set) or "current".
+
+    An SDK installed elsewhere with --sdk-prefix is trusted as given: its patches
+    are the caller's responsibility.
+    """
     if WINDOWS:
-        return ((args.sdk_prefix / "lib/cmake/rexglue").is_dir()
-                and (args.sdk_source / "out/win-amd64/RelWithDebInfo/rexgluerd.exe").is_file())
-    return (args.sdk_prefix / "bin/rexglue").is_file()
+        built = ((args.sdk_prefix / "lib/cmake/rexglue").is_dir()
+                 and (args.sdk_source / "out/win-amd64/RelWithDebInfo/rexgluerd.exe").is_file())
+    else:
+        built = (args.sdk_prefix / "bin/rexglue").is_file()
+    if not built:
+        return "missing"
+    if args.sdk_prefix != (ROOT / f"tools/rexglue-install-{HOST}").resolve():
+        return "current"
+    return sdk_patches.stamp_state(args.sdk_prefix, HOST)
+
+
+def sdk_installed(args):
+    return sdk_state(args) == "current"
 
 
 def disc_bytes(iso):
@@ -210,7 +229,9 @@ def plan(args):
     if problems:
         raise BuildError("\n".join(problems))
     if need_sdk and args.no_sdk_download:
-        raise BuildError("The pinned ReXGlue SDK is not built yet and downloading it was not approved.")
+        raise BuildError("The pinned ReXGlue SDK is not built yet and downloading it was not approved."
+                         if sdk_state(args) == "missing" else
+                         "The installed ReXGlue SDK is out of date and rebuilding it was not approved.")
 
     if need_base:
         verify_iso(args.iso)
@@ -281,6 +302,8 @@ def main(argv=None):
     parser.add_argument("--no-sdk-download", action="store_true",
                         help="Fail instead of cloning and building the pinned SDK when it is missing "
                              "(the launcher passes this until the user approves the download)")
+    parser.add_argument("--print-sdk-status", action="store_true",
+                        help="Print the ReXGlue SDK state (pinned commit, missing/stale/current) as JSON and stop")
     parser.add_argument("--check", action="store_true", help="Validate inputs and tools, list the steps, and stop")
     args = parser.parse_args(argv)
     if args.jobs < 1:
@@ -299,6 +322,10 @@ def main(argv=None):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, value.expanduser().resolve())
+    if args.print_sdk_status:
+        lock = sdk_patches.lock()
+        print(json.dumps({"state": sdk_state(args), "repository": lock["repository"], "commit": lock["commit"]}))
+        return
     try:
         if WINDOWS:
             # Finds clang, CMake and Ninja in their usual install folders (Visual Studio, LLVM).

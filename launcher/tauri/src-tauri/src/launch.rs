@@ -457,6 +457,9 @@ pub struct BuildRequest {
     /// The user agreed to fetch and build the pinned ReXGlue SDK when it is missing.
     #[serde(default)]
     pub download_sdk: bool,
+    /// The user agreed to fetch the repository sources when the launcher has no checkout.
+    #[serde(default)]
+    pub download_sources: bool,
 }
 
 /// Arguments for scripts/build_client.py, writing into the launcher's game
@@ -696,6 +699,7 @@ mod tests {
             variants: variants.iter().map(|v| v.to_string()).collect(),
             cmake: String::new(),
             download_sdk: false,
+            download_sources: false,
         }
     }
 
@@ -1289,6 +1293,7 @@ mod tests {
             variants: vec!["update".into()],
             cmake: String::new(),
             download_sdk: false,
+            download_sources: false,
         };
         let args = build_client_arguments(Platform::Linux, Path::new("/r"), &request, &game, &game).unwrap();
         assert!(!args.iter().any(|a| a.starts_with("--game-dir-update")));

@@ -12,6 +12,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import import_ps3_save
+import sdk_patches
 import build_client
 import codegen_title_update
 import stage_title_update
@@ -604,6 +605,32 @@ class BuildClientTests(unittest.TestCase):
             self.assertIn("--no-extra-features", command)
             self.assertEqual(command[command.index("--title-update") + 1], "usa")
             self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
+
+
+class SdkStampTests(unittest.TestCase):
+    def test_stamp_is_current_only_for_the_pinned_commit_and_patches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = pathlib.Path(tmp)
+            self.assertEqual(sdk_patches.stamp_state(prefix, "linux"), "stale")  # no stamp
+            sdk_patches.write_stamp(prefix, "linux")
+            self.assertEqual(sdk_patches.stamp_state(prefix, "linux"), "current")
+            self.assertEqual(sdk_patches.stamp_state(prefix, "win"), "stale")  # other host's patch set
+            stamp = prefix / sdk_patches.STAMP
+            stamp.write_text(stamp.read_text().replace(sdk_patches.lock()["commit"], "0" * 40))
+            self.assertEqual(sdk_patches.stamp_state(prefix, "linux"), "stale")
+
+    def test_patch_hash_changes_with_patch_contents(self):
+        before = sdk_patches.patch_hash("linux")
+        with mock.patch.object(sdk_patches, "ROOT", pathlib.Path(tempfile.mkdtemp())) as root:
+            for name in sdk_patches.PATCH_DIRS["linux"]:
+                (root / "patches" / name).mkdir(parents=True)
+            (root / "patches/common/a.patch").write_bytes(b"one\r\n")
+            first = sdk_patches.patch_hash("linux")
+            (root / "patches/common/a.patch").write_bytes(b"one\n")
+            self.assertEqual(first, sdk_patches.patch_hash("linux"))  # line endings ignored
+            (root / "patches/common/a.patch").write_bytes(b"two\n")
+            self.assertNotEqual(first, sdk_patches.patch_hash("linux"))
+        self.assertEqual(before, sdk_patches.patch_hash("linux"))
 
 
 if __name__ == "__main__":

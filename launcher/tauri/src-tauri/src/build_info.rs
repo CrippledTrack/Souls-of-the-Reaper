@@ -37,8 +37,12 @@ impl BuildInfo {
         Self::new(env!("SOTR_COMMIT"), env!("SOTR_DIRTY") == "1")
     }
 
+    /// Remote the sources are fetched from (embedded by build.rs).
+    pub fn repository() -> &'static str {
+        env!("SOTR_REPO")
+    }
+
     /// The commit can name a downloadable source archive: known and unmodified.
-    #[allow(dead_code)]
     pub fn fetchable(&self) -> bool {
         !self.dirty && self.commit.len() == 40 && self.commit.bytes().all(|b| b.is_ascii_hexdigit())
     }
