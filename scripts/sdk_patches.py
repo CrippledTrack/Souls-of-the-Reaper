@@ -11,7 +11,8 @@ LINUX_DIR = ROOT / "patches/linux"
 COMMON_PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch",
                   "rexglue-object-reference.patch", "rexglue-keyboard.patch",
                   "rexglue-wait-precision.patch", "rexglue-idle-toast.patch",
-                  "rexglue-username.patch", "rexglue-systemlink-net.patch")
+                  "rexglue-username.patch", "rexglue-systemlink-net.patch",
+                  "rexglue-timer-queue.patch")
 LINUX_PATCHES = ("rexglue-present-effects.patch",)
 STAMP = ".sotr-sdk.json"
 # Folders under patches/ that go into the SDK, per host.
@@ -70,14 +71,24 @@ def checkout_pinned_sdk(sdk, run, config=()):
     return lock
 
 
-def apply_patch(sdk, patch):
-    """Apply a patch to the SDK checkout unless it is already applied."""
-    check = ["git", "-C", str(sdk), "apply", "--check"]
-    applied = subprocess.run([*check, "--reverse", str(patch)], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL).returncode == 0
-    if not applied:
-        subprocess.run([*check, str(patch)], check=True)
+def _applies(sdk, patch, reverse=False):
+    command = ["git", "-C", str(sdk), "apply", "--check", *(["--reverse"] if reverse else []), str(patch)]
+    return subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def apply_patch(sdk, patch, later=()):
+    """Apply a patch to the SDK checkout unless it is already applied.
+
+    `later` lists the patches applied after this one. Those may rewrite the lines this patch
+    added, so it no longer reverses cleanly; it then counts as applied when one of them is.
+    """
+    if _applies(sdk, patch, reverse=True):
+        return
+    if _applies(sdk, patch):
         subprocess.run(["git", "-C", str(sdk), "apply", str(patch)], check=True)
+    elif not any(_applies(sdk, other, reverse=True) for other in later):
+        # Neither direction applies and nothing stacked on top explains it: a real conflict.
+        subprocess.run(["git", "-C", str(sdk), "apply", "--check", str(patch)], check=True)
 
 
 def install_sources(sdk):
@@ -92,8 +103,8 @@ def install_sources(sdk):
 def apply_common_patches(sdk):
     # The new files go in first: the patches below refer to them.
     install_sources(sdk)
-    for name in COMMON_PATCHES:
-        apply_patch(sdk, COMMON_DIR / name)
+    for index, name in enumerate(COMMON_PATCHES):
+        apply_patch(sdk, COMMON_DIR / name, [COMMON_DIR / later for later in COMMON_PATCHES[index + 1:]])
 
 
 def apply_linux_patches(sdk):
