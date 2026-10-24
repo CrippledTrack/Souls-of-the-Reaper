@@ -422,8 +422,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let mut search = vec![launcher_dir.clone()];
     search.extend(std::env::current_dir().ok());
-    let builds = launch::discover_builds(platform, &launcher_dir, &search);
     let repo = launch::repository_root(&search);
+    let info = build_info::BuildInfo::current();
+    let managed = (repo.is_none() && info.fetchable())
+        .then(|| sources::managed_root_for(&launcher_dir, app.path().data_dir().ok().as_deref(), &info.commit))
+        .flatten();
+    // Builds made from fetched sources land inside them.
+    search.extend(managed.clone());
+    let builds = launch::discover_builds(platform, &launcher_dir, &search);
     // Source checkouts keep game folders at the repository root; installs
     // keep them beside the launcher.
     let base = repo
@@ -435,11 +441,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Platform::Linux => app.path().data_dir()?,
     };
     let defaults = launch::default_folders(platform, &base, &user_base);
-    let info = build_info::BuildInfo::current();
-    let managed = (repo.is_none() && info.fetchable())
-        .then(|| app.path().data_dir().ok())
-        .flatten()
-        .map(|dir| sources::managed_root(&dir, &info.commit));
     let settings_file = app.path().app_config_dir()?.join("launcher.json");
     let mut settings = load_settings(&settings_file);
     if settings.ui_state.is_null() {
