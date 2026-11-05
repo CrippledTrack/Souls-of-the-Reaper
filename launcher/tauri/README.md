@@ -20,6 +20,9 @@ sources, built the SDK and compiled the game through the Build panel (the same
   Display. It keeps the value saved in the game's Options > Video menu. Any
   other choice overrides it for that launch
   (`--pc_use_saved_render_scale=false` / `--pc_use_saved_window_mode=false`).
+  They also add a **Button Icons** row (`Xbox` or `PlayStation`, saved with the
+  other menu choices); `PlayStation` passes `--pc_button_glyphs=playstation`.
+  Normal builds do not have the row, since the option only exists in extras builds.
 - **Linux** shows the Vulkan render path (FSI, or the experimental Host path),
   VSync and Image Scaling (`Off`, `FSR` or `CAS`, passed as
   `--present_effect=bilinear|fsr|cas`). It hides Frame Rate, because the Linux

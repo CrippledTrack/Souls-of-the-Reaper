@@ -196,6 +196,8 @@
     play:['Play','Jugar','Jouer','Spielen','Gioca','Jogar','Играть'],
     back:['‹ Back','‹ Volver','‹ Retour','‹ Zurück','‹ Indietro','‹ Voltar','‹ Назад'],
     lbl_mouse:['Mouse','Ratón','Souris','Maus','Mouse','Mouse','Мышь'],
+    lbl_glyphs:['Button Icons','Iconos de Botones','Icônes des Boutons','Tastensymbole','Icone dei Pulsanti','Ícones dos Botões','Значки кнопок'],
+    tip_glyphs:['Shows Xbox or PlayStation button prompts in the game.','Muestra los botones de Xbox o de PlayStation en el juego.','Affiche les boutons Xbox ou PlayStation dans le jeu.','Zeigt im Spiel die Tastensymbole von Xbox oder PlayStation.','Mostra nel gioco i pulsanti Xbox o PlayStation.','Mostra os botões do Xbox ou do PlayStation no jogo.','Показывает в игре кнопки Xbox или PlayStation.'],
     lbl_path:['Render Path','Ruta de Render','Chemin de Rendu','Renderpfad','Percorso di Rendering','Caminho de Renderização','Путь рендеринга'],
     lbl_fps:['Frame Rate','Cuadros por Segundo','Fréquence d’Images','Bildrate','Frequenza Fotogrammi','Taxa de Quadros','Частота кадров'],
     lbl_scale:['Image Scaling','Escalado de Imagen','Mise à l’Échelle','Bildskalierung','Ridimensionamento Immagine','Escala de Imagem','Масштабирование изображения'],
@@ -282,7 +284,7 @@
   // values back out of diablo3.toml and injects them as window.SAVED_STATE, so
   // the launcher reopens on whatever you last played with.
   // vkpath/vsync are the Linux (Vulkan) rows; build is a CAPS.builds id.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,vkpath:0,vsync:1,backend:0,build:null,username:''};
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:0,vkpath:0,vsync:1,backend:0,build:null,username:''};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
     const v=window.SAVED_STATE[k];
     if(typeof v==='number'||((k==='build'||k==='username')&&typeof v==='string'))_sdefault[k]=v;});}
@@ -361,6 +363,8 @@
     rows.push({key:'display',label:T.lbl_display[L],opts:ingame.concat(opts([T.val_full[L],T.val_win[L]])),
       tip:ext?T.tip_ingame[L]:undefined});
     rows.push({key:'mouse',label:T.lbl_mouse[L],opts:opts([T.val_off[L],T.val_on[L]])});
+    // The cvar behind this only exists in builds that carry the extras.
+    if(ext)rows.push({key:'glyphs',label:T.lbl_glyphs[L],opts:opts(['Xbox','PlayStation']),tip:T.tip_glyphs[L]});
     // The player name is only offered by hosts that report one in SAVED_STATE.
     if(HAS_NAME)rows.push({key:'username',label:T.lbl_name[L],input:true,novals:true,tip:T.tip_name[L]});
     rows.push({key:'remap',label:T.remapBtn[L],nav:true,novals:true});
@@ -511,6 +515,7 @@
       // camera stays a launcher choice.
       mnkMode:true,
       mnkMouse:state.mouse===1,
+      glyphs:EXTRAS()&&state.glyphs===1?'playstation':'xbox',
       present:VK()?['bilinear','fsr','cas'][state.vkscale]:['fsr','cas','bilinear'][state.scale],
       resScale:res+1,
       fullscreen:display===-1?null:display===0,

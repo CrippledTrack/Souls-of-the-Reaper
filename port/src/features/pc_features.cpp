@@ -14,7 +14,11 @@
 #include <rex/runtime.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
 #include <string>
+#include <string_view>
 
 namespace {
 constexpr uint32_t kRenderOption = 100;
@@ -418,4 +422,134 @@ extern "C" void D3_FN_localized_text(PPCContext &ctx, uint8_t *base) {
     REXLOG_INFO("PC settings: autosave notice uses PC wording");
   }
   ctx = saved;
+}
+
+// Button glyphs. UI textures are referenced by handle {type, id}; the
+// PlayStation versions in the CPKs are separate resources, so each Xbox slot is
+// pointed at the PlayStation slot's data. The name lookup learns the ids when the
+// glyph font is registered at startup (the controller picture is only referenced
+// from UI data, so its ids are looked up by name here too); the next {type, id}
+// lookup swaps the slot data. Rewriting ids per call site left load tracking
+// waiting on the Xbox id and froze the game.
+//
+// The PS3 sheet is used because its icon order matches the Xbox sheet the game's
+// UI was built for. The PS4 sheet in this build is out of order (START and BACK
+// show the wrong buttons, the D-pad and sticks are shifted). The PS3 and PS4
+// controller layout screens are not used: PS4 crashes this build, and PS3 opens
+// with no picture and wrong icons for the sticks, D-pad and START/SELECT.
+namespace {
+constexpr uint32_t kGlyphTextureType = 44;
+constexpr std::string_view kGlyphTrigger = "2DUIFontIcons_XBOX";
+struct GlyphTexture {
+  std::string_view xbox_name;
+  std::string_view playstation_name;
+  uint32_t xbox_id = 0;
+  uint32_t playstation_id = 0;
+};
+GlyphTexture glyph_textures[] = {
+    {"2DUIFontIcons_XBOX", "2DUIFontIcons_PS3"},
+    {"2DUIConsoleController_XBOX", "2DUIConsoleController_PS3"},
+};
+std::atomic<bool> glyph_learned{false};
+std::atomic<bool> glyph_shared{false};
+
+// True when the pc_button_glyphs cvar asks for PlayStation prompts.
+bool WantPlayStationGlyphs() {
+  static const bool wanted = [] {
+    std::string value = rex::cvar::GetFlagByName("pc_button_glyphs");
+    for (auto &c : value)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (value == "playstation" || value == "ps3")
+      return true;
+    if (!value.empty() && value != "xbox")
+      REXLOG_WARN("PC button glyphs: unknown style '{}'; use xbox or playstation",
+                  value);
+    return false;
+  }();
+  return wanted;
+}
+
+// Calls the guest name lookup with a name written to the guest stack.
+uint32_t LookupIdByName(PPCContext &ctx, uint8_t *base, uint32_t type,
+                        std::string_view name) {
+  const auto saved = ctx;
+  const auto frame = ctx.r1.u32 - 256;
+  REX_STORE_U32(frame, ctx.r1.u32);
+  for (uint32_t i = 0; i <= name.size(); ++i)
+    REX_STORE_U8(frame + 80 + i, i == name.size() ? 0 : name[i]);
+  ctx.r1.u64 = frame;
+  ctx.r3.u64 = type;
+  ctx.r4.u64 = frame + 80;
+  D3_IMP_resource_lookup_name(ctx, base);
+  const auto id = ctx.r3.u32;
+  ctx = saved;
+  return id;
+}
+} // namespace
+
+// r3 resource type, r4 NUL-terminated name; returns the resource id in r3.
+extern "C" void D3_FN_resource_lookup_name(PPCContext &ctx, uint8_t *base) {
+  const auto type = ctx.r3.u32;
+  const auto name_address = ctx.r4.u32;
+  D3_IMP_resource_lookup_name(ctx, base);
+  if (type != kGlyphTextureType || !WantPlayStationGlyphs() ||
+      glyph_learned.load(std::memory_order_acquire) || !Active(base) ||
+      ReadText(base, name_address, 40) != kGlyphTrigger)
+    return;
+  const auto font_id = ctx.r3.u32;
+  bool font_ok = false;
+  for (auto &texture : glyph_textures) {
+    texture.xbox_id = texture.xbox_name == kGlyphTrigger
+                          ? font_id
+                          : LookupIdByName(ctx, base, type, texture.xbox_name);
+    texture.playstation_id =
+        LookupIdByName(ctx, base, type, texture.playstation_name);
+    const bool found = texture.xbox_id && texture.playstation_id &&
+                       texture.xbox_id != texture.playstation_id;
+    if (texture.xbox_name == kGlyphTrigger)
+      font_ok = found;
+    if (!found) {
+      texture.xbox_id = 0;
+      REXLOG_WARN("PC button glyphs: {} or {} not found; keeping Xbox art",
+                  texture.xbox_name, texture.playstation_name);
+    }
+  }
+  if (font_ok)
+    REXLOG_INFO("PC button glyphs: PlayStation art ready");
+  glyph_learned.store(font_ok, std::memory_order_release);
+}
+
+// r3 points at {type, id}; returns the resource slot {handle, data, flags}.
+// Called constantly from several threads, so the common case is one atomic load.
+extern "C" void D3_FN_resource_lookup_pair(PPCContext &ctx, uint8_t *base) {
+  if (glyph_learned.load(std::memory_order_acquire) &&
+      !glyph_shared.exchange(true)) {
+    const auto saved = ctx;
+    const auto frame = ctx.r1.u32 - 256;
+    REX_STORE_U32(frame, ctx.r1.u32);
+    ctx.r1.u64 = frame;
+    for (const auto &texture : glyph_textures) {
+      if (!texture.xbox_id)
+        continue;
+      uint32_t slot[2];
+      const uint32_t ids[2] = {texture.xbox_id, texture.playstation_id};
+      for (int i = 0; i < 2; ++i) {
+        REX_STORE_U32(frame + 80, kGlyphTextureType);
+        REX_STORE_U32(frame + 84, ids[i]);
+        ctx.r3.u64 = frame + 80;
+        D3_IMP_resource_lookup_pair(ctx, base);
+        slot[i] = ctx.r3.u32;
+      }
+      if (slot[0] && slot[1]) {
+        REX_STORE_U32(slot[0] + 4, REX_LOAD_U32(slot[1] + 4));
+        REXLOG_INFO("PC button glyphs: {} data now shared with {}",
+                    texture.xbox_name, texture.playstation_name);
+      } else {
+        REXLOG_WARN("PC button glyphs: no slot for {}; keeping Xbox art",
+                    texture.xbox_name);
+      }
+    }
+    ctx = saved;
+  }
+  D3_IMP_resource_lookup_pair(ctx, base);
 }

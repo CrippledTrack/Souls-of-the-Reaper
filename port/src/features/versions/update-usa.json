@@ -327,6 +327,44 @@
         "3D600000",
         "816B0000"
       ]
+    },
+    "resource_lookup_name": {
+      "address": "827F7BA0",
+      "hook": true,
+      "evidence": "Resource lookup by (type, name): returns the resource id. Type 44 textures and 46 UI screens are registered by name at startup.",
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "94210000",
+        "3FC00000",
+        "7C7F1B78",
+        "7C9D2378",
+        "815E0000",
+        "2B0A0000",
+        "419A0000",
+        "2F030000",
+        "419A0000",
+        "2F030000"
+      ]
+    },
+    "resource_lookup_pair": {
+      "address": "827F7988",
+      "hook": true,
+      "evidence": "Resource entry lookup by a {type, id} pair, used when UI data refers to a resource by id.",
+      "signature": [
+        "3D400000",
+        "81630000",
+        "814A0000",
+        "812A0000",
+        "7F0B4840",
+        "41980000",
+        "80E30000",
+        "2F070000",
+        "419A0000",
+        "2F070000",
+        "40980000",
+        "2F0B0000"
+      ]
     }
   },
   "data": {

@@ -523,6 +523,10 @@ pub struct GameOptions {
     pub country_id: u32,
     pub rtp: String,
     pub vk_path: String,
+    /// "playstation" shows PlayStation button prompts (extras builds only);
+    /// "xbox" or absent keeps the game's Xbox prompts.
+    #[serde(default)]
+    pub glyphs: String,
     /// Windows renderer: "d3d12" (also when absent) or "vulkan". Linux is always Vulkan.
     #[serde(default)]
     pub backend: String,
@@ -556,12 +560,18 @@ pub fn launch_arguments(
     if options.fullscreen.is_none() && !build.extras {
         return Err("Choose fullscreen or windowed.".into());
     }
+    if !["", "xbox", "playstation"].contains(&options.glyphs.as_str()) {
+        return Err("Unsupported button icon style.".into());
+    }
     let mut args = vec![
         format!("--game_data_root={}", game.display()),
         format!("--user_data_root={}", user.display()),
     ];
     if build.extras {
         args.push("--extra_features=true".into());
+        if options.glyphs == "playstation" {
+            args.push("--pc_button_glyphs=playstation".into());
+        }
     }
     if build.update {
         // The update reads its patch CPKs through update:\ even with a prepatched XEX.
@@ -687,6 +697,7 @@ mod tests {
             country_id: 103,
             rtp: "rtv".into(),
             vk_path: "fsi".into(),
+            glyphs: String::new(),
             backend: String::new(),
             video_driver: String::new(),
         }
@@ -1009,6 +1020,29 @@ mod tests {
         };
         assert!(run(true).contains(&"--extra_features=true".to_string()));
         assert!(!run(false).iter().any(|a| a.starts_with("--extra_features")));
+    }
+
+    #[test]
+    fn playstation_glyphs_are_only_passed_to_extras_builds() {
+        let run = |extras, glyphs: &str| {
+            let mut opts = options();
+            opts.glyphs = glyphs.into();
+            launch_arguments(
+                Platform::Linux,
+                &build(false, extras),
+                Path::new("/g"),
+                Path::new("/s"),
+                &opts,
+                -1,
+            )
+        };
+        let flag = "--pc_button_glyphs=playstation".to_string();
+        assert!(run(true, "playstation").unwrap().contains(&flag));
+        assert!(!run(true, "xbox").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
+        assert!(!run(true, "").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
+        // The cvar only exists in extras builds, so normal builds never get it.
+        assert!(!run(false, "playstation").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
+        assert!(run(true, "ps4").is_err());
     }
 
     #[test]

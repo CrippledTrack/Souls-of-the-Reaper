@@ -120,6 +120,38 @@ test('Extras builds offer In-game resolution and display; normal builds do not',
   assert.equal(row('Internal Resolution').value, '1×');
 });
 
+test('Button Icons is only offered for Extras builds, is saved, and is sent on Play', async () => {
+  const normal = tauriPage();
+  assert.equal(normal.row('Button Icons'), undefined, 'normal builds have no such cvar');
+  normal.click(normal.doc.getElementById('playBtn'));
+  await tick();
+  assert.equal(normal.calls.find(c => c.command === 'launch_game').args.options.glyphs, 'xbox');
+
+  const { doc, click, row, next, calls } = tauriPage();
+  next('Game Version');
+  assert.equal(row('Game Version').value, 'Update + Extras');
+  assert.equal(row('Button Icons').value, 'Xbox');
+  next('Button Icons');
+  assert.equal(row('Button Icons').value, 'PlayStation');
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const launch = calls.find(c => c.command === 'launch_game');
+  assert.equal(launch.args.options.glyphs, 'playstation');
+  assert.equal(launch.args.settings.uiState.glyphs, 1);
+
+  // Switching back to a normal build never sends the extras-only choice.
+  next('Game Version');
+  assert.equal(row('Button Icons'), undefined);
+  click(doc.getElementById('playBtn'));
+  await tick();
+  assert.equal(calls.filter(c => c.command === 'launch_game').at(-1).args.options.glyphs, 'xbox');
+});
+
+test('The saved Button Icons choice is restored with the other menu state', () => {
+  const { row } = tauriPage({ saved: { res: -1, display: -1, build: 'update-extras', glyphs: 1 } });
+  assert.equal(row('Button Icons').value, 'PlayStation');
+});
+
 test('Play sends the selected build, in-game choices and saved menu state', async () => {
   const { doc, click, next, calls } = tauriPage({ settings: { gameDirUpdate: '/games/update' } });
   next('Game Version');

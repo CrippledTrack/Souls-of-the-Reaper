@@ -15,6 +15,28 @@ verified USA update build:
   `Xbox 360 Console`, `Xbox 360` and `Xbox360` wording with `PC`.
   Other localized wording is preserved.
 
+- A `--pc_button_glyphs=playstation` option (default `xbox`) that shows
+  PlayStation button prompts and the PS3 controller picture on the controller
+  layout screen. It uses the PS3 icon sheet and controller picture shipped in
+  the game's CPKs (`ps3` is accepted as an alias). The game finds the Xbox
+  textures by resource handle, so the option points each Xbox handle's slot at
+  the PlayStation texture's data. Rewriting the ids instead froze the game when
+  entering a play session. It does not depend on which controller is plugged in.
+
+  Known limits:
+  - On the controller layout screen the arrows and labels are the 360 layout
+    drawn over the PS3 picture. Face buttons, shoulders and START/SELECT line up.
+    The left/right stick and D-pad icons on that screen show the wrong glyphs
+    (the PS3 sheet orders those cells differently).
+  - The PS4 sheet is not offered: its icons are out of order in this build
+    (START and BACK show the wrong buttons, D-pad and sticks are shifted).
+  - The PS3 and PS4 layout screens themselves are not used: PS4 crashes this
+    build, and PS3 opens with no picture and wrong stick, D-pad and START/SELECT
+    icons.
+  - Checked in-game on Linux. Title update build: icons, the controller
+    picture, and entering a game. Base disc: the PlayStation icons. The Windows
+    builds have not been tried.
+
 ## Build-time and run-time switches
 
 The build scripts compile the features into the normal executable, but they
@@ -50,7 +72,8 @@ Use `-GameDir` and `-UserDataRoot` to select other directories. `-ResScale 2`
 explicitly overrides the saved in-game selection for that launch. The graphical
 launcher lists the executable twice, as `Base` and `Base + Extras`; the second
 adds `--extra_features=true`. Launching the executable directly needs that
-flag too.
+flag too. For an extras build the launcher also shows a **Button Icons** row
+(`Xbox` or `PlayStation`) that sets `--pc_button_glyphs`.
 
 ## Linux
 
