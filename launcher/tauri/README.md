@@ -23,19 +23,25 @@ sources, built the SDK and compiled the game through the Build panel (the same
   They also add a **Button Icons** row (`Xbox` or `PlayStation`, saved with the
   other menu choices); `PlayStation` passes `--pc_button_glyphs=playstation`.
   Normal builds do not have the row, since the option only exists in extras builds.
-- **Linux** shows the Vulkan render path (FSI, or the experimental Host path),
-  VSync and Image Scaling (`Off`, `FSR` or `CAS`, passed as
-  `--present_effect=bilinear|fsr|cas`). It hides Frame Rate, because the Linux
-  SDK has no frame limiter. The spatial effects only change how the rendered
-  image is scaled to the window, not the internal resolution, and need an SDK
-  built with `patches/linux/rexglue-present-effects.patch`; rebuild the SDK
-  after updating (older builds reject the flag). `Off` is the default.
+- **Frame Rate** and **VSync** apply to both renderers on every platform: the
+  frame limiter (`--d3_frame_limit`, `patches/common/rexglue-frame-limit.patch`)
+  and the game's 60 Hz internal timing (`--vsync`) live in the shared GPU
+  command processor. VSync does not sync presentation to the monitor; On also
+  holds the game to 60 FPS. `Auto` (the default) turns it on for caps up to
+  60 FPS and off above that, which is what Direct3D 12 always did. Vulkan, which
+  has no ROV path, offers the RTV frame rates (60–240).
+- **Linux** shows the Vulkan render path (FSI, or the experimental Host path)
+  and Image Scaling (`Off`, `FSR` or `CAS`, passed as
+  `--present_effect=bilinear|fsr|cas`). The spatial effects only change how the
+  rendered image is scaled to the window, not the internal resolution, and need
+  an SDK built with `patches/linux/rexglue-present-effects.patch`; rebuild the
+  SDK after updating (older builds reject the flag). `Off` is the default.
 - **Linux** launch settings (⚙) have a Display server choice: `Auto` passes
   nothing and lets SDL choose, `Wayland` and `X11` pass
   `--video_driver=wayland|x11`. It is saved with the other launch settings.
-- **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV, frame limit and
-  FSR/CAS. Vulkan (`--gpu_backend=vulkan`) shows the same render path and device
-  options as Linux, plus VSync and the same Image Scaling choice.
+- **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV and FSR/CAS.
+  Vulkan (`--gpu_backend=vulkan`) shows the same render path, device and Image
+  Scaling options as Linux.
 - **Play** checks that `Default.xex` matches the selected build (base disc or
   staged update). For update it also checks the four update CPKs and mounts the folder
   as `update:`. It then starts the game and closes the launcher. If the game

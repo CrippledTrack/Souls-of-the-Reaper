@@ -239,6 +239,8 @@
     lbl_build:['Game Version','Versión del Juego','Version du Jeu','Spielversion','Versione del Gioco','Versão do Jogo','Версия игры'],
     tip_build:['Builds found next to the launcher. update needs its own game folder.','Compilaciones encontradas junto al launcher. update necesita su propia carpeta de juego.','Versions trouvées à côté du lanceur. update nécessite son propre dossier de jeu.','Neben dem Launcher gefundene Builds. update braucht einen eigenen Spielordner.','Build trovate accanto al launcher. update richiede una propria cartella di gioco.','Builds encontradas ao lado do launcher. update precisa de sua própria pasta de jogo.','Сборки, найденные рядом с лаунчером. Для update нужна отдельная папка игры.'],
     tip_path_vk:['FSI: accurate (default). Host: faster, experimental — lighting may break.','FSI: precisa (predeterminada). Host: más rápida, experimental; la iluminación puede fallar.','FSI : précis (par défaut). Host : plus rapide, expérimental — l’éclairage peut casser.','FSI: genau (Standard). Host: schneller, experimentell – Beleuchtung kann fehlerhaft sein.','FSI: accurato (predefinito). Host: più veloce, sperimentale; l’illuminazione può rompersi.','FSI: preciso (padrão). Host: mais rápido, experimental; a iluminação pode falhar.','FSI: точный (по умолчанию). Host: быстрее, экспериментальный — освещение может ломаться.'],
+    val_auto:['Auto','Auto','Auto','Auto','Auto','Auto','Авто'],
+    tip_vsync:['Paces the game\'s internal clock at 60 Hz, which also holds it to 60 FPS. Auto turns it on for caps up to 60 FPS and off above that.','Ajusta el reloj interno del juego a 60 Hz, lo que también lo limita a 60 FPS. Auto lo activa con límites de hasta 60 FPS y lo desactiva por encima.','Cale l\'horloge interne du jeu sur 60 Hz, ce qui le limite aussi à 60 FPS. Auto l\'active jusqu\'à 60 FPS et le désactive au-delà.','Taktet die interne Uhr des Spiels mit 60 Hz, was es auch auf 60 FPS begrenzt. Auto schaltet es bis 60 FPS ein und darüber aus.','Sincronizza l\'orologio interno del gioco a 60 Hz, limitandolo anche a 60 FPS. Auto lo attiva fino a 60 FPS e lo disattiva oltre.','Ajusta o relógio interno do jogo a 60 Hz, o que também o limita a 60 FPS. Auto ativa com limites de até 60 FPS e desativa acima disso.','Синхронизирует внутренние часы игры с частотой 60 Гц, что также ограничивает её 60 FPS. «Авто» включает это при ограничении до 60 FPS и выключает выше.'],
     lbl_backend:['Renderer','Renderizador','Moteur de rendu','Renderer','Motore di rendering','Renderizador','Рендерер'],
     tip_backend:['D3D12: the tuned Windows path. Vulkan: shared with Linux, for testing.','D3D12: la ruta optimizada de Windows. Vulkan: compartida con Linux, para pruebas.','D3D12 : la voie optimisée pour Windows. Vulkan : partagée avec Linux, pour les tests.','D3D12: der optimierte Windows-Pfad. Vulkan: wie unter Linux, zum Testen.','D3D12: il percorso ottimizzato per Windows. Vulkan: condiviso con Linux, per i test.','D3D12: o caminho otimizado para Windows. Vulkan: compartilhado com o Linux, para testes.','D3D12: оптимизированный путь для Windows. Vulkan: общий с Linux, для тестов.'],
     val_ingame:['In-game','Del juego','En jeu','Im Spiel','Dal gioco','No jogo','Из игры'],
@@ -260,6 +262,8 @@
     return CAPS.builds.find(b=>b.id===state.build)||CAPS.builds[0];
   }
   const EXTRAS=()=>{const b=curBuild();return !!(b&&b.extras);};
+  // Frame-rate choices for the selected renderer and render path.
+  const fpsList=()=>FPS[VK()?1:state.path];
 
   // Game language options, injected by Launcher.ps1. Each: {code, name,
   // langId, countryId, uiIdx}. Fixed list of 5 (independent of which CPKs are
@@ -283,8 +287,10 @@
   // apply only on a fresh install. Otherwise Launcher.ps1 reads the last-used
   // values back out of diablo3.toml and injects them as window.SAVED_STATE, so
   // the launcher reopens on whatever you last played with.
-  // vkpath/vsync are the Linux (Vulkan) rows; build is a CAPS.builds id.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:0,vkpath:0,vsync:1,backend:0,build:null,username:''};
+  // vkpath/vkscale are the Vulkan rows; build is a CAPS.builds id. vsyncMode
+  // -1 is Auto (on for caps up to 60 FPS); the older on/off `vsync` key, which
+  // only Vulkan showed, is not read so D3D12 users keep the automatic rule.
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:0,vkpath:0,vsyncMode:-1,backend:0,build:null,username:''};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
     const v=window.SAVED_STATE[k];
     if(typeof v==='number'||((k==='build'||k==='username')&&typeof v==='string'))_sdefault[k]=v;});}
@@ -347,17 +353,18 @@
       rows.push({key:'build',label:T.lbl_build[L],opts:CAPS.builds.map(b=>({v:b.id,t:b.label})),tip:T.tip_build[L]});
     if(WIN_VK())
       rows.push({key:'backend',label:T.lbl_backend[L],opts:opts(['D3D12','Vulkan']),tip:T.tip_backend[L]});
-    if(VK()){
-      // The Vulkan backend has no frame limiter, but it does share the FSR/CAS
-      // presenter. Off (plain bilinear) comes first so it stays the default.
-      rows.push({key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host']),tip:T.tip_path_vk[L]});
-      rows.push({key:'vsync',label:'VSync',opts:[{v:1,t:T.val_on[L]},{v:0,t:T.val_off[L]}]});
-      rows.push({key:'vkscale',label:T.lbl_scale[L],opts:opts([T.val_off[L],'FSR','CAS']),tip:T.tip_scale[L]});
-    } else {
-      rows.push({key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
-      rows.push({key:'fps',label:T.lbl_fps[L],opts:opts(FPS[state.path].map(f=>f+' FPS'))});
-      rows.push({key:'scale',label:T.lbl_scale[L],opts:opts(['FSR','CAS',T.val_off[L]]),tip:T.tip_scale[L]});
-    }
+    rows.push(VK()
+      ? {key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host']),tip:T.tip_path_vk[L]}
+      : {key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
+    // The frame limiter and the 60 Hz game timing (vsync) are shared by both
+    // renderers. Vulkan has no ROV path, so it offers the RTV frame rates.
+    rows.push({key:'fps',label:T.lbl_fps[L],opts:opts(fpsList().map(f=>f+' FPS'))});
+    rows.push({key:'vsyncMode',label:'VSync',tip:T.tip_vsync[L],
+      opts:[{v:-1,t:T.val_auto[L]},{v:1,t:T.val_on[L]},{v:0,t:T.val_off[L]}]});
+    // Vulkan's scaling row puts Off (plain bilinear) first so it stays the default.
+    rows.push(VK()
+      ? {key:'vkscale',label:T.lbl_scale[L],opts:opts([T.val_off[L],'FSR','CAS']),tip:T.tip_scale[L]}
+      : {key:'scale',label:T.lbl_scale[L],opts:opts(['FSR','CAS',T.val_off[L]]),tip:T.tip_scale[L]});
     rows.push({key:'res',label:T.lbl_res[L],opts:ingame.concat(opts(['1×','2×','3×'])),
       tip:T.tip_res[L]+(ext?' '+T.tip_ingame[L]:'')});
     rows.push({key:'display',label:T.lbl_display[L],opts:ingame.concat(opts([T.val_full[L],T.val_win[L]])),
@@ -507,9 +514,9 @@
       build:b?b.id:null,
       vkPath:['fsi','host'][state.vkpath]||'fsi',
       rtp:state.path===0?'rov':'rtv',
-      fps:FPS[state.path][state.fps],
+      fps:fpsList()[eff('fps')],
       backend:VK()?'vulkan':'d3d12',
-      vsync:VK()?state.vsync!==0:FPS[state.path][state.fps]<=60,
+      vsync:eff('vsyncMode')===-1?fpsList()[eff('fps')]<=60:eff('vsyncMode')===1,
       // [s39] Keyboard always races for a slot alongside gamepads now - no
       // launcher-side control-mode pin. Only whether the mouse also drives the
       // camera stays a launcher choice.

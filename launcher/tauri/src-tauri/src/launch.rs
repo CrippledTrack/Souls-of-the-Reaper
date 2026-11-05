@@ -577,6 +577,13 @@ pub fn launch_arguments(
         // The update reads its patch CPKs through update:\ even with a prepatched XEX.
         args.push(format!("--update_data_root={}", update_layout(game).0.display()));
     }
+    // The frame limiter and the 60 Hz guest timing (vsync) live in the shared GPU
+    // command processor, so they apply to either renderer on every platform.
+    if ![30, 60, 120, 144, 240].contains(&options.fps) {
+        return Err("Unsupported frame rate.".into());
+    }
+    args.push(format!("--d3_frame_limit={}", options.fps));
+    args.push(format!("--vsync={}", options.vsync));
     match platform {
         Platform::Linux => {
             if !["fsi", "host"].contains(&options.vk_path.as_str()) {
@@ -585,7 +592,6 @@ pub fn launch_arguments(
             args.push(format!("--cache_root={}", user.join("cache").display()));
             args.push(format!("--log_file={}", user.join("diablo3.log").display()));
             args.push(format!("--render_target_path_vulkan={}", options.vk_path));
-            args.push(format!("--vsync={}", options.vsync));
             args.push(format!("--present_effect={}", vulkan_present(options)?));
             if vulkan_device >= 0 {
                 args.push(format!("--vulkan_device={vulkan_device}"));
@@ -606,12 +612,11 @@ pub fn launch_arguments(
             args.push(format!("--gpu_backend={backend}"));
             if backend == "vulkan" {
                 // Same rules as Linux: the Vulkan backend has no D3D12 render
-                // path or frame limiter, but shares the FSR/CAS presenter.
+                // path, but shares the FSR/CAS presenter.
                 if !["fsi", "host"].contains(&options.vk_path.as_str()) {
                     return Err("Unsupported Vulkan render path.".into());
                 }
                 args.push(format!("--render_target_path_vulkan={}", options.vk_path));
-                args.push(format!("--vsync={}", options.vsync));
                 args.push(format!("--present_effect={}", vulkan_present(options)?));
                 if vulkan_device >= 0 {
                     args.push(format!("--vulkan_device={vulkan_device}"));
@@ -620,17 +625,12 @@ pub fn launch_arguments(
                 if !["rov", "rtv"].contains(&options.rtp.as_str()) {
                     return Err("Unsupported render path.".into());
                 }
-                if ![30, 60, 120, 144, 240].contains(&options.fps) {
-                    return Err("Unsupported frame rate.".into());
-                }
                 if !["fsr", "cas", "bilinear"].contains(&options.present.as_str()) {
                     return Err("Unsupported image scaling.".into());
                 }
                 args.push(format!("--render_target_path_d3d12={}", options.rtp));
                 args.push("--rtv_color_depth_ownership_mode=8".into());
                 args.push("--execute_unclipped_draw_vs_on_cpu=true".into());
-                args.push(format!("--d3_frame_limit={}", options.fps));
-                args.push(format!("--vsync={}", options.vsync));
                 args.push(format!("--present_effect={}", options.present));
             }
             args.push("--mnk_cursor_visible=false".into());
@@ -837,7 +837,14 @@ mod tests {
         )
         .unwrap();
         assert!(args.contains(&"--render_target_path_vulkan=fsi".into()));
-        assert!(!args.iter().any(|a| a.contains("d3d12") || a.contains("d3_frame_limit")));
+        assert!(!args.iter().any(|a| a.contains("d3d12")));
+        // The frame limiter and guest timing are shared by every renderer.
+        assert!(args.contains(&"--d3_frame_limit=120".into()));
+        assert!(args.iter().any(|a| a.starts_with("--vsync=")));
+        let mut bad = options();
+        bad.fps = 75;
+        assert!(launch_arguments(Platform::Linux, &build(false, false), Path::new("/g"), Path::new("/s"), &bad, -1)
+            .is_err());
         assert!(args.contains(&"--present_effect=fsr".into()));
         let mut off = options();
         off.present = "bilinear".into();
@@ -955,15 +962,14 @@ mod tests {
             "--gpu_backend=vulkan",
             "--render_target_path_vulkan=fsi",
             "--vsync=true",
+            "--d3_frame_limit=120",
             "--vulkan_device=1",
             "--present_effect=fsr",
             "--mnk_cursor_visible=false",
         ] {
             assert!(args.contains(&expected.into()), "{expected}");
         }
-        assert!(!args.iter().any(|a| a.contains("d3d12")
-            || a.contains("d3_frame_limit")
-            || a.contains("rtv_color_depth")));
+        assert!(!args.iter().any(|a| a.contains("d3d12") || a.contains("rtv_color_depth")));
         opts.backend = "metal".into();
         assert!(launch_arguments(
             Platform::Windows,

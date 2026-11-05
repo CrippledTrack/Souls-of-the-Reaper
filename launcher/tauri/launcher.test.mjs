@@ -53,7 +53,7 @@ test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => 
     SAVED_STATE: { lang: 0, path: 1, fps: 1, scale: 0, res: 2, display: 1, mouse: 0 },
   });
   assert.deepEqual(rows().map(r => r.label),
-    ['Render Path', 'Frame Rate', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
+    ['Render Path', 'Frame Rate', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Remap Controls ›']);
   assert.equal(row('Internal Resolution').value, '3×');
   click(doc.getElementById('playBtn'));
   const { config } = posted[0];
@@ -67,9 +67,11 @@ test('Launcher.ps1 keeps its original rows and WebView2 message channel', () => 
 test('Linux shows Vulkan rows and hides D3D12-only options', () => {
   const { rows } = tauriPage();
   assert.deepEqual(rows().map(r => r.label),
-    ['Game Version', 'Render Path', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Player Name', 'Remap Controls ›']);
+    ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Image Scaling', 'Internal Resolution', 'Display', 'Mouse', 'Player Name', 'Remap Controls ›']);
   assert.equal(rows()[1].value, 'FSI');
-  assert.equal(rows()[3].value, 'Off');
+  assert.equal(rows()[2].value, '120 FPS');
+  assert.equal(rows()[3].value, 'Auto');
+  assert.equal(rows()[4].value, 'Off');
 });
 
 test('Linux Display Server is a launch setting, saved from the settings panel and sent on Play', async () => {
@@ -88,8 +90,8 @@ test('Linux Display Server is a launch setting, saved from the settings panel an
 
 test('Windows keeps the D3D12 rows and adds the build selector', () => {
   const { rows } = tauriPage({ platform: 'windows' });
-  assert.deepEqual(rows().map(r => r.label).slice(0, 5),
-    ['Game Version', 'Renderer', 'Render Path', 'Frame Rate', 'Image Scaling']);
+  assert.deepEqual(rows().map(r => r.label).slice(0, 6),
+    ['Game Version', 'Renderer', 'Render Path', 'Frame Rate', 'VSync', 'Image Scaling']);
   assert.equal(rows()[1].value, 'D3D12');
 });
 
@@ -97,15 +99,38 @@ test('Windows can switch to Vulkan, which swaps in the Vulkan rows and is sent o
   const { rows, row, next, doc, click, calls } = tauriPage({ platform: 'windows' });
   next('Renderer');
   assert.equal(row('Renderer').value, 'Vulkan');
-  assert.deepEqual(rows().map(r => r.label).slice(0, 4), ['Game Version', 'Renderer', 'Render Path', 'VSync']);
+  assert.deepEqual(rows().map(r => r.label).slice(0, 5), ['Game Version', 'Renderer', 'Render Path', 'Frame Rate', 'VSync']);
   assert.equal(row('Render Path').value, 'FSI');
   click(doc.getElementById('playBtn'));
   await tick();
   const options = calls.find(c => c.command === 'launch_game').args.options;
   assert.equal(options.backend, 'vulkan');
   assert.equal(options.vkPath, 'fsi');
-  assert.equal(options.vsync, true);
+  // Vulkan now gets the frame cap too; Auto VSync is off above 60 FPS.
+  assert.equal(options.fps, 120);
+  assert.equal(options.vsync, false);
   assert.equal(calls.find(c => c.command === 'launch_game').args.settings.uiState.backend, 1);
+});
+
+test('VSync Auto follows the frame cap on both renderers; On and Off override it', async () => {
+  for (const backend of [0, 1]) {
+    const launchWith = async saved => {
+      const page = tauriPage({ platform: 'windows', saved: { backend, ...saved } });
+      page.click(page.doc.getElementById('playBtn'));
+      await tick();
+      return page.calls.find(c => c.command === 'launch_game').args;
+    };
+    const at60 = await launchWith({ path: 1, fps: 0 });
+    assert.equal(at60.options.fps, 60);
+    assert.equal(at60.options.vsync, true, `backend ${backend}: Auto is on at 60 FPS`);
+    assert.equal((await launchWith({ path: 1, fps: 1 })).options.vsync, false, 'Auto is off above 60 FPS');
+    assert.equal((await launchWith({ path: 1, fps: 1, vsyncMode: 1 })).options.vsync, true, 'On');
+    assert.equal((await launchWith({ path: 1, fps: 0, vsyncMode: 0 })).options.vsync, false, 'Off');
+    // The older on/off key (only Vulkan showed it) no longer decides anything.
+    const legacy = await launchWith({ path: 1, fps: 1, vsync: 1 });
+    assert.equal(legacy.options.vsync, false);
+    assert.equal(legacy.settings.uiState.vsyncMode, -1);
+  }
 });
 
 test('Extras builds offer In-game resolution and display; normal builds do not', () => {
@@ -162,7 +187,7 @@ test('Play sends the selected build, in-game choices and saved menu state', asyn
   assert.equal(launch.args.options.resScale, 0);
   assert.equal(launch.args.options.fullscreen, null);
   assert.equal(launch.args.options.vkPath, 'fsi');
-  assert.equal(launch.args.options.vsync, true);
+  assert.equal(launch.args.options.vsync, false, 'Auto VSync is off at the default 120 FPS');
   assert.equal(launch.args.settings.gameDirUpdate, '/games/update');
   assert.equal(launch.args.settings.uiState.build, 'update-extras');
   assert.equal(launch.args.settings.uiState.view, undefined);
