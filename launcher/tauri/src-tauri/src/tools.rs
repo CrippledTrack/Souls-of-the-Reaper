@@ -261,6 +261,8 @@ fn registry_path() -> Vec<PathBuf> {
 }
 
 /// The data of a `reg query /v` line: "    Path    REG_EXPAND_SZ    C:\a;%X%".
+/// Only the Windows registry lookup uses it; the tests run on every host.
+#[cfg(any(windows, test))]
 fn parse_reg_value(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let (_, rest) = line.split_once("REG_EXPAND_SZ").or_else(|| line.split_once("REG_SZ"))?;
@@ -269,6 +271,7 @@ fn parse_reg_value(text: &str) -> Option<String> {
 }
 
 /// Replaces %NAME% with the environment variable; unknown names stay as written.
+#[cfg(any(windows, test))]
 fn expand_env(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
