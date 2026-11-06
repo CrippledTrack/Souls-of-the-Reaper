@@ -50,7 +50,8 @@ set(DIABLO3_SOURCES
     src/window_features.cpp
 )
 if(SOULS_TITLE_UPDATE)
-    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp)
+    # gpu-layer experiment: --capture_shaders hooks (addresses are update-only).
+    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp)
 else()
     list(APPEND DIABLO3_SOURCES src/base_exit.cpp)
 endif()
