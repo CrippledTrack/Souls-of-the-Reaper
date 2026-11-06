@@ -560,7 +560,7 @@ pub fn launch_arguments(
     if options.fullscreen.is_none() && !build.extras {
         return Err("Choose fullscreen or windowed.".into());
     }
-    if !["", "xbox", "playstation"].contains(&options.glyphs.as_str()) {
+    if !["", "xbox", "playstation", "auto"].contains(&options.glyphs.as_str()) {
         return Err("Unsupported button icon style.".into());
     }
     let mut args = vec![
@@ -569,8 +569,8 @@ pub fn launch_arguments(
     ];
     if build.extras {
         args.push("--extra_features=true".into());
-        if options.glyphs == "playstation" {
-            args.push("--pc_button_glyphs=playstation".into());
+        if ["playstation", "auto"].contains(&options.glyphs.as_str()) {
+            args.push(format!("--pc_button_glyphs={}", options.glyphs));
         }
     }
     if build.update {
@@ -1044,6 +1044,8 @@ mod tests {
         };
         let flag = "--pc_button_glyphs=playstation".to_string();
         assert!(run(true, "playstation").unwrap().contains(&flag));
+        assert!(run(true, "auto").unwrap().contains(&"--pc_button_glyphs=auto".to_string()));
+        assert!(!run(false, "auto").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
         assert!(!run(true, "xbox").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
         assert!(!run(true, "").unwrap().iter().any(|a| a.starts_with("--pc_button_glyphs")));
         // The cvar only exists in extras builds, so normal builds never get it.

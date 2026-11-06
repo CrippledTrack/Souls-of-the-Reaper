@@ -21,7 +21,20 @@ verified USA update build:
   the game's CPKs (`ps3` is accepted as an alias). The game finds the Xbox
   textures by resource handle, so the option points each Xbox handle's slot at
   the PlayStation texture's data. Rewriting the ids instead froze the game when
-  entering a play session. It does not depend on which controller is plugged in.
+  entering a play session. With `playstation` it does not depend on which
+  controller is plugged in.
+
+  `--pc_button_glyphs=auto` learns both sets the same way and picks the set when
+  the glyphs load at startup: PlayStation prompts for a Sony pad (USB vendor
+  `054C`, or a DualShock/DualSense/PS name), Xbox prompts for anything else, or
+  when no pad is connected yet. It also checks about once a second whether
+  player 1 moved to another kind of pad, but that switch has not been seen
+  working in game: with a single PS4 pad nothing ever triggers it, and the
+  keyboard may not count as player 1's device for this check. It needs an SDK built with
+  `patches/common/rexglue-pad-family.patch`, which makes the input system record
+  each player's pad type. Only the two data pointers the slots already held are
+  swapped, and if the game has replaced a slot's data, automatic switching stops
+  and the current prompts stay.
 
   Known limits:
   - On the controller layout screen the arrows and labels are the 360 layout
@@ -73,7 +86,7 @@ explicitly overrides the saved in-game selection for that launch. The graphical
 launcher lists the executable twice, as `Base` and `Base + Extras`; the second
 adds `--extra_features=true`. Launching the executable directly needs that
 flag too. For an extras build the launcher also shows a **Button Icons** row
-(`Xbox` or `PlayStation`) that sets `--pc_button_glyphs`.
+(`Xbox`, `PlayStation` or `Auto`) that sets `--pc_button_glyphs`.
 
 ## Linux
 

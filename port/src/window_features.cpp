@@ -131,6 +131,7 @@ private:
   static void Update(rex::ui::Window &window, double fps) {
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
     d3::features::UpdateWindowMode(window);
+    d3::features::UpdateButtonGlyphs();
 #endif
     // Read after setup too: optional saved settings are applied after dialogs
     // are created.

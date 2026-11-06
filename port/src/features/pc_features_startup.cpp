@@ -23,8 +23,9 @@ REXCVAR_DEFINE_BOOL(pc_use_saved_window_mode, true, "PC features",
 
 REXCVAR_DEFINE_STRING(
     pc_button_glyphs, "xbox", "PC features",
-    "Button prompt style: xbox (default) or playstation. Swaps the controller "
-    "glyph font for the PlayStation version in the CPKs");
+    "Button prompt style: xbox (default), playstation, or auto to follow the "
+    "pad player 1 last used. Swaps the controller glyph font for the "
+    "PlayStation version in the CPKs");
 
 namespace {
 std::atomic<bool> extras_enabled{false};

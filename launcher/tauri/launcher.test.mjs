@@ -155,6 +155,8 @@ test('Button Icons is only offered for Extras builds, is saved, and is sent on P
   const { doc, click, row, next, calls } = tauriPage();
   next('Game Version');
   assert.equal(row('Game Version').value, 'Update + Extras');
+  assert.equal(row('Button Icons').value, 'Auto', 'fresh installs pick the prompts from the controller');
+  next('Button Icons');
   assert.equal(row('Button Icons').value, 'Xbox');
   next('Button Icons');
   assert.equal(row('Button Icons').value, 'PlayStation');
@@ -170,6 +172,17 @@ test('Button Icons is only offered for Extras builds, is saved, and is sent on P
   click(doc.getElementById('playBtn'));
   await tick();
   assert.equal(calls.filter(c => c.command === 'launch_game').at(-1).args.options.glyphs, 'xbox');
+});
+
+test('Button Icons Auto follows the controller and is sent as auto', async () => {
+  const { doc, click, row, next, calls } = tauriPage({ saved: { build: 'update-extras', glyphs: 1 } });
+  next('Button Icons');
+  assert.equal(row('Button Icons').value, 'Auto');
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const launch = calls.find(c => c.command === 'launch_game');
+  assert.equal(launch.args.options.glyphs, 'auto');
+  assert.equal(launch.args.settings.uiState.glyphs, 2);
 });
 
 test('The saved Button Icons choice is restored with the other menu state', () => {

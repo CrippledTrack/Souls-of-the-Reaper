@@ -197,7 +197,7 @@
     back:['‹ Back','‹ Volver','‹ Retour','‹ Zurück','‹ Indietro','‹ Voltar','‹ Назад'],
     lbl_mouse:['Mouse','Ratón','Souris','Maus','Mouse','Mouse','Мышь'],
     lbl_glyphs:['Button Icons','Iconos de Botones','Icônes des Boutons','Tastensymbole','Icone dei Pulsanti','Ícones dos Botões','Значки кнопок'],
-    tip_glyphs:['Shows Xbox or PlayStation button prompts in the game.','Muestra los botones de Xbox o de PlayStation en el juego.','Affiche les boutons Xbox ou PlayStation dans le jeu.','Zeigt im Spiel die Tastensymbole von Xbox oder PlayStation.','Mostra nel gioco i pulsanti Xbox o PlayStation.','Mostra os botões do Xbox ou do PlayStation no jogo.','Показывает в игре кнопки Xbox или PlayStation.'],
+    tip_glyphs:['Shows Xbox or PlayStation button prompts in the game. Auto picks them from the controller connected when the game starts.','Muestra los botones de Xbox o de PlayStation en el juego. Auto los elige según el mando conectado al iniciar el juego.','Affiche les boutons Xbox ou PlayStation dans le jeu. Auto les choisit selon la manette branchée au lancement du jeu.','Zeigt im Spiel die Tastensymbole von Xbox oder PlayStation. Auto wählt sie nach dem Controller, der beim Spielstart verbunden ist.','Mostra nel gioco i pulsanti Xbox o PlayStation. Auto li sceglie in base al controller collegato all\'avvio del gioco.','Mostra os botões do Xbox ou do PlayStation no jogo. Auto escolhe pelo controle conectado quando o jogo inicia.','Показывает в игре кнопки Xbox или PlayStation. «Авто» выбирает их по контроллеру, подключённому при запуске игры.'],
     lbl_path:['Render Path','Ruta de Render','Chemin de Rendu','Renderpfad','Percorso di Rendering','Caminho de Renderização','Путь рендеринга'],
     lbl_fps:['Frame Rate','Cuadros por Segundo','Fréquence d’Images','Bildrate','Frequenza Fotogrammi','Taxa de Quadros','Частота кадров'],
     lbl_scale:['Image Scaling','Escalado de Imagen','Mise à l’Échelle','Bildskalierung','Ridimensionamento Immagine','Escala de Imagem','Масштабирование изображения'],
@@ -290,7 +290,7 @@
   // vkpath/vkscale are the Vulkan rows; build is a CAPS.builds id. vsyncMode
   // -1 is Auto (on for caps up to 60 FPS); the older on/off `vsync` key, which
   // only Vulkan showed, is not read so D3D12 users keep the automatic rule.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:0,vkpath:0,vsyncMode:-1,backend:0,build:null,username:''};
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:2,vkpath:0,vsyncMode:-1,backend:0,build:null,username:''};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
     const v=window.SAVED_STATE[k];
     if(typeof v==='number'||((k==='build'||k==='username')&&typeof v==='string'))_sdefault[k]=v;});}
@@ -371,7 +371,7 @@
       tip:ext?T.tip_ingame[L]:undefined});
     rows.push({key:'mouse',label:T.lbl_mouse[L],opts:opts([T.val_off[L],T.val_on[L]])});
     // The cvar behind this only exists in builds that carry the extras.
-    if(ext)rows.push({key:'glyphs',label:T.lbl_glyphs[L],opts:opts(['Xbox','PlayStation']),tip:T.tip_glyphs[L]});
+    if(ext)rows.push({key:'glyphs',label:T.lbl_glyphs[L],opts:opts(['Xbox','PlayStation',T.val_auto[L]]),tip:T.tip_glyphs[L]});
     // The player name is only offered by hosts that report one in SAVED_STATE.
     if(HAS_NAME)rows.push({key:'username',label:T.lbl_name[L],input:true,novals:true,tip:T.tip_name[L]});
     rows.push({key:'remap',label:T.remapBtn[L],nav:true,novals:true});
@@ -522,7 +522,7 @@
       // camera stays a launcher choice.
       mnkMode:true,
       mnkMouse:state.mouse===1,
-      glyphs:EXTRAS()&&state.glyphs===1?'playstation':'xbox',
+      glyphs:EXTRAS()?['xbox','playstation','auto'][eff('glyphs')]:'xbox',
       present:VK()?['bilinear','fsr','cas'][state.vkscale]:['fsr','cas','bilinear'][state.scale],
       resScale:res+1,
       fullscreen:display===-1?null:display===0,

@@ -20,8 +20,10 @@ sources, built the SDK and compiled the game through the Build panel (the same
   Display. It keeps the value saved in the game's Options > Video menu. Any
   other choice overrides it for that launch
   (`--pc_use_saved_render_scale=false` / `--pc_use_saved_window_mode=false`).
-  They also add a **Button Icons** row (`Xbox` or `PlayStation`, saved with the
-  other menu choices); `PlayStation` passes `--pc_button_glyphs=playstation`.
+  They also add a **Button Icons** row (`Xbox`, `PlayStation` or `Auto`, saved
+  with the other menu choices); `PlayStation` and `Auto` pass
+  `--pc_button_glyphs=playstation|auto`. `Auto` (the default for new
+  installs) picks the prompts from the controller connected when the game starts.
   Normal builds do not have the row, since the option only exists in extras builds.
 - **Frame Rate** and **VSync** apply to both renderers on every platform: the
   frame limiter (`--d3_frame_limit`, `patches/common/rexglue-frame-limit.patch`)

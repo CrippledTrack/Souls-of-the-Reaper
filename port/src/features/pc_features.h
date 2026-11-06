@@ -18,4 +18,7 @@ void InitializeWindowMode(rex::ui::Window &window,
 void UpdateWindowMode(rex::ui::Window &window);
 int SelectedWindowMode(); // 1 = windowed, 2 = borderless fullscreen.
 bool SelectWindowMode(int mode);
+// pc_button_glyphs=auto: switch the prompts to match player 1's last-used pad.
+// Call periodically; does nothing for the fixed styles.
+void UpdateButtonGlyphs();
 } // namespace d3::features

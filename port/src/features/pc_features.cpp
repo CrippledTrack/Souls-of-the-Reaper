@@ -11,12 +11,15 @@
 #include "render_scale.h"
 
 #include <rex/cvar.h>
+#include <rex/input/input_system.h>
 #include <rex/runtime.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -437,6 +440,12 @@ extern "C" void D3_FN_localized_text(PPCContext &ctx, uint8_t *base) {
 // show the wrong buttons, the D-pad and sticks are shifted). The PS3 and PS4
 // controller layout screens are not used: PS4 crashes this build, and PS3 opens
 // with no picture and wrong icons for the sticks, D-pad and START/SELECT.
+//
+// With pc_button_glyphs=auto both sets are learned the same way, and the Xbox
+// slots are pointed at whichever data matches the pad player 1 last used
+// (UpdateButtonGlyphs, about once a second). Only the two data pointers the
+// slots already held are ever written, and a slot that no longer holds the
+// pointer written last (the game reloaded it) ends automatic switching.
 namespace {
 constexpr uint32_t kGlyphTextureType = 44;
 constexpr std::string_view kGlyphTrigger = "2DUIFontIcons_XBOX";
@@ -445,6 +454,9 @@ struct GlyphTexture {
   std::string_view playstation_name;
   uint32_t xbox_id = 0;
   uint32_t playstation_id = 0;
+  uint32_t slot = 0;              // the Xbox slot {handle, data, flags}
+  uint32_t xbox_data = 0;         // data pointers each slot held when learned
+  uint32_t playstation_data = 0;
 };
 GlyphTexture glyph_textures[] = {
     {"2DUIFontIcons_XBOX", "2DUIFontIcons_PS3"},
@@ -452,21 +464,77 @@ GlyphTexture glyph_textures[] = {
 };
 std::atomic<bool> glyph_learned{false};
 std::atomic<bool> glyph_shared{false};
+// Set once the slots are known; read by UpdateButtonGlyphs on the UI thread.
+std::atomic<uint8_t *> glyph_base{nullptr};
+std::mutex glyph_mutex;
+bool glyph_showing_playstation = false; // guarded by glyph_mutex
+bool glyph_auto_stopped = false;        // guarded by glyph_mutex
 
-// True when the pc_button_glyphs cvar asks for PlayStation prompts.
-bool WantPlayStationGlyphs() {
-  static const bool wanted = [] {
+enum class GlyphStyle { kXbox, kPlayStation, kAuto };
+
+// The pc_button_glyphs cvar: xbox (default), playstation or auto.
+GlyphStyle ConfiguredGlyphStyle() {
+  static const GlyphStyle style = [] {
     std::string value = rex::cvar::GetFlagByName("pc_button_glyphs");
     for (auto &c : value)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (value == "playstation" || value == "ps3")
-      return true;
+      return GlyphStyle::kPlayStation;
+    if (value == "auto")
+      return GlyphStyle::kAuto;
     if (!value.empty() && value != "xbox")
-      REXLOG_WARN("PC button glyphs: unknown style '{}'; use xbox or playstation",
+      REXLOG_WARN("PC button glyphs: unknown style '{}'; use xbox, playstation "
+                  "or auto",
                   value);
-    return false;
+    return GlyphStyle::kXbox;
   }();
-  return wanted;
+  return style;
+}
+
+// Whether player 1's last-used pad is a PlayStation pad; nothing until a pad
+// (or the keyboard, which counts as Xbox) has been seen.
+std::optional<bool> PlayerOneUsesPlayStationPad() {
+  auto *runtime = rex::Runtime::instance();
+  auto *input = runtime ? static_cast<rex::input::InputSystem *>(
+                              runtime->input_system())
+                        : nullptr;
+  if (!input)
+    return std::nullopt;
+  switch (input->ActivePadFamily(0)) {
+  case rex::input::InputSystem::PadFamily::kPlayStation:
+    return true;
+  case rex::input::InputSystem::PadFamily::kXbox:
+    return false;
+  default:
+    return std::nullopt;
+  }
+}
+
+// Points the learned Xbox slots at one set of glyph data. Caller holds
+// glyph_mutex.
+void ShowGlyphs(uint8_t *base, bool playstation) {
+  if (glyph_auto_stopped || playstation == glyph_showing_playstation)
+    return;
+  for (const auto &texture : glyph_textures) {
+    if (!texture.slot)
+      continue;
+    const auto shown = glyph_showing_playstation ? texture.playstation_data
+                                                 : texture.xbox_data;
+    if (REX_LOAD_U32(texture.slot + 4) != shown) {
+      glyph_auto_stopped = true;
+      REXLOG_WARN("PC button glyphs: {} was reloaded; automatic switching off",
+                  texture.xbox_name);
+      return;
+    }
+  }
+  for (const auto &texture : glyph_textures) {
+    if (texture.slot)
+      REX_STORE_U32(texture.slot + 4, playstation ? texture.playstation_data
+                                                  : texture.xbox_data);
+  }
+  glyph_showing_playstation = playstation;
+  REXLOG_INFO("PC button glyphs: showing {} prompts",
+              playstation ? "PlayStation" : "Xbox");
 }
 
 // Calls the guest name lookup with a name written to the guest stack.
@@ -492,7 +560,7 @@ extern "C" void D3_FN_resource_lookup_name(PPCContext &ctx, uint8_t *base) {
   const auto type = ctx.r3.u32;
   const auto name_address = ctx.r4.u32;
   D3_IMP_resource_lookup_name(ctx, base);
-  if (type != kGlyphTextureType || !WantPlayStationGlyphs() ||
+  if (type != kGlyphTextureType || ConfiguredGlyphStyle() == GlyphStyle::kXbox ||
       glyph_learned.load(std::memory_order_acquire) || !Active(base) ||
       ReadText(base, name_address, 40) != kGlyphTrigger)
     return;
@@ -528,7 +596,8 @@ extern "C" void D3_FN_resource_lookup_pair(PPCContext &ctx, uint8_t *base) {
     const auto frame = ctx.r1.u32 - 256;
     REX_STORE_U32(frame, ctx.r1.u32);
     ctx.r1.u64 = frame;
-    for (const auto &texture : glyph_textures) {
+    const std::lock_guard lock(glyph_mutex);
+    for (auto &texture : glyph_textures) {
       if (!texture.xbox_id)
         continue;
       uint32_t slot[2];
@@ -541,15 +610,34 @@ extern "C" void D3_FN_resource_lookup_pair(PPCContext &ctx, uint8_t *base) {
         slot[i] = ctx.r3.u32;
       }
       if (slot[0] && slot[1]) {
-        REX_STORE_U32(slot[0] + 4, REX_LOAD_U32(slot[1] + 4));
-        REXLOG_INFO("PC button glyphs: {} data now shared with {}",
-                    texture.xbox_name, texture.playstation_name);
+        texture.slot = slot[0];
+        texture.xbox_data = REX_LOAD_U32(slot[0] + 4);
+        texture.playstation_data = REX_LOAD_U32(slot[1] + 4);
       } else {
         REXLOG_WARN("PC button glyphs: no slot for {}; keeping Xbox art",
                     texture.xbox_name);
       }
     }
     ctx = saved;
+    // auto starts on the pad player 1 already used, else on Xbox prompts.
+    const bool playstation =
+        ConfiguredGlyphStyle() == GlyphStyle::kPlayStation ||
+        PlayerOneUsesPlayStationPad().value_or(false);
+    ShowGlyphs(base, playstation);
+    glyph_base.store(base, std::memory_order_release);
   }
   D3_IMP_resource_lookup_pair(ctx, base);
 }
+
+namespace d3::features {
+void UpdateButtonGlyphs() {
+  if (ConfiguredGlyphStyle() != GlyphStyle::kAuto)
+    return;
+  uint8_t *base = glyph_base.load(std::memory_order_acquire);
+  const auto playstation = PlayerOneUsesPlayStationPad();
+  if (!base || !playstation)
+    return;
+  const std::lock_guard lock(glyph_mutex);
+  ShowGlyphs(base, *playstation);
+}
+} // namespace d3::features

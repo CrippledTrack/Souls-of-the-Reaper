@@ -1,0 +1,126 @@
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..316d089 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -10,6 +10,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <array>
++#include <atomic>
+ #include <memory>
+ #include <vector>
+ 
+@@ -47,12 +49,19 @@ class InputSystem : public system::IInputSystem {
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+ 
++  /// Which button labels the pad a user last used carries, so titles can show
++  /// matching prompts. kNone until that user has a device. Safe to call from any
++  /// thread; updated as the guest polls.
++  enum class PadFamily : uint32_t { kNone = 0, kXbox = 1, kPlayStation = 2 };
++  PadFamily ActivePadFamily(uint32_t user_index) const;
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+   void RefreshDevices();
+   InputDriver* DriverForDevice(DeviceId id);
+   const DeviceInfo* DeviceInfoFor(DeviceId id) const;
++  void UpdatePadFamily(uint32_t user_index, const std::vector<DeviceId>& ids);
+ 
+   rex::ui::Window* window_ = nullptr;
+ 
+@@ -65,6 +74,10 @@ class InputSystem : public system::IInputSystem {
+   // does not renumber pad two.
+   std::vector<DeviceInfo> devices_;
+   std::vector<InputDriver*> device_owners_;
++
++  // ActivePadFamily, and the device each was worked out for.
++  std::array<std::atomic<uint32_t>, kMaxGuestUsers> pad_family_{};
++  std::array<DeviceId, kMaxGuestUsers> pad_family_device_{};
+ };
+ 
+ /// Create a default InputSystem with SDL + NOP drivers.
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..2cc62fc 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -10,7 +10,9 @@
+  */
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <cmath>
++#include <string>
+ 
+ #include <rex/dbg.h>
+ #include <rex/input/device_assignment.h>
+@@ -175,6 +177,59 @@ InputDriver* InputSystem::DriverForDevice(DeviceId id) {
+   return nullptr;
+ }
+ 
++namespace {
++
++// PlayStation pads by USB vendor (Sony, 054C) where SDL's GUID carries one,
++// else by name, which covers Bluetooth pads and drivers that hide the vendor.
++InputSystem::PadFamily ClassifyPad(const DeviceInfo* info) {
++  if (!info) {
++    return InputSystem::PadFamily::kNone;
++  }
++  if (info->synthetic) {
++    return InputSystem::PadFamily::kXbox;  // keyboard and mouse use the Xbox prompts
++  }
++  // SDL GUID text: 16 bytes in hex; bytes 4-5 hold the little-endian vendor id.
++  if (info->guid.size() == 32 && info->guid.compare(8, 4, "4c05") == 0) {
++    return InputSystem::PadFamily::kPlayStation;
++  }
++  std::string name = info->name;
++  for (auto& c : name) {
++    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++  }
++  for (const char* marker : {"dualsense", "dualshock", "playstation", "ps3", "ps4", "ps5"}) {
++    if (name.find(marker) != std::string::npos) {
++      return InputSystem::PadFamily::kPlayStation;
++    }
++  }
++  return InputSystem::PadFamily::kXbox;
++}
++
++}  // namespace
++
++InputSystem::PadFamily InputSystem::ActivePadFamily(uint32_t user_index) const {
++  if (user_index >= kMaxGuestUsers) {
++    return PadFamily::kNone;
++  }
++  return static_cast<PadFamily>(pad_family_[user_index].load(std::memory_order_relaxed));
++}
++
++void InputSystem::UpdatePadFamily(uint32_t user_index, const std::vector<DeviceId>& ids) {
++  if (user_index >= kMaxGuestUsers) {
++    return;
++  }
++  // The pad in hand, as GetCapabilities picks it, else the user's first device.
++  DeviceId chosen = active_devices_.Active(user_index);
++  if (std::find(ids.begin(), ids.end(), chosen) == ids.end()) {
++    chosen = ids.empty() ? DeviceId::kInvalid : ids.front();
++  }
++  if (chosen != DeviceId::kInvalid && chosen == pad_family_device_[user_index]) {
++    return;  // classified already; names and GUIDs do not change
++  }
++  pad_family_device_[user_index] = chosen;
++  pad_family_[user_index].store(static_cast<uint32_t>(ClassifyPad(DeviceInfoFor(chosen))),
++                                std::memory_order_relaxed);
++}
++
+ const DeviceInfo* InputSystem::DeviceInfoFor(DeviceId id) const {
+   for (const auto& device : devices_) {
+     if (device.id == id) {
+@@ -242,6 +297,7 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+     }
+   }
+ 
++  UpdatePadFamily(user_index, ids);
+   if (!any) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+   }
