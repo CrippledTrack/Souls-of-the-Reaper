@@ -15,7 +15,8 @@ COMMON_PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch"
                   "rexglue-object-reference.patch", "rexglue-keyboard.patch",
                   "rexglue-wait-precision.patch", "rexglue-idle-toast.patch",
                   "rexglue-username.patch", "rexglue-systemlink-net.patch",
-                  "rexglue-frame-limit.patch", "rexglue-pad-family.patch")
+                  "rexglue-frame-limit.patch", "rexglue-pad-family.patch",
+                  "rexglue-gamepad-keyboard.patch")
 LINUX_PATCHES = ("rexglue-present-effects.patch",)
 STAMP = ".sotr-sdk.json"
 # Folders under patches/ that go into the SDK, per host.

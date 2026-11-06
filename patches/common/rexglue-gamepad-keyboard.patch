@@ -1,0 +1,470 @@
+diff --git a/include/rex/input/input_driver.h b/include/rex/input/input_driver.h
+index 52116f1..6e4d98e 100644
+--- a/include/rex/input/input_driver.h
++++ b/include/rex/input/input_driver.h
+@@ -46,6 +46,11 @@ class InputDriver {
+ 
+   virtual void OnWindowAvailable(rex::ui::Window* /*window*/) {}
+ 
++  /// Every pad this driver has open, merged, read even while input is inactive
++  /// (a system dialog has the gamepads). False when it has none. For dialogs
++  /// such as the on-screen keyboard; safe to call from the UI thread.
++  virtual bool GetCombinedGamepad(X_INPUT_STATE* /*out_state*/) { return false; }
++
+   void set_is_active_callback(std::function<bool()> is_active_callback) {
+     is_active_callback_ = is_active_callback;
+   }
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 316d089..e7c4406 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -12,6 +12,7 @@
+ 
+ #include <array>
+ #include <atomic>
++#include <functional>
+ #include <memory>
+ #include <vector>
+ 
+@@ -55,6 +56,13 @@ class InputSystem : public system::IInputSystem {
+   enum class PadFamily : uint32_t { kNone = 0, kXbox = 1, kPlayStation = 2 };
+   PadFamily ActivePadFamily(uint32_t user_index) const;
+ 
++  /// While a system dialog captures the gamepads (calls nest), the guest sees
++  /// idle pads, as under the console's own system UI, and the dialog reads them
++  /// with DialogGamepad instead.
++  void CaptureGamepads(bool capture);
++  /// Every connected pad merged, read even while captured. False with no pad.
++  bool DialogGamepad(X_INPUT_GAMEPAD* out);
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+@@ -66,6 +74,11 @@ class InputSystem : public system::IInputSystem {
+   rex::ui::Window* window_ = nullptr;
+ 
+   std::vector<std::unique_ptr<InputDriver>> drivers_;
++  // The host's own rule for when the guest gets input (SetActiveCallback);
++  // every driver checks it after CaptureGamepads.
++  std::function<bool()> active_callback_;
++  std::atomic<int> gamepad_captures_{0};
++  bool DriverInputActive() const;
+ 
+   std::unique_ptr<DeviceAssignment> assignment_;
+   ActiveDeviceTracker active_devices_;
+diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
+index cf0e3d1..0ecc691 100644
+--- a/include/rex/input/sdl/sdl_input_driver.h
++++ b/include/rex/input/sdl/sdl_input_driver.h
+@@ -35,6 +35,7 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   X_STATUS Setup() override;
+ 
+   void EnumerateDevices(std::vector<DeviceInfo>& out) override;
++  bool GetCombinedGamepad(X_INPUT_STATE* out_state) override;
+   X_RESULT GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) override;
+   X_RESULT GetDeviceCapabilities(DeviceId id, uint32_t flags,
+                                  X_INPUT_CAPABILITIES* out_caps) override;
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 2cc62fc..ef01f81 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -57,6 +57,7 @@ void InputSystem::Shutdown() {
+ }
+ 
+ void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
++  driver->set_is_active_callback([this]() { return DriverInputActive(); });
+   drivers_.push_back(std::move(driver));
+ }
+ 
+@@ -68,11 +69,46 @@ void InputSystem::AttachWindow(rex::ui::Window* window) {
+ }
+ 
+ void InputSystem::SetActiveCallback(std::function<bool()> callback) {
++  active_callback_ = std::move(callback);
+   for (auto& driver : drivers_) {
+-    driver->set_is_active_callback(callback);
++    driver->set_is_active_callback([this]() { return DriverInputActive(); });
+   }
+ }
+ 
++bool InputSystem::DriverInputActive() const {
++  if (gamepad_captures_.load(std::memory_order_relaxed) > 0) {
++    return false;
++  }
++  return !active_callback_ || active_callback_();
++}
++
++void InputSystem::CaptureGamepads(bool capture) {
++  gamepad_captures_.fetch_add(capture ? 1 : -1, std::memory_order_relaxed);
++}
++
++bool InputSystem::DialogGamepad(X_INPUT_GAMEPAD* out) {
++  // drivers_ is fixed after setup, and each driver locks its own devices, so this
++  // is safe on the UI thread while the guest polls.
++  X_INPUT_STATE merged = {};
++  bool any = false;
++  for (auto& driver : drivers_) {
++    X_INPUT_STATE state = {};
++    if (!driver->GetCombinedGamepad(&state)) {
++      continue;
++    }
++    if (!any) {
++      merged = state;
++      any = true;
++    } else {
++      MergeInto(merged, state);
++    }
++  }
++  if (any && out) {
++    *out = merged.gamepad;
++  }
++  return any;
++}
++
+ void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment) {
+   assignment_ = std::move(assignment);
+   if (assignment_) {
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..2613c5a 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/cvar.h>
+ #include <rex/input/flags.h>
+ #include <rex/input/sdl/sdl_input_driver.h>
++#include <rex/input/state_merge.h>
+ #include <rex/logging.h>
+ #include <rex/ui/virtual_key.h>
+ 
+@@ -224,6 +225,22 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   return X_ERROR_SUCCESS;
+ }
+ 
++bool SDLInputDriver::GetCombinedGamepad(X_INPUT_STATE* out_state) {
++  // Pumped here because GetDeviceState stops pumping while input is inactive.
++  QueueControllerUpdate();
++  auto guard = DrainAndLock();
++  bool any = false;
++  for (const auto& controller : controllers_) {
++    if (!any) {
++      *out_state = controller.state;
++      any = true;
++    } else {
++      MergeInto(*out_state, controller.state);
++    }
++  }
++  return any;
++}
++
+ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
+   assert(sdl_events_initialized_ && SDL_Gamepad_initialized_);
+ 
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index 5a572ce..35d56a6 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -9,6 +9,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstdio>
++#include <cstring>
++
+ #include <rex/logging.h>
+ #include <rex/runtime.h>
+ #include <rex/string.h>
+@@ -16,11 +19,13 @@
+ #include <rex/system/kernel_state.h>
+ 
+ #include <imgui.h>
++#include <imgui_internal.h>
+ 
+ REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
+                     "Don't display any UI, using defaults for prompts as needed");
+ #include <rex/kernel/xam/private.h>
+ #include <rex/hook.h>
++#include <rex/input/input_system.h>
+ #include <rex/types.h>
+ #include <rex/system/xtypes.h>
+ #include <rex/thread.h>
+@@ -339,6 +344,11 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
+   return result;
+ }
+ 
++// The console's on-screen keyboard. The text box takes a physical keyboard as
++// before; the grid under it takes a controller (or the mouse): D-pad or left
++// stick to move, A to press the highlighted key, B to delete, X for a space,
++// Y for capitals, Start to finish and Back to cancel. While it is open the
++// guest sees idle pads, as under the console's own keyboard.
+ class KeyboardInputDialog : public XamDialog {
+  public:
+   KeyboardInputDialog(rex::ui::ImGuiDrawer* imgui_drawer, std::string title,
+@@ -360,6 +370,16 @@ class KeyboardInputDialog : public XamDialog {
+     text_ = default_text;
+     text_buffer_.resize(max_length);
+     rex::string::copy_truncating(text_buffer_.data(), default_text_, text_buffer_.size());
++    input_ = static_cast<rex::input::InputSystem*>(REX_KERNEL_STATE()->emulator()->input_system());
++    if (input_) {
++      input_->CaptureGamepads(true);
++    }
++  }
++
++  ~KeyboardInputDialog() override {
++    if (input_) {
++      input_->CaptureGamepads(false);
++    }
+   }
+ 
+   const std::string& text() const { return text_; }
+@@ -376,30 +396,28 @@ class KeyboardInputDialog : public XamDialog {
+       if (description_.size()) {
+         ImGui::TextWrapped("%s", description_.c_str());
+       }
++      if (PollGamepad()) {
++        ImGui::EndPopup();
++        return;  // finished or cancelled
++      }
+       if (first_draw) {
+         ImGui::SetKeyboardFocusHere();
+       }
++      ImGui::SetNextItemWidth(kKeySize * kColumns + ImGui::GetStyle().ItemSpacing.x * (kColumns - 1));
+       if (ImGui::InputText("##body", text_buffer_.data(), text_buffer_.size(),
+                            ImGuiInputTextFlags_EnterReturnsTrue)) {
+-        text_ = std::string(text_buffer_.data(), text_buffer_.size());
+-        cancelled_ = false;
+-        ImGui::CloseCurrentPopup();
+-        Close();
++        Finish(false);
++        ImGui::EndPopup();
++        return;
+       }
+-      if (ImGui::Button("OK")) {
+-        text_ = std::string(text_buffer_.data(), text_buffer_.size());
+-        cancelled_ = false;
+-        ImGui::CloseCurrentPopup();
+-        Close();
+-      }
+-      ImGui::SameLine();
+-      if (ImGui::Button("Cancel")) {
+-        text_ = "";
+-        cancelled_ = true;
+-        ImGui::CloseCurrentPopup();
+-        Close();
++      text_active_ = ImGui::IsItemActive();
++      ImGui::Spacing();
++      if (DrawKeys()) {
++        ImGui::EndPopup();
++        return;
+       }
+       ImGui::Spacing();
++      ImGui::TextDisabled("A type   B delete   X space   Y caps   Start done   Back cancel");
+       ImGui::EndPopup();
+     } else {
+       Close();
+@@ -407,6 +425,190 @@ class KeyboardInputDialog : public XamDialog {
+   }
+ 
+  private:
++  static constexpr int kColumns = 10;
++  static constexpr int kCharacterRows = 4;
++  static constexpr float kKeySize = 34.0f;
++  static constexpr const char* kRows[kCharacterRows] = {"1234567890", "qwertyuiop", "asdfghjkl'",
++                                                        "zxcvbnm-._"};
++  // The bottom row: five keys, two columns wide each.
++  enum Action { kCaps, kSpace, kDelete, kDone, kCancel, kActionCount };
++  static constexpr const char* kActionLabels[kActionCount] = {"Caps", "Space", "Delete", "Done",
++                                                              "Cancel"};
++
++  // Closes the dialog with the typed text, or as cancelled.
++  void Finish(bool cancel) {
++    cancelled_ = cancel;
++    text_ = cancel ? "" : std::string(text_buffer_.data(), text_buffer_.size());
++    ImGui::CloseCurrentPopup();
++    Close();
++  }
++
++  // The text box keeps its own copy while it has keyboard focus; drop focus so a
++  // change from the grid shows (a click puts the caret back).
++  void ReleaseTextFocus() {
++    if (text_active_) {
++      ImGui::ClearActiveID();
++      text_active_ = false;
++    }
++  }
++
++  void Type(char c) {
++    ReleaseTextFocus();
++    const size_t length = std::strlen(text_buffer_.data());
++    if (length + 1 < text_buffer_.size()) {
++      text_buffer_[length] = c;
++      text_buffer_[length + 1] = '\0';
++    }
++  }
++
++  void Delete() {
++    ReleaseTextFocus();
++    size_t length = std::strlen(text_buffer_.data());
++    // One whole UTF-8 character: its continuation bytes, then its lead byte.
++    while (length && (static_cast<unsigned char>(text_buffer_[length - 1]) & 0xC0) == 0x80) {
++      text_buffer_[--length] = '\0';
++    }
++    if (length) {
++      text_buffer_[length - 1] = '\0';
++    }
++  }
++
++  char KeyCharacter(int row, int column) const {
++    const char c = kRows[row][column];
++    return caps_ && c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
++  }
++
++  // Presses the key at (row, column). True when that closed the dialog.
++  bool Press(int row, int column) {
++    if (row < kCharacterRows) {
++      Type(KeyCharacter(row, column));
++      return false;
++    }
++    switch (column / 2) {
++      case kCaps:
++        caps_ = !caps_;
++        return false;
++      case kSpace:
++        Type(' ');
++        return false;
++      case kDelete:
++        Delete();
++        return false;
++      case kDone:
++        Finish(false);
++        return true;
++      default:
++        Finish(true);
++        return true;
++    }
++  }
++
++  void Move(int rows, int columns) {
++    row_ = (row_ + rows + kCharacterRows + 1) % (kCharacterRows + 1);
++    if (row_ == kCharacterRows) {
++      // Bottom-row keys are two columns wide: step a whole key at a time.
++      column_ = (column_ / 2 * 2 + columns * 2 + kColumns) % kColumns;
++    } else {
++      column_ = (column_ + columns + kColumns) % kColumns;
++    }
++  }
++
++  // Reads the pads and acts on new presses. True when that closed the dialog.
++  bool PollGamepad() {
++    rex::input::X_INPUT_GAMEPAD pad = {};
++    if (!input_ || !input_->DialogGamepad(&pad)) {
++      held_ = 0;
++      return false;
++    }
++    uint16_t buttons = static_cast<uint16_t>(pad.buttons);
++    constexpr int16_t kStickThreshold = 16000;
++    const auto lx = static_cast<int16_t>(pad.thumb_lx);
++    const auto ly = static_cast<int16_t>(pad.thumb_ly);
++    if (ly > kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_UP;
++    if (ly < -kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_DOWN;
++    if (lx < -kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_LEFT;
++    if (lx > kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_RIGHT;
++    // The press that opened the keyboard is still down at first: wait for all
++    // buttons to be released before taking any.
++    if (!armed_) {
++      armed_ = buttons == 0;
++      held_ = buttons;
++      return false;
++    }
++    const uint16_t pressed = buttons & ~held_;
++    held_ = buttons;
++
++    constexpr uint16_t kDirections = rex::input::X_INPUT_GAMEPAD_DPAD_UP | rex::input::X_INPUT_GAMEPAD_DPAD_DOWN |
++                                     rex::input::X_INPUT_GAMEPAD_DPAD_LEFT | rex::input::X_INPUT_GAMEPAD_DPAD_RIGHT;
++    const double now = ImGui::GetTime();
++    uint16_t steps = pressed & kDirections;
++    if (steps) {
++      repeat_at_ = now + 0.40;  // first repeat after a pause, then quickly
++    } else if ((buttons & kDirections) && now >= repeat_at_) {
++      steps = buttons & kDirections;
++      repeat_at_ = now + 0.08;
++    }
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_UP) Move(-1, 0);
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_DOWN) Move(1, 0);
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_LEFT) Move(0, -1);
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_RIGHT) Move(0, 1);
++
++    if (pressed & rex::input::X_INPUT_GAMEPAD_A) return Press(row_, column_);
++    if (pressed & rex::input::X_INPUT_GAMEPAD_B) Delete();
++    if (pressed & rex::input::X_INPUT_GAMEPAD_X) Type(' ');
++    if (pressed & rex::input::X_INPUT_GAMEPAD_Y) caps_ = !caps_;
++    if (pressed & rex::input::X_INPUT_GAMEPAD_START) {
++      Finish(false);
++      return true;
++    }
++    if (pressed & rex::input::X_INPUT_GAMEPAD_BACK) {
++      Finish(true);
++      return true;
++    }
++    return false;
++  }
++
++  // Draws the key grid with the controller's key highlighted. Keys can also be
++  // clicked. True when a click closed the dialog.
++  bool DrawKeys() {
++    const ImVec4 highlight = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
++    const float spacing = ImGui::GetStyle().ItemSpacing.x;
++    for (int row = 0; row <= kCharacterRows; ++row) {
++      const int keys = row < kCharacterRows ? kColumns : kActionCount;
++      for (int key = 0; key < keys; ++key) {
++        const int column = row < kCharacterRows ? key : key * 2;
++        const bool selected = row == row_ &&
++                              (row < kCharacterRows ? column == column_ : key == column_ / 2);
++        if (key) {
++          ImGui::SameLine();
++        }
++        char label[16];
++        if (row < kCharacterRows) {
++          std::snprintf(label, sizeof(label), "%c##k%d_%d", KeyCharacter(row, column), row, column);
++        } else {
++          std::snprintf(label, sizeof(label), "%s%s##a%d", kActionLabels[key],
++                        key == kCaps && caps_ ? "*" : "", key);
++        }
++        if (selected) {
++          ImGui::PushStyleColor(ImGuiCol_Button, highlight);
++        }
++        const float width = row < kCharacterRows ? kKeySize : kKeySize * 2 + spacing;
++        const bool clicked = ImGui::Button(label, ImVec2(width, kKeySize));
++        if (selected) {
++          ImGui::PopStyleColor();
++        }
++        if (clicked) {
++          row_ = row;
++          column_ = column;
++          if (Press(row, column)) {
++            return true;
++          }
++        }
++      }
++    }
++    return false;
++  }
++
+   bool has_opened_ = false;
+   std::string title_;
+   std::string description_;
+@@ -415,6 +617,15 @@ class KeyboardInputDialog : public XamDialog {
+   std::vector<char> text_buffer_;
+   std::string text_ = "";
+   bool cancelled_ = true;
++
++  rex::input::InputSystem* input_ = nullptr;
++  bool text_active_ = false;
++  bool armed_ = false;
++  bool caps_ = false;
++  uint16_t held_ = 0;
++  double repeat_at_ = 0;
++  int row_ = 1;  // start on Q
++  int column_ = 0;
+ };
+ 
+ // https://www.se7ensins.com/forums/threads/release-how-to-use-xshowkeyboardui-release.906568/

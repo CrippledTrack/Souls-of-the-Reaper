@@ -9,7 +9,7 @@ on:
   push:
     # ci/** lets this workflow be tested from a branch before it reaches master.
     #Extra-Features is temporary to test features to iron out issues before merging into master.
-    branches: [master, "ci/**", "Extra-Features/**"]
+    branches: [master, "ci/**"]
   workflow_dispatch:
 
 permissions:

@@ -153,6 +153,8 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 | Keyboard + mouse | WASD; mouse = right stick (dodge); clicks = triggers/R3 |
 | Gamepad | Any connected Xbox 360-compatible controller, no setup needed |
 
+**Naming a hero:** the name box (the console's on-screen keyboard) takes a physical keyboard or a controller. With a controller, move with the D-pad or left stick, press **A** to type the highlighted key, **B** to delete, **X** for a space, **Y** for capitals, **Start** to finish and **Back** to cancel. Keys can also be clicked with the mouse.
+
 **Default keyboard layout:**
 
 | Key | Action |
