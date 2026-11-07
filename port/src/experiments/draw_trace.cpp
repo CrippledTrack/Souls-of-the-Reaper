@@ -244,6 +244,19 @@ extern "C" void sub_82D58DD8(PPCContext &ctx, uint8_t *base) {
   __imp__sub_82D58DD8(ctx, base);
 }
 
+// D3DDevice_Clear(device, rect count, rects, flags, colour, z (f1), stencil). Flags: 0xF colour
+// targets, 0x10 depth, 0x20 stencil.
+DECLARE_REX_FUNC(sub_82D57638);
+extern "C" void sub_82D57638(PPCContext &ctx, uint8_t *base) {
+  if (TraceSequenceFrame() > 0 && frames.load() + 1 == uint64_t(TraceSequenceFrame())) {
+    std::lock_guard lock(sequence_mutex);
+    sequence.push_back({0x82D57638u, static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32,
+                        ctx.r5.u32, ctx.r6.u32, ctx.r7.u32});
+  }
+  d3::shadow::OnGuestClear(base, ctx);
+  __imp__sub_82D57638(ctx, base);
+}
+
 // D3DDevice_Resolve(device, flags, source rect, destination texture, destination point,
 // level, slice or face, clear colour, ...). Traced with --trace_sequence; the side-by-side
 // renderer records it as a resolve event.

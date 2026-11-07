@@ -66,7 +66,7 @@ using rex::ui::vulkan::VulkanInstance;
   X(vkDeviceWaitIdle) X(vkResetCommandBuffer) X(vkGetBufferDeviceAddress)       \
   X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
   X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdBlitImage) X(vkCmdCopyImage)  \
-  X(vkQueueWaitIdle)
+  X(vkQueueWaitIdle) X(vkCmdClearDepthStencilImage)
 
 // Device functions, loaded with the same lists ReXGlue uses, plus a few it leaves out.
 struct DeviceFunctions {
@@ -1148,14 +1148,16 @@ class Renderer {
 
   void UploadTexture(VkCommandBuffer cmd, Frame &frame, const TextureUpload &upload,
                      VkDeviceSize staging) {
-    if (upload.id == 0 || upload.id >= kDescriptorSlots[0])
+    const bool volume = upload.id & kTexture3DBit;
+    const uint32_t slot = upload.id & 0x7FFF;
+    if (slot == 0 || slot >= (volume ? kDescriptorSlots[1] : kDescriptorSlots[0]))
       return;
-    Image &image = textures_[upload.id];
+    Image &image = volume ? textures_3d_[slot] : textures_[slot];
     const VkFormat format = HostFormat(upload.format);
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    info.imageType = VK_IMAGE_TYPE_2D;
+    info.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     info.format = format;
-    info.extent = {upload.width, upload.height, 1};
+    info.extent = {upload.width, upload.height, upload.depth};
     info.mipLevels = 1;
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1177,7 +1179,7 @@ class Renderer {
     dfn_.vkBindImageMemory(device_, image.image, image.memory, 0);
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = image.image;
-    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType = volume ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     view.format = format;
     view.components = {Component(upload.swizzle & 7), Component((upload.swizzle >> 3) & 7),
                        Component((upload.swizzle >> 6) & 7), Component((upload.swizzle >> 9) & 7)};
@@ -1200,7 +1202,7 @@ class Renderer {
     VkBufferImageCopy copy{};
     copy.bufferOffset = staging;
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {upload.width, upload.height, 1};
+    copy.imageExtent = {upload.width, upload.height, upload.depth};
     dfn_.vkCmdCopyBufferToImage(cmd, frame.arena.buffer, image.image,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1214,8 +1216,8 @@ class Renderer {
     VkDescriptorImageInfo descriptor{VK_NULL_HANDLE, image.view,
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = sets_[0];
-    write.dstArrayElement = upload.id;
+    write.dstSet = sets_[volume ? 1 : 0];
+    write.dstArrayElement = slot;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     write.pImageInfo = &descriptor;
@@ -1237,7 +1239,6 @@ class Renderer {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t width = 0, height = 0;
-    uint64_t cleared_frame = UINT64_MAX;  // guest frame in which it was last cleared
   };
 
   static VkFormat ColorTargetFormat(uint32_t color_info) {
@@ -1380,6 +1381,34 @@ class Renderer {
     return &dest;
   }
 
+  // A D3DDevice_Clear: clears the whole host image of the bound colour target and/or depth.
+  void Clear(VkCommandBuffer cmd, const ClearRecord &c) {
+    if (c.flags & 0xF) {
+      const uint64_t key =
+          uint64_t(c.color_info & 0xFFF) | uint64_t((c.color_info >> 16) & 0xF) << 32;
+      if (Target *t = GetTarget(color_targets_, key, ColorTargetFormat(c.color_info), false)) {
+        Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkClearColorValue value;
+        value.float32[0] = float((c.color >> 16) & 0xFF) / 255.0f;
+        value.float32[1] = float((c.color >> 8) & 0xFF) / 255.0f;
+        value.float32[2] = float(c.color & 0xFF) / 255.0f;
+        value.float32[3] = float(c.color >> 24) / 255.0f;
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        dfn_.vkCmdClearColorImage(cmd, t->image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value,
+                                  1, &range);
+      }
+    }
+    if (c.flags & 0x10) {
+      if (Target *t = GetTarget(depth_targets_, c.depth_info & 0xFFF, VK_FORMAT_D32_SFLOAT, true)) {
+        Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkClearDepthStencilValue value{std::clamp(c.depth, 0.0f, 1.0f), 0};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        dfn_.vkCmdClearDepthStencilImage(cmd, t->image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                         &value, 1, &range);
+      }
+    }
+  }
+
   // --- Draws -------------------------------------------------------------------------------
 
   // Replays the guest frame into the render targets; returns the image to present (the last
@@ -1401,8 +1430,13 @@ class Renderer {
 
     if (REXCVAR_GET(shadow_debug_layout) && guest.guest_frame % 600 == 0) {
       // Layout dump: which target each draw renders into, and where resolves fall.
-      size_t r = 0;
+      size_t r = 0, c = 0;
       for (size_t i = 0; i <= guest.draws.size(); ++i) {
+        for (; c < guest.clears.size() && guest.clears[c].before_draw == i; ++c) {
+          const ClearRecord &cr = guest.clears[c];
+          REXLOG_INFO("shadow_layout:   clear seq {} flags {:x} colour {:08x} z {} colour {:08x} depth {:08x}",
+                      cr.sequence, cr.flags, cr.color, cr.depth, cr.color_info, cr.depth_info);
+        }
         for (; r < guest.resolves.size() && guest.resolves[r].before_draw == i; ++r) {
           const ResolveRecord &rr = guest.resolves[r];
           REXLOG_INFO("shadow_layout:   resolve {} {} slot {} {}x{} fmt {} colour {:08x} depth {:08x}",
@@ -1445,13 +1479,24 @@ class Renderer {
       rendering = false;
       color_key = depth_key = UINT64_MAX;
     };
-    size_t next_resolve = 0;
+    size_t next_resolve = 0, next_clear = 0;
     std::vector<std::pair<Target *, size_t>> resolved_this_frame;
     bool debug_shown = false;
+    // Clears and resolves recorded before draws[up_to_draw], in the order the game made them.
     auto run_resolves = [&](size_t up_to_draw) {
-      while (next_resolve < guest.resolves.size() &&
-             guest.resolves[next_resolve].before_draw <= up_to_draw) {
+      for (;;) {
+        const bool resolve_due = next_resolve < guest.resolves.size() &&
+                                 guest.resolves[next_resolve].before_draw <= up_to_draw;
+        const bool clear_due = next_clear < guest.clears.size() &&
+                               guest.clears[next_clear].before_draw <= up_to_draw;
+        if (!resolve_due && !clear_due)
+          break;
         end_rendering();
+        if (clear_due && (!resolve_due || guest.clears[next_clear].sequence <
+                                              guest.resolves[next_resolve].sequence)) {
+          Clear(cmd, guest.clears[next_clear++]);
+          continue;
+        }
         if (Target *resolved = Resolve(cmd, frame, guest.resolves[next_resolve])) {
           present = resolved;
           resolved_this_frame.push_back({resolved, next_resolve});
@@ -1480,27 +1525,22 @@ class Renderer {
           ++skipped;
           continue;
         }
+        const bool color_new = color->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+        const bool depth_new = depth->layout == VK_IMAGE_LAYOUT_UNDEFINED;
         Transition(cmd, *color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         Transition(cmd, *depth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
         VkRenderingAttachmentInfo color_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         color_attachment.imageView = color->image.view;
         color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color_attachment.loadOp = color->cleared_frame == guest.guest_frame
-                                      ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment.loadOp = color_new ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachment.clearValue.color = {{0, 0, 0, 0}};
         VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         depth_attachment.imageView = depth->image.view;
         depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        depth_attachment.loadOp = depth->cleared_frame == guest.guest_frame
-                                      ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment.loadOp = depth_new ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        // The game's own depth clears are not captured yet. Clear to the far value of the
-        // first draw's depth test: 0 for GREATER/GEQUAL (reversed Z), 1 otherwise.
-        const uint32_t depth_func = (s.depth_control >> 4) & 7;
-        depth_attachment.clearValue.depthStencil = {(depth_func == 4 || depth_func == 6) ? 0.0f : 1.0f,
-                                                    0};
-        color->cleared_frame = depth->cleared_frame = guest.guest_frame;
+        depth_attachment.clearValue.depthStencil = {0.0f, 0};
         VkRenderingInfo rendering_info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         rendering_info.renderArea = {{0, 0}, {kTargetWidth, kTargetHeight}};
         rendering_info.layerCount = 1;
@@ -1540,9 +1580,15 @@ class Renderer {
       std::memset(shared, 0, kSharedConstantsSize);
       for (uint32_t r = 0; r < kTextureSlots; ++r) {
         uint32_t texture = draw.textures[r];
-        if (texture >= kResolveIdBase ? !resolved_ready_.count(texture - kResolveIdBase)
-                                      : !textures_ready_.count(texture))
+        if (texture & kTexture3DBit) {
+          // Volumes: index into the Texture3D array at 64 + r*4.
+          const uint32_t volume = textures_ready_.count(texture) ? texture & 0x7FFF : 0;
+          std::memcpy(shared + 64 + r * 4, &volume, 4);
           texture = 0;
+        } else if (texture >= kResolveIdBase ? !resolved_ready_.count(texture - kResolveIdBase)
+                                             : !textures_ready_.count(texture)) {
+          texture = 0;
+        }
         const uint32_t sampler = samplers_[draw.samplers[r]] ? draw.samplers[r] : 0;
         std::memcpy(shared + r * 4, &texture, 4);
         std::memcpy(shared + 192 + r * 4, &sampler, 4);
@@ -1681,6 +1727,8 @@ class Renderer {
           dfn_.vkDestroySampler(device_, s, nullptr);
       for (Image &image : textures_)
         DestroyImage(image);
+      for (Image &image : textures_3d_)
+        DestroyImage(image);
       for (auto *targets : {&color_targets_, &depth_targets_})
         for (auto &[key, target] : *targets)
           DestroyImage(target.image);
@@ -1753,6 +1801,7 @@ class Renderer {
   uint32_t missing_shaders_ = 0;
   VkDeviceSize arena_used_ = 0;
   std::vector<Image> textures_ = std::vector<Image>(kDescriptorSlots[0]);
+  std::vector<Image> textures_3d_ = std::vector<Image>(kDescriptorSlots[1]);
   std::set<uint32_t> textures_ready_;
   std::vector<VkSampler> samplers_ = std::vector<VkSampler>(kDescriptorSlots[3], VK_NULL_HANDLE);
   std::deque<TextureUpload> upload_queue_;
@@ -1794,6 +1843,12 @@ void OnGuestDraw(const uint8_t *base, uint32_t device, uint32_t primitive, uint3
 void OnGuestResolve(const uint8_t *base, const PPCContext &ctx) {
   if (active.load(std::memory_order_acquire))
     snapshot.RecordResolve(base, ctx.r3.u32, ctx.r4.u32, ctx.r6.u32);
+}
+
+void OnGuestClear(const uint8_t *base, const PPCContext &ctx) {
+  // (device, rect count, rects, flags, colour, z in f1, stencil)
+  if (active.load(std::memory_order_acquire))
+    snapshot.RecordClear(base, ctx.r3.u32, ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r8.u32);
 }
 
 void OnGuestPresent() {

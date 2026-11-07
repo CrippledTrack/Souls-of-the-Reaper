@@ -99,29 +99,52 @@ surface comes from the window's HWND; other platforms aren't done yet.
   black: the game renders it into a render target and composites the resolved copy, and
   render targets and resolves aren't done yet.
 
-- **Milestone 4 (in progress): render targets and resolves.**
-  - **Working:** draws render into host images instead of the window. Each colour target
-    is keyed by EDRAM base and format (`RB_COLOR_INFO`) and each depth buffer by its base
-    (`RB_DEPTH_INFO`), all 2048x1536 in guest pixel coordinates. `D3DDevice_Resolve`
-    (`sub_82D5B9D0`, hooked) copies them into host images that replace the destination
-    textures. Depth resolves go through the arena into `R32_SFLOAT`. The window shows the
-    frame's last resolve, which is the game's front buffer. All 68 draws and 21 resolves per
-    frame run.
-  - **Not right yet:** the 3D background and post-processing come out white or black
-    instead of the castle scene.
+- **Milestone 4 (done): render targets, resolves and clears.** The title screen, castle
+  scene included, now closely matches ReXGlue (`milestone4-vulkan.png`,
+  `milestone4-compare.png`: ReXGlue left, Vulkan right).
+  - Draws render into host images. Each colour target is keyed by EDRAM base and format
+    (`RB_COLOR_INFO`) and each depth buffer by its base (`RB_DEPTH_INFO`), all 2048x1536 in
+    guest pixel coordinates. Target contents persist between passes (load, not clear).
+  - `D3DDevice_Resolve` (`sub_82D5B9D0`, hooked) copies targets into host images that
+    replace the destination textures. Depth resolves go through the arena into
+    `R32_SFLOAT`. The window shows the frame's last resolve, the game's front buffer.
+  - `D3DDevice_Clear` (`sub_82D57638`, hooked):
+    `(device, rect count, rects, flags, ARGB colour, z in f1, stencil)`. Flags `0xF` are
+    colour targets, `0x10` depth and `0x20` stencil. Clears and resolves carry a sequence
+    number and replay in game order between draws. The scene clears to `0x152430` with
+    Z = 0 (reversed Z).
+  - **Bugs found on the way:**
+    - **Colour correction:** the white background came from the colour-correction pass
+      (draw 45), which samples the scene through a 64x64x64 tiled 3D LUT. 3D textures are now
+      decoded (`TiledOffset3D`) and bound through the Texture3D array; their ids carry
+      `kTexture3DBit`.
+    - **Vertex formats:** `D3DDECLTYPE` bit 9 means *integer* (unnormalised), not normalised:
+      `UBYTE4` is `0x1A2286` and `UBYTE4N` is `0x1A2086`. Also, a Xenos `8_8_8_8` vertex
+      component x is the dword's low byte. The castle meshes use `SHORT4` fixed-point
+      positions and `UBYTE4` texcoords rebuilt in the shader as `hi + lo/256`, so both mattered.
+    - **Packed mips:** a texture with packed mips (fetch dword 5 bit 11) whose shorter side
+      is 16 texels or less stores its base level 16 texels into the mip-tail tile. The castle's
+      8x8 lightmap read as black without that offset, and everything came out fog-coloured.
+    - **Normals:** XenosRecomp declares NORMAL, TANGENT and BINORMAL as `uint4` but reads
+      them through `tfetchR11G11B10()`, which is `asfloat(value)` without the packed-normal
+      spec constant, so they need float bits, not raw integers. Only BLENDINDICES is integer.
+      With raw integers the lantern glass meshes (draws 20-25) got zero fresnel edge alpha.
+      They drew nothing, and because their alpha is the bloom mask (the bright pass in draw 35
+      multiplies by scene alpha), the bloom vanished too.
+    - **Debug views:** resolve cycling shows a slot's contents at the end of the frame, not
+      at that resolve. Slot 9 is written three times per frame, which explained the
+      disagreement with the after-draw view.
+  - **Remaining differences:** the small copyright text is choppy (mips or filtering).
   - **Known gaps:**
-    - EDRAM aliasing: the game resolves base 0 as `16_16_16_16` while it also holds the
-      `8_8_8_8` frame.
-    - The game's clears aren't captured: depth is cleared to the far value of its first
-      draw's test, and this scene uses reversed Z (GEQUAL).
-    - Resolve and render-target exponent bias, and 2x MSAA, are ignored.
-    - The 768x768 shadow map (resolve slot 1) is black.
-  - **Findings so far:**
-    - The scene draws (1-31) render, which is visible with blending disabled.
-    - Their alpha is `diffuse.a * Factor.w` with `Factor = (1,1,1,1)`, and the BC3 alpha
-      decode checks out, so the scene layers are semi-transparent by design.
-    - The two debug views (resolve cycling and after-draw snapshots) disagree about the
-      target after draw 44. That needs resolving first.
+    - EDRAM aliasing between formats and pitches isn't modelled (not needed by this frame).
+    - Exponent bias is ignored: with float targets, the `16_16_16_16` target bias (+5) and
+      the texture read cancel out here.
+    - 2x MSAA renders as 1x.
+    - Clear rectangles are ignored, so clears cover the whole image.
+
+Shader debugging: `XenosRecomp --hlsl <in.hlsl> <out.spv> <ps|vs>` (fork) recompiles an
+edited HLSL output with the `--batch` settings. Copying the shader directory and editing one
+pixel shader to output intermediate values (fog, UVs, lighting) located the last two bugs.
 
 D3DDevice_Resolve, from the title frame:
 
@@ -164,17 +187,13 @@ How it works:
   mapping, and writes slot ids into XenosRecomp's shared constants: the Texture2D index at
   `r*4` and the sampler index at `192 + r*4`. Samplers come from the fetch constant's clamp
   and filter fields.
-- **Not done yet:** mip levels, cube and 3D textures, stacked textures, vertex texture
+- **Not done yet:** mip levels (beyond the packed-mip base offset), cube and stacked textures, vertex texture
   fetch, and formats such as `24_8_FLOAT` and `DXT3A`.
 
 Next:
 
-1. **Finish render targets:**
-   - Explain why the two debug views disagree.
-   - Model EDRAM aliasing: one EDRAM store per base, reinterpreted by format.
-   - Capture the game's clears.
-   - Apply exponent bias.
-   - Get the castle scene to match.
+1. **Polish the title screen:** small text (mips), MSAA, and
+   EDRAM aliasing and exponent bias once a frame needs them.
 2. **The other `Draw*` variants**, culling and stencil.
 3. **Mip levels and the remaining texture types.**
 4. **Gameplay:** check the stride assumption and the remaining vertex formats

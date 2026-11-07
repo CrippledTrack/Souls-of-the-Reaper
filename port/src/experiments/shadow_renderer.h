@@ -25,6 +25,9 @@ void OnGuestDraw(const uint8_t *base, uint32_t device, uint32_t primitive, uint3
 void OnGuestResolve(const uint8_t *base, const PPCContext &ctx);
 
 // Called from the game's present hook at the end of every guest frame.
+// Called from the D3DDevice_Clear hook (sub_82D57638) before it runs.
+void OnGuestClear(const uint8_t *base, const PPCContext &ctx);
+
 void OnGuestPresent();
 
 }  // namespace d3::shadow

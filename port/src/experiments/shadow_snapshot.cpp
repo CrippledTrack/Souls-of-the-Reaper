@@ -81,29 +81,38 @@ uint32_t FormatSize(uint32_t format) {
   }
 }
 
-// XenosRecomp declares these inputs as uint4.
-bool UintUsage(uint8_t usage) { return usage == 2 || usage == 3 || usage == 6 || usage == 7; }
+// XenosRecomp declares BLENDINDICES, NORMAL, TANGENT and BINORMAL as uint4. Only blend
+// indices are used as integers. The other three go through tfetchR11G11B10(), which without
+// the packed-normal spec constant is asfloat(value), so they take float bits like any input.
+bool UintUsage(uint8_t usage) { return usage == 2; }
 
 // Decode one element into four 32-bit components. D3DDECLTYPE bits used: 0-5 Xenos format,
-// 8 signed, 9 normalized, 11 D3DCOLOR (ARGB) order. Values are read big-endian per
+// 8 signed, 9 integer (not normalised: UBYTE4 0x1A2286 vs UBYTE4N 0x1A2086, SHORT4 0x1A235A vs
+// SHORT4N 0x1A215A), 11 D3DCOLOR (ARGB) order. Values are read big-endian per
 // component, which is what they mean to the guest CPU whatever the GPU endian swap.
 void Decode(const uint8_t *base, uint32_t address, uint32_t type, bool as_uint, uint32_t out[4]) {
   const uint32_t format = type & 0x3F;
   const bool is_signed = type & 0x100;
-  const bool normalized = type & 0x200;
+  const bool normalized = !(type & 0x200);
   float f[4] = {0, 0, 0, 1};
   uint32_t u[4] = {0, 0, 0, 1};
   switch (format) {
     case 6: {  // 8_8_8_8
       const uint32_t v = Be32(base, address);
-      uint32_t c[4] = {v >> 24, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF};
-      if (type & 0x800) {  // D3DCOLOR: stored ARGB, used as RGBA
-        const uint32_t argb[4] = {c[1], c[2], c[3], c[0]};
-        std::copy(argb, argb + 4, c);
+      // Xenos 8_8_8_8: x is the low byte of the dword (the last byte in guest memory).
+      uint32_t c[4] = {v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, v >> 24};
+      if (type & 0x800) {  // D3DCOLOR: dword 0xAARRGGBB, used as RGBA
+        const uint32_t rgba[4] = {(v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF, v >> 24};
+        std::copy(rgba, rgba + 4, c);
       }
       for (int i = 0; i < 4; ++i) {
         u[i] = c[i];
-        f[i] = normalized || (type & 0x800) ? float(c[i]) / 255.0f : float(c[i]);
+        if (is_signed) {
+          const int8_t s8 = int8_t(c[i]);
+          f[i] = normalized ? std::max(float(s8) / 127.0f, -1.0f) : float(s8);
+        } else {
+          f[i] = normalized ? float(c[i]) / 255.0f : float(c[i]);
+        }
       }
       break;
     }
@@ -332,6 +341,7 @@ void SnapshotBuilder::RecordResolve(const uint8_t *base, uint32_t device, uint32
     return;
   ResolveRecord r;
   r.before_draw = uint32_t(frame_->draws.size());
+  r.sequence = frame_->next_sequence++;
   r.slot = it->second;
   r.depth = flags & 4;
   r.color_info = Be32(base, device + kRegs2000 + 0x1 * 4);
@@ -340,6 +350,22 @@ void SnapshotBuilder::RecordResolve(const uint8_t *base, uint32_t device, uint32
   r.height = ((fetch[2] >> 13) & 0x1FFF) + 1;
   r.xenos_format = fetch[1] & 0x3F;
   frame_->resolves.push_back(r);
+}
+
+void SnapshotBuilder::RecordClear(const uint8_t *base, uint32_t device, uint32_t flags,
+                                  uint32_t color, float depth, uint32_t stencil) {
+  if (!frame_)
+    frame_ = std::make_unique<FrameRecord>();
+  ClearRecord c;
+  c.before_draw = uint32_t(frame_->draws.size());
+  c.sequence = frame_->next_sequence++;
+  c.flags = flags;
+  c.color = color;
+  c.depth = depth;
+  c.stencil = stencil;
+  c.color_info = Be32(base, device + kRegs2000 + 0x1 * 4);
+  c.depth_info = Be32(base, device + kRegs2000 + 0x2 * 4);
+  frame_->clears.push_back(c);
 }
 
 std::unique_ptr<FrameRecord> SnapshotBuilder::Finish(uint64_t guest_frame) {

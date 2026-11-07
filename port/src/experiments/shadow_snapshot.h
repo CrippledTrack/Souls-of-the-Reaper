@@ -17,6 +17,9 @@ class SnapshotBuilder {
                          uint32_t base_vertex, uint32_t start_index, uint32_t index_count);
   // D3DDevice_Resolve(device, flags, rect, destination texture, ...), before it runs.
   void RecordResolve(const uint8_t *base, uint32_t device, uint32_t flags, uint32_t texture);
+  // D3DDevice_Clear(device, count, rects, flags, colour, z, stencil), before it runs.
+  void RecordClear(const uint8_t *base, uint32_t device, uint32_t flags, uint32_t color,
+                   float depth, uint32_t stencil);
   // Ends the frame and hands its draws over.
   std::unique_ptr<FrameRecord> Finish(uint64_t guest_frame);
 

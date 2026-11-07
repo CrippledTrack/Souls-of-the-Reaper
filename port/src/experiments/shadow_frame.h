@@ -50,9 +50,14 @@ enum class TextureFormat : uint8_t {
 
 // A texture seen for the first time this frame: base level only, untiled and byte-swapped,
 // tightly packed rows of blocks (4x4 blocks for BC formats).
+// Texture ids with this bit set name the bindless Texture3D array (id & 0x7FFF).
+constexpr uint16_t kTexture3DBit = 0x8000;
+constexpr uint32_t kTexture3DSlots = 64;
+
 struct TextureUpload {
-  uint32_t id = 0;  // slot in the renderer's bindless Texture2D array (0: white placeholder)
-  uint32_t width = 0, height = 0;
+  uint32_t id = 0;  // slot in the renderer's bindless Texture2D array (0: white placeholder),
+                    // or in the Texture3D array with kTexture3DBit
+  uint32_t width = 0, height = 0, depth = 1;
   TextureFormat format = TextureFormat::kRGBA8;
   uint32_t swizzle = 0;  // Xenos fetch swizzle: 3 bits per output component (0-3 xyzw, 4 zero, 5 one)
   std::vector<uint8_t> data;
@@ -73,12 +78,25 @@ constexpr uint32_t kResolveSlots = 1000;
 // A D3DDevice_Resolve: copy the bound render target (or depth) into a texture.
 struct ResolveRecord {
   uint32_t before_draw = 0;  // runs before draws[before_draw] (after the last draw if == size)
+  uint32_t sequence = 0;     // order among the frame's resolves and clears
   uint32_t slot = 0;         // resolve target slot (texture id kResolveIdBase + slot)
   bool depth = false;        // flags & 4: resolve the depth buffer
   uint32_t color_info = 0;   // render target at the time (RB_COLOR_INFO / RB_DEPTH_INFO)
   uint32_t depth_info = 0;
   uint32_t width = 0, height = 0;  // destination texture size
   uint32_t xenos_format = 0;       // destination texture format
+};
+
+// A D3DDevice_Clear of the bound render target and/or depth buffer (whole surface).
+struct ClearRecord {
+  uint32_t before_draw = 0;
+  uint32_t sequence = 0;
+  uint32_t flags = 0;        // D3DCLEAR: 0xF colour targets, 0x10 depth, 0x20 stencil
+  uint32_t color = 0;        // D3DCOLOR (ARGB)
+  float depth = 0;
+  uint32_t stencil = 0;
+  uint32_t color_info = 0;   // RB_COLOR_INFO / RB_DEPTH_INFO at the time
+  uint32_t depth_info = 0;
 };
 
 // Pixel shader texture slots tf0-tf15 (D3D samplers s0-s15).
@@ -112,6 +130,8 @@ struct FrameRecord {
   std::vector<TextureUpload> new_textures;
   std::vector<SamplerDesc> new_samplers;
   std::vector<ResolveRecord> resolves;
+  std::vector<ClearRecord> clears;
+  uint32_t next_sequence = 0;  // capture side: next resolve/clear sequence number
 };
 
 constexpr uint32_t kConstantsPerDraw = 512;

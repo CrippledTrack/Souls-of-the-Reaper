@@ -26,6 +26,7 @@ class TextureCache {
   std::unordered_map<uint32_t, uint16_t> samplers_;
   std::set<uint32_t> unsupported_formats_;
   uint32_t next_texture_ = 1;
+  uint32_t next_texture_3d_ = 1;
   uint32_t next_sampler_ = 1;
   bool full_warned_ = false;
 };

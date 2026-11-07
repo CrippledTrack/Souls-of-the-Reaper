@@ -18,6 +18,30 @@ uint32_t Be32(const uint8_t *base, uint32_t address) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
 }
 
+// Offset in bytes of block (x, y, z) in a tiled volume, pitch and height in blocks. From
+// ReXGlue's GetTiledOffset3D (Xenia, reconstructed from XGRAPHICS::TileVolume).
+int32_t TiledOffset3D(int32_t x, int32_t y, int32_t z, uint32_t pitch, uint32_t height,
+                      uint32_t bytes_per_block_log2) {
+  pitch = (pitch + 31) & ~31u;
+  height = (height + 31) & ~31u;
+  int32_t macro_outer = ((y >> 4) + (z >> 2) * int32_t(height >> 4)) * int32_t(pitch >> 5);
+  int32_t macro = ((((x >> 5) + macro_outer) << (bytes_per_block_log2 + 6)) & 0xFFFFFFF) << 1;
+  int32_t micro = (((x & 7) + ((y & 6) << 2)) << (bytes_per_block_log2 + 6)) >> 6;
+  int32_t offset_outer = ((y >> 3) + (z >> 2)) & 1;
+  int32_t offset1 = offset_outer + ((((x >> 3) + (offset_outer << 1)) & 3) << 1);
+  int32_t offset2 = ((macro + (micro & ~15)) << 1) + (micro & 15) +
+                    ((z & 3) << (bytes_per_block_log2 + 6)) + ((y & 1) << 4);
+  int32_t address = (offset1 & 1) << 3;
+  address += (offset2 >> 6) & 7;
+  address <<= 3;
+  address += offset1 & ~1;
+  address <<= 2;
+  address += offset2 & ~511;
+  address <<= 3;
+  address += offset2 & 63;
+  return address;
+}
+
 // Offset in bytes of block (x, y) in a tiled 2D surface whose pitch is in blocks.
 // From ReXGlue's src/graphics/pipeline/texture/util.cpp (Xenia, BSD licence), originally
 // https://github.com/gildor2/UModel UnTexture.cpp.
@@ -105,9 +129,10 @@ uint16_t TextureCache::Texture(const uint8_t *base, const uint32_t fetch[6], Fra
   // Textures the game fills by resolving a render target come from the renderer's images.
   if (auto resolved = resolve_targets.find(fetch[1] & 0x1FFFF000u); resolved != resolve_targets.end())
     return uint16_t(kResolveIdBase + resolved->second);
-  const uint32_t dimension = (fetch[5] >> 9) & 3;
+  const uint32_t dimension = (fetch[5] >> 9) & 3;  // 0 1D, 1 2D, 2 3D or stacked, 3 cube
   const bool stacked = (fetch[1] >> 10) & 1;
-  if (dimension != 1 || stacked)  // only plain 2D for now
+  const bool volume = dimension == 2 && !stacked;
+  if (!(dimension == 1 && !stacked) && !volume)  // 2D and 3D for now
     return 0;
   FormatInfo info;
   const uint32_t xenos_format = fetch[1] & 0x3F;
@@ -116,8 +141,10 @@ uint16_t TextureCache::Texture(const uint8_t *base, const uint32_t fetch[6], Fra
       REXLOG_INFO("shadow_renderer: texture format {} not converted yet", xenos_format);
     return 0;
   }
-  const uint32_t width = (fetch[2] & 0x1FFF) + 1;
-  const uint32_t height = ((fetch[2] >> 13) & 0x1FFF) + 1;
+  // size_2d: 13-bit width and height; size_3d: 11-bit width and height, 10-bit depth.
+  const uint32_t width = volume ? (fetch[2] & 0x7FF) + 1 : (fetch[2] & 0x1FFF) + 1;
+  const uint32_t height = volume ? ((fetch[2] >> 11) & 0x7FF) + 1 : ((fetch[2] >> 13) & 0x1FFF) + 1;
+  const uint32_t depth = volume ? ((fetch[2] >> 22) & 0x3FF) + 1 : 1;
   if (width > kMaxDimension || height > kMaxDimension)
     return 0;
   const uint32_t physical = fetch[1] & 0xFFFFF000u;
@@ -140,16 +167,42 @@ uint16_t TextureCache::Texture(const uint8_t *base, const uint32_t fetch[6], Fra
   const uint32_t identity[5] = {fetch[0] & 0xFFC00003u, fetch[1], fetch[2], fetch[3] & 0x1FFFu,
                                 fetch[5] & 0xE00u};
   uint64_t key = Fnv(identity, sizeof(identity));
-  const size_t span = tiled ? size_t(TiledOffset2D(0, int32_t(blocks_h - 1), pitch_blocks, bpb_log2)) +
-                                  size_t(pitch_blocks) * 32 * bpb
-                            : size_t(row_pitch) * blocks_h;
+  // Volumes: tiled ones use TiledOffset3D; linear slices are 4 KiB aligned.
+  const uint32_t height_aligned = (blocks_h + 31) & ~31u;
+  const size_t slice_pitch = (size_t(row_pitch) * blocks_h + 4095) & ~size_t(4095);
+  // Packed mips: a base level whose shorter side is 16 texels or less lives in the packed mip
+  // tail tile, 16 texels right (square or taller) or down (wider) of the tile origin. From
+  // ReXGlue's GetPackedMipOffset for mip 0.
+  uint32_t tail_x = 0, tail_y = 0;
+  if (!volume && ((fetch[5] >> 11) & 1)) {
+    uint32_t log2_w = 0, log2_h = 0;
+    while ((1u << log2_w) < width) ++log2_w;
+    while ((1u << log2_h) < height) ++log2_h;
+    if (std::min(log2_w, log2_h) <= 4)
+      (log2_w > log2_h ? tail_y : tail_x) = 16 / info.block;
+  }
+  auto offset = [&](uint32_t bx, uint32_t by, uint32_t z) -> size_t {
+    bx += tail_x;
+    by += tail_y;
+    if (volume)
+      return tiled ? size_t(TiledOffset3D(int32_t(bx), int32_t(by), int32_t(z), pitch_blocks,
+                                          height_aligned, bpb_log2))
+                   : z * slice_pitch + size_t(by) * row_pitch + size_t(bx) * bpb;
+    return tiled ? size_t(TiledOffset2D(int32_t(bx), int32_t(by), pitch_blocks, bpb_log2))
+                 : size_t(by) * row_pitch + size_t(bx) * bpb;
+  };
+  const size_t span =
+      volume ? offset(blocks_w - 1, blocks_h - 1, depth - 1) + bpb
+      : tiled ? size_t(TiledOffset2D(0, int32_t(blocks_h - 1), pitch_blocks, bpb_log2)) +
+                    size_t(pitch_blocks) * 32 * bpb
+              : size_t(row_pitch) * blocks_h;
   for (uint32_t i = 0; i < 16; ++i) {
     const size_t at = (span / 16) * i;
     key = Fnv(source + at, std::min<size_t>(16, span - at), key);
   }
   if (auto found = textures_.find(key); found != textures_.end())
     return found->second;
-  if (next_texture_ >= kMaxTextures) {
+  if (volume ? next_texture_3d_ >= kTexture3DSlots : next_texture_ >= kMaxTextures) {
     if (!full_warned_) {
       full_warned_ = true;
       REXLOG_WARN("shadow_renderer: texture table full ({} textures)", kMaxTextures);
@@ -158,20 +211,23 @@ uint16_t TextureCache::Texture(const uint8_t *base, const uint32_t fetch[6], Fra
   }
 
   TextureUpload upload;
-  upload.id = next_texture_++;
+  upload.id = volume ? (kTexture3DBit | next_texture_3d_++) : next_texture_++;
   upload.width = width;
   upload.height = height;
+  upload.depth = depth;
   upload.format = info.format;
   upload.swizzle = (fetch[3] >> 1) & 0xFFF;
-  upload.data.resize(size_t(blocks_w) * blocks_h * bpb);
-  for (uint32_t by = 0; by < blocks_h; ++by)
-    for (uint32_t bx = 0; bx < blocks_w; ++bx) {
-      const size_t from = tiled ? size_t(TiledOffset2D(int32_t(bx), int32_t(by), pitch_blocks, bpb_log2))
-                                : size_t(by) * row_pitch + size_t(bx) * bpb;
-      uint8_t *to = &upload.data[(size_t(by) * blocks_w + bx) * bpb];
-      std::memcpy(to, source + from, bpb);
-      Swap(to, bpb, endian);
-    }
+  upload.data.resize(size_t(blocks_w) * blocks_h * depth * bpb);
+  for (uint32_t z = 0; z < depth; ++z)
+    for (uint32_t by = 0; by < blocks_h; ++by)
+      for (uint32_t bx = 0; bx < blocks_w; ++bx) {
+        uint8_t *to = &upload.data[((size_t(z) * blocks_h + by) * blocks_w + bx) * bpb];
+        std::memcpy(to, source + offset(bx, by, z), bpb);
+        Swap(to, bpb, endian);
+      }
+  if (volume)
+    REXLOG_INFO("shadow_renderer: 3D texture {}x{}x{} format {} {} id {}", width, height, depth,
+                xenos_format, tiled ? "tiled" : "linear", upload.id & 0x7FFF);
   textures_.emplace(key, uint16_t(upload.id));
   frame.new_textures.push_back(std::move(upload));
   return uint16_t(frame.new_textures.back().id);
