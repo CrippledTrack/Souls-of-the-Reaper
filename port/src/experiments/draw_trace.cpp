@@ -115,11 +115,36 @@ void EndFrame() {
 
 } // namespace
 
-#define RANGE_HOOK(address, index)                                  \
-  DECLARE_REX_FUNC(sub_##address);                                  \
-  extern "C" void sub_##address(PPCContext &ctx, uint8_t *base) {   \
-    Record(index, ctx);                                             \
-    __imp__sub_##address(ctx, base);                                \
+// The other Draw* variants (see RENDERING.md). The game has been seen drawing through
+// sub_82D621B0 (indexed) and sub_82D61D98 (non-indexed), which the Vulkan renderer captures;
+// the rest are reported the first time each is called, since it would miss what they draw.
+constexpr bool IsUncapturedDrawVariant(uint32_t address) {
+  switch (address) {
+    case 0x82D59AD8: case 0x82D59D30: case 0x82D5A600: case 0x82D612B0: case 0x82D617B8:
+    case 0x82D62628: case 0x82D62AC8: case 0x82D71B28: case 0x82D72700:
+    case 0x82D73030: case 0x82D73450: case 0x82D7A1C8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void NoteUncapturedDraw(uint32_t address, uint32_t lr, std::atomic<bool> &reported) {
+  if (!reported.exchange(true, std::memory_order_relaxed))
+    REXLOG_WARN("Draw variant sub_{:08X} called (lr={:#x}); the Vulkan renderer does not "
+                "capture it yet",
+                address, lr);
+}
+
+#define RANGE_HOOK(address, index)                                       \
+  DECLARE_REX_FUNC(sub_##address);                                       \
+  extern "C" void sub_##address(PPCContext &ctx, uint8_t *base) {        \
+    if constexpr (IsUncapturedDrawVariant(0x##address)) {                \
+      static std::atomic<bool> reported{false};                          \
+      NoteUncapturedDraw(0x##address, uint32_t(ctx.lr), reported);       \
+    }                                                                    \
+    Record(index, ctx);                                                  \
+    __imp__sub_##address(ctx, base);                                     \
   }
 #include "d3d_range_hooks.inc"
 #undef RANGE_HOOK
@@ -214,7 +239,27 @@ extern "C" void sub_82D621B0(PPCContext &ctx, uint8_t *base) {
                         ctx.r5.u32, ctx.r6.u32, ctx.r7.u32});
   }
   d3::shadow::OnGuestDraw(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+  // --shadow_renderer_only: the Vulkan renderer has the draw; ReXGlue's GPU gets nothing.
+  if (d3::shadow::SkipGuestRendering())
+    return;
   __imp__sub_82D621B0(ctx, base);
+}
+
+// Non-indexed draw: (device, primitive, start vertex, vertex count). The start vertex goes to
+// VGT_INDX_OFFSET like the indexed draw's base vertex; counts above 65535 become several
+// packets. Called from the game's renderer next to the indexed draw (lr 0x82584464).
+DECLARE_REX_FUNC(sub_82D61D98);
+extern "C" void sub_82D61D98(PPCContext &ctx, uint8_t *base) {
+  if (TraceSequenceFrame() > 0 && frames.load() + 1 == uint64_t(TraceSequenceFrame())) {
+    std::lock_guard lock(sequence_mutex);
+    sequence.push_back({0x82D61D98u, static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32,
+                        ctx.r5.u32, ctx.r6.u32, ctx.r7.u32});
+  }
+  d3::shadow::OnGuestAutoIndexDraw(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+  // --shadow_renderer_only: the Vulkan renderer has the draw; ReXGlue's GPU gets nothing.
+  if (d3::shadow::SkipGuestRendering())
+    return;
+  __imp__sub_82D61D98(ctx, base);
 }
 
 DECLARE_REX_FUNC(sub_82D58DD8);
@@ -254,6 +299,9 @@ extern "C" void sub_82D57638(PPCContext &ctx, uint8_t *base) {
                         ctx.r5.u32, ctx.r6.u32, ctx.r7.u32});
   }
   d3::shadow::OnGuestClear(base, ctx);
+  // --shadow_renderer_only: the Vulkan renderer has the clear; ReXGlue's GPU gets nothing.
+  if (d3::shadow::SkipGuestRendering())
+    return;
   __imp__sub_82D57638(ctx, base);
 }
 
@@ -280,6 +328,9 @@ extern "C" void sub_82D5B9D0(PPCContext &ctx, uint8_t *base) {
                 LoadBe32(base, device + 10376), object);
   }
   d3::shadow::OnGuestResolve(base, before);
+  // --shadow_renderer_only: the Vulkan renderer has the resolve; ReXGlue's GPU gets nothing.
+  if (d3::shadow::SkipGuestRendering())
+    return;
   __imp__sub_82D5B9D0(ctx, base);
   if (trace) {
     std::string copy;

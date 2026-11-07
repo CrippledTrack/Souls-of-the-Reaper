@@ -70,6 +70,13 @@ The 2026-11-06 capture at the title screen:
 **Every shader now compiles to DXIL and SPIR-V.** Compiling doesn't prove the output is
 right, though. The rendering is untested.
 
+Two control-flow fixes found on the main menu (see RENDERING.md, milestone 5): backward
+jumps are detected by target address rather than the direction bit (346 shaders now use the
+general `pc`/`switch` form), and `CondExecPred` blocks are wrapped in their predicate check.
+
+`XenosRecomp --spirv <list> <out> <header>` converts SPIR-V only (no HLSL or DXIL files) and is
+what the game runs on the player's machine (RENDERING.md, "Automatic shaders").
+
 Other fork changes are for testing only:
 - a failed assert throws instead of aborting;
 - an unknown vertex fetch reports its address;

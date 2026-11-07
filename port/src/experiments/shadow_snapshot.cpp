@@ -3,6 +3,10 @@
 // experiments/gpu-layer/RENDERING.md (USA title update).
 #include "shadow_snapshot.h"
 
+#include <chrono>
+#include <mutex>
+#include <vector>
+
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -182,11 +186,53 @@ uint64_t ShaderHash(const uint8_t *base, uint32_t object) {
 
 }  // namespace
 
-void SnapshotBuilder::RecordIndexedDraw(const uint8_t *base, uint32_t device, uint32_t primitive,
-                                        uint32_t base_vertex, uint32_t start_index,
-                                        uint32_t index_count) {
+namespace {
+std::mutex recycle_mutex;
+std::vector<std::unique_ptr<FrameRecord>> recycled;
+}  // namespace
+
+std::unique_ptr<FrameRecord> NewFrameRecord() {
+  {
+    std::lock_guard lock(recycle_mutex);
+    if (!recycled.empty()) {
+      auto frame = std::move(recycled.back());
+      recycled.pop_back();
+      return frame;
+    }
+  }
+  return std::make_unique<FrameRecord>();
+}
+
+void RecycleFrameRecord(std::unique_ptr<FrameRecord> frame) {
+  if (!frame)
+    return;
+  frame->Reset();
+  std::lock_guard lock(recycle_mutex);
+  if (recycled.size() < 4)
+    recycled.push_back(std::move(frame));
+}
+
+namespace {
+// Capture phase timing (game thread only): indices, vertices, constants, textures.
+uint64_t phase_ns[4] = {};
+struct PhaseTimer {
+  int phase;
+  std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+  void Next(int next) {
+    const auto now = std::chrono::steady_clock::now();
+    phase_ns[phase] += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count());
+    phase = next;
+    start = now;
+  }
+  ~PhaseTimer() { Next(phase); }
+};
+}  // namespace
+
+void SnapshotBuilder::RecordDraw(const uint8_t *base, uint32_t device, uint32_t primitive,
+                                 uint32_t base_vertex, uint32_t start_index, uint32_t index_count,
+                                 bool indexed) {
   if (!frame_)
-    frame_ = std::make_unique<FrameRecord>();
+    frame_ = NewFrameRecord();
   FrameRecord &frame = *frame_;
   auto skip = [&](const char *why) {
     if (frame.skipped++ < 3)
@@ -233,50 +279,121 @@ void SnapshotBuilder::RecordIndexedDraw(const uint8_t *base, uint32_t device, ui
     frame.layouts.push_back(layout);
 
   // Indices.
-  const uint32_t index_buffer = Be32(base, device + kIndexBuffer);
-  if (!index_buffer || index_count == 0)
-    return skip("no index buffer");
-  const bool wide = Be32(base, index_buffer) & 0x80000000u;
-  const uint32_t index_base = Be32(base, index_buffer + 24);
+  PhaseTimer timer{0};
+  if (index_count == 0)
+    return skip("no vertices");
   std::vector<uint32_t> indices(index_count);
   uint32_t lowest = UINT32_MAX, highest = 0;
-  for (uint32_t i = 0; i < index_count; ++i) {
-    const uint32_t index = wide ? Be32(base, index_base + (start_index + i) * 4)
-                                : Be16(base, index_base + (start_index + i) * 2);
-    indices[i] = index;
-    lowest = std::min(lowest, index);
-    highest = std::max(highest, index);
+  if (!indexed) {
+    // Non-indexed: vertices 0..count-1 from the start vertex (passed as base_vertex).
+    for (uint32_t i = 0; i < index_count; ++i)
+      indices[i] = i;
+    lowest = 0;
+    highest = index_count - 1;
+  } else {
+    const uint32_t index_buffer = Be32(base, device + kIndexBuffer);
+    if (!index_buffer)
+      return skip("no index buffer");
+    const bool wide = Be32(base, index_buffer) & 0x80000000u;
+    const uint32_t index_base = Be32(base, index_buffer + 24);
+    for (uint32_t i = 0; i < index_count; ++i) {
+      const uint32_t index = wide ? Be32(base, index_base + (start_index + i) * 4)
+                                  : Be16(base, index_base + (start_index + i) * 2);
+      indices[i] = index;
+      lowest = std::min(lowest, index);
+      highest = std::max(highest, index);
+    }
   }
   const uint32_t vertex_count = highest - lowest + 1;
   if (vertex_count > kMaxVertices)
     return skip("vertex range too large");
 
   // Vertices: stream s reads vertex fetch constant 95 - s.
+  timer.Next(1);
   const uint32_t stride = layout.stride();
-  draw.first_vertex = uint32_t(frame.vertices.size() / 16);  // in 16-byte attributes
   draw.vertex_count = vertex_count;
   const size_t vertex_bytes = size_t(vertex_count) * stride;
-  const size_t vertex_start = frame.vertices.size();
-  frame.vertices.resize(vertex_start + vertex_bytes);
-  for (size_t i = 0; i < elements.size(); ++i) {
-    const Element &e = elements[i];
+  uint32_t stream_bases[16] = {};
+  bool stream_used[16] = {};
+  for (const Element &e : elements) {
     const uint32_t fetch = 95 - e.stream;
-    const uint32_t fetch_address = device + kFetchConstants + (fetch / 3) * 24 + (fetch % 3) * 8;
-    const uint32_t word0 = Be32(base, fetch_address);
-    if ((word0 & 3) != 3) {
-      frame.vertices.resize(vertex_start);
+    const uint32_t word0 = Be32(base, device + kFetchConstants + (fetch / 3) * 24 + (fetch % 3) * 8);
+    if ((word0 & 3) != 3)
       return skip("vertex fetch constant not set");
+    stream_bases[e.stream] = PhysicalToGuest(word0 & 0xFFFFFFFCu);
+    stream_used[e.stream] = true;
+  }
+
+  // Most of a frame is static meshes, so converted vertices are kept across frames, keyed by
+  // where they come from and how they are read, and checked against the source bytes: whole
+  // for small ranges, at sampled points for large ones.
+  uint64_t key = 0xCBF29CE484222325ull;
+  for (const Element &e : elements) {
+    const uint32_t parts[6] = {stream_bases[e.stream], strides[e.stream], e.offset, e.type,
+                               uint32_t(e.usage) << 8 | e.index, e.stream};
+    key = HashBytes(parts, sizeof(parts), key);
+  }
+  const uint32_t range[2] = {base_vertex + lowest, vertex_count};
+  key = HashBytes(range, sizeof(range), key);
+  CachedVertices &cached = vertex_cache_[key];
+  cached.last_used = frame_number_;
+  const bool dynamic = cached.changes >= 2;
+  uint64_t signature = 0;
+  if (!dynamic) {
+    constexpr size_t kWholeHashBytes = 16 * 1024;
+    constexpr size_t kSamples = 64;
+    for (uint32_t st = 0; st < 16; ++st) {
+      if (!stream_used[st])
+        continue;
+      const uint8_t *source = base + stream_bases[st] + size_t(base_vertex + lowest) * strides[st];
+      const size_t bytes = size_t(vertex_count) * strides[st];
+      if (bytes <= kWholeHashBytes) {
+        signature = HashBytes(source, bytes, signature);
+      } else {
+        for (size_t k = 0; k < kSamples; ++k)
+          signature = HashBytes(source + (bytes - 16) * k / (kSamples - 1), 16, signature);
+      }
     }
-    const uint32_t stream_base = PhysicalToGuest(word0 & 0xFFFFFFFCu);
-    for (uint32_t v = 0; v < vertex_count; ++v) {
-      const uint32_t source = stream_base + (base_vertex + lowest + v) * strides[e.stream] + e.offset;
-      uint32_t components[4];
-      Decode(base, source, e.type, UintUsage(e.usage), components);
-      std::memcpy(&frame.vertices[vertex_start + size_t(v) * stride + i * 16], components, 16);
+    if (cached.block && cached.signature == signature) {
+      draw.vertex_block = cached.block;  // unchanged: reuse the converted block
+    } else if (cached.block) {
+      // Changed in place. Retire the old block (the renderer may still be drawing it).
+      freed_blocks_.push_back(cached.block);
+      cached.block = 0;
+      ++cached.changes;
     }
   }
-  // The renderer addresses vertices per layout, so record the byte offset in vertices.
-  draw.first_vertex = uint32_t(vertex_start);
+
+  if (!draw.vertex_block) {
+    std::vector<uint8_t> converted(vertex_bytes);
+    for (size_t i = 0; i < elements.size(); ++i) {
+      const Element &e = elements[i];
+      const uint32_t stream_base = stream_bases[e.stream];
+      for (uint32_t v = 0; v < vertex_count; ++v) {
+        const uint32_t source =
+            stream_base + (base_vertex + lowest + v) * strides[e.stream] + e.offset;
+        uint32_t components[4];
+        Decode(base, source, e.type, UintUsage(e.usage), components);
+        std::memcpy(&converted[size_t(v) * stride + i * 16], components, 16);
+      }
+    }
+    // Ranges seen for the first time go inline too: dynamic geometry is often written to a
+    // new address every frame and would never be drawn from a cached block again.
+    const bool first_sighting = !cached.seen || cached.signature != signature;
+    cached.seen = true;
+    if (cached.changes >= 2 || first_sighting) {
+      cached.signature = signature;
+      // Keeps changing, or not known to be static yet: send it inline with this frame only.
+      const size_t vertex_start = frame.vertices.size();
+      frame.vertices.insert(frame.vertices.end(), converted.begin(), converted.end());
+      draw.first_vertex = uint32_t(vertex_start);
+    } else {
+      cached.block = next_vertex_block_++;
+      cached.signature = signature;
+      draw.vertex_block = cached.block;
+      frame.new_vertex_blocks.push_back({cached.block, std::move(converted)});
+    }
+  }
 
   draw.first_index = uint32_t(frame.indices.size());
   draw.index_count = index_count;
@@ -284,23 +401,40 @@ void SnapshotBuilder::RecordIndexedDraw(const uint8_t *base, uint32_t device, ui
     frame.indices.push_back(index - lowest);
 
   // Constants and booleans.
+  timer.Next(2);
   draw.constants = uint32_t(frame.constants.size());
   frame.constants.resize(frame.constants.size() + kConstantsPerDraw);
-  for (uint32_t i = 0; i < 256; ++i)
-    for (uint32_t c = 0; c < 4; ++c) {
-      frame.constants[draw.constants + i][c] = BeFloat(base, device + kVertexConstants + i * 16 + c * 4);
-      frame.constants[draw.constants + 256 + i][c] =
-          BeFloat(base, device + kPixelConstants + i * 16 + c * 4);
-    }
+  // Bulk copy and byte swap (vectorised by the compiler).
+  auto copy_swapped = [&](uint32_t address, std::array<float, 4> *to) {
+    uint32_t *words = reinterpret_cast<uint32_t *>(to);
+    std::memcpy(words, base + address, 256 * 16);
+    for (uint32_t w = 0; w < 256 * 4; ++w)
+      words[w] = __builtin_bswap32(words[w]);
+  };
+  copy_swapped(device + kVertexConstants, &frame.constants[draw.constants]);
+  copy_swapped(device + kPixelConstants, &frame.constants[draw.constants + 256]);
   // Textures: pixel shader sampler sN reads texture fetch constant N.
+  timer.Next(3);
   for (uint32_t slot = 0; slot < kTextureSlots; ++slot) {
     uint32_t fetch[6];
     for (uint32_t w = 0; w < 6; ++w)
       fetch[w] = Be32(base, device + kFetchConstants + slot * 24 + w * 4);
     if ((fetch[0] & 3) != 2)
       continue;
+    // Most draws keep the previous draw's textures: reuse its ids for an identical fetch
+    // constant (only within the frame; textures are rechecked every frame).
+    SlotMemo &memo = slot_memo_[slot];
+    if (memo.valid && std::memcmp(memo.fetch, fetch, sizeof(fetch)) == 0) {
+      draw.textures[slot] = memo.texture;
+      draw.samplers[slot] = memo.sampler;
+      continue;
+    }
     draw.textures[slot] = textures_.Texture(base, fetch, frame);
     draw.samplers[slot] = textures_.Sampler(fetch, frame);
+    std::memcpy(memo.fetch, fetch, sizeof(fetch));
+    memo.texture = draw.textures[slot];
+    memo.sampler = draw.samplers[slot];
+    memo.valid = true;
   }
   draw.booleans = (Be32(base, device + kBoolConstants) & 0xFFFF) |
                   ((Be32(base, device + kBoolConstants + 16) & 0xFFFF) << 16);
@@ -318,6 +452,7 @@ void SnapshotBuilder::RecordIndexedDraw(const uint8_t *base, uint32_t device, ui
   s.depth_info = Be32(base, device + kRegs2000 + 0x2 * 4);
   for (uint32_t i = 0; i < 6; ++i)
     s.viewport[i] = BeFloat(base, device + kRegs2100 + (0xF + i) * 4);
+  s.alpha_ref = BeFloat(base, device + kRegs2100 + 0xE * 4);
 
   frame.draws.push_back(draw);
 }
@@ -325,7 +460,7 @@ void SnapshotBuilder::RecordIndexedDraw(const uint8_t *base, uint32_t device, ui
 void SnapshotBuilder::RecordResolve(const uint8_t *base, uint32_t device, uint32_t flags,
                                     uint32_t texture) {
   if (!frame_)
-    frame_ = std::make_unique<FrameRecord>();
+    frame_ = NewFrameRecord();
   if (!texture)
     return;
   // The destination texture object holds its fetch constant at +28.
@@ -335,6 +470,10 @@ void SnapshotBuilder::RecordResolve(const uint8_t *base, uint32_t device, uint32
   if ((fetch[0] & 3) != 2)
     return;
   const uint32_t physical = fetch[1] & 0x1FFFF000u;
+  // A resolve can turn an address into a resolve target mid-frame: forget remembered ids.
+  textures_.EndFrame();
+  for (SlotMemo &memo : slot_memo_)
+    memo.valid = false;
   auto [it, added] = textures_.resolve_targets.emplace(
       physical, uint32_t(textures_.resolve_targets.size()));
   if (it->second >= kResolveSlots)
@@ -355,7 +494,7 @@ void SnapshotBuilder::RecordResolve(const uint8_t *base, uint32_t device, uint32
 void SnapshotBuilder::RecordClear(const uint8_t *base, uint32_t device, uint32_t flags,
                                   uint32_t color, float depth, uint32_t stencil) {
   if (!frame_)
-    frame_ = std::make_unique<FrameRecord>();
+    frame_ = NewFrameRecord();
   ClearRecord c;
   c.before_draw = uint32_t(frame_->draws.size());
   c.sequence = frame_->next_sequence++;
@@ -369,9 +508,33 @@ void SnapshotBuilder::RecordClear(const uint8_t *base, uint32_t device, uint32_t
 }
 
 std::unique_ptr<FrameRecord> SnapshotBuilder::Finish(uint64_t guest_frame) {
+  textures_.EndFrame();
+  for (SlotMemo &memo : slot_memo_)
+    memo.valid = false;
   auto frame = std::move(frame_);
   if (!frame)
-    frame = std::make_unique<FrameRecord>();
+    frame = NewFrameRecord();
+  // Forget vertex ranges unused for ten seconds; their blocks are freed by the renderer.
+  ++frame_number_;
+  if (frame_number_ % 300 == 0) {
+    for (auto it = vertex_cache_.begin(); it != vertex_cache_.end();) {
+      if (frame_number_ - it->second.last_used > 600) {
+        if (it->second.block)
+          freed_blocks_.push_back(it->second.block);
+        it = vertex_cache_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  if (frame_number_ % 300 == 0) {
+    REXLOG_INFO("shadow_snapshot: capture per frame: indices {:.2f} ms, vertices {:.2f} ms, "
+                "constants {:.2f} ms, textures {:.2f} ms",
+                phase_ns[0] / 300e6, phase_ns[1] / 300e6, phase_ns[2] / 300e6, phase_ns[3] / 300e6);
+    std::fill(std::begin(phase_ns), std::end(phase_ns), 0);
+  }
+  frame->freed_vertex_blocks = std::move(freed_blocks_);
+  freed_blocks_.clear();
   frame->guest_frame = guest_frame;
   return frame;
 }

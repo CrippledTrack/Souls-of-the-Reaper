@@ -12,7 +12,7 @@ start = int(sys.argv[3], 16) if len(sys.argv) > 3 else 0x82D40000
 end = int(sys.argv[4], 16) if len(sys.argv) > 4 else 0x82DB0000
 # Hooked elsewhere: present, draw, resolve and clear in draw_trace.cpp, and the shader init functions
 # (shader_capture.cpp).
-skip = {0x82D58DD8, 0x82D692A0, 0x82D66188, 0x82D621B0, 0x82D5B9D0, 0x82D57638}
+skip = {0x82D58DD8, 0x82D692A0, 0x82D66188, 0x82D621B0, 0x82D5B9D0, 0x82D57638, 0x82D61D98}
 
 addresses = sorted({int(a, 16) for a in re.findall(r"DECLARE_REX_FUNC\(sub_([0-9A-F]{8})\)", open(source).read())})
 selected = [a for a in addresses if start <= a < end and a not in skip]

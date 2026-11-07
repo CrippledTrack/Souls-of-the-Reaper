@@ -53,7 +53,8 @@ if(SOULS_TITLE_UPDATE)
     # gpu-layer experiment: --capture_shaders hooks (addresses are update-only).
     list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp
         src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
-        src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp)
+        src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
+        src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp)
     # rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
     find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
         PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
@@ -70,6 +71,22 @@ if(WIN32)
     add_executable(diablo3 WIN32 ${DIABLO3_SOURCES})
 else()
     add_executable(diablo3 ${DIABLO3_SOURCES})
+endif()
+
+# gpu-layer experiment: stage the local XenosRecomp fork (tools/XenosRecomp, git-ignored) next to
+# the executable, so the Vulkan renderer can convert the game's shaders on first run
+# (src/experiments/shadow_shaders.cpp). Skipped when the fork has not been built.
+set(SOULS_XENOSRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/XenosRecomp" CACHE PATH
+    "XenosRecomp fork (source tree with build/) staged for the experimental Vulkan renderer")
+if(SOULS_TITLE_UPDATE AND WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
+    set(_xr_build "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp")
+    add_custom_command(TARGET diablo3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_xr_build}/XenosRecomp.exe" "${_xr_build}/dxcompiler.dll" "${_xr_build}/dxil.dll"
+            "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
+            "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
+        COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")
 endif()
 
 rexglue_setup_target(diablo3)

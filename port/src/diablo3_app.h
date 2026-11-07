@@ -47,8 +47,11 @@ class Diablo3App : public rex::ReXApp {
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
-#if defined(SOULS_GPU_PLUGIN) || defined(SOULS_ENABLE_EXTRA_FEATURES)
+#if defined(SOULS_GPU_PLUGIN) || defined(SOULS_ENABLE_EXTRA_FEATURES) || defined(SOULS_TITLE_UPDATE)
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#ifdef SOULS_TITLE_UPDATE
+    d3::shadow::PreSetup();  // experiment: --shadow_renderer_only presents in the game window
+#endif
 #ifdef SOULS_GPU_PLUGIN
     config.gpu_plugin = "xenos";
 #else
@@ -97,9 +100,15 @@ class Diablo3App : public rex::ReXApp {
     (void)drawer;
     title_ = CreateWindowTelemetry(app_context(), window());
 #ifdef SOULS_TITLE_UPDATE
-    d3::shadow::Initialize(app_context());  // experiment: --shadow_renderer
+    d3::shadow::Initialize(app_context(), user_data_root(), drawer);  // experiment
 #endif
   }
+#ifdef SOULS_TITLE_UPDATE
+  // Experiment: ReXGlue's overlays for the Vulkan renderer when it owns the game window.
+  std::unique_ptr<rex::ui::ImmediateDrawer> OnCreateImmediateDrawer() override {
+    return d3::shadow::CreateOverlayDrawer();
+  }
+#endif
   void OnShutdown() override {
 #ifdef SOULS_TITLE_UPDATE
     d3::shadow::Shutdown();

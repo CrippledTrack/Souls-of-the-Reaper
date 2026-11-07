@@ -1,14 +1,18 @@
-// Experiment (gpu-layer-experiment branch): side-by-side Vulkan renderer.
+// Experiment (gpu-layer-experiment branch): a Vulkan renderer for the game's frames.
 //
 // Its own Vulkan 1.3 device (with the features XenosRecomp's SPIR-V needs: buffer device
-// address, descriptor indexing, 64-bit integers) draws into its own window (opened by ReXGlue
-// on the UI thread). Each guest frame's draws are captured on the game thread
-// (shadow_snapshot.cpp) and replayed here with the shaders XenosRecomp converted ahead of time
-// (--shadow_shader_dir: <vs|ps>_<header hash>.spv).
+// address, descriptor indexing, 64-bit integers) draws either into a second window beside
+// ReXGlue's (--shadow_renderer) or, with --shadow_renderer_only, into a child window that
+// covers the game window while ReXGlue skips the game's draws, clears and resolves. Each guest
+// frame's draws are captured on the game thread (shadow_snapshot.cpp) and replayed here with
+// shaders XenosRecomp converts on the player's machine (shadow_shaders.cpp).
 //
-// Not handled yet: textures (every sampler reads a 1x1 white texture), render targets and
-// resolves (everything draws into the window), culling, stencil, non-indexed draws.
+// Not handled yet: MSAA, stencil, non-indexed draws (see experiments/gpu-layer/RENDERING.md).
 #include "shadow_renderer.h"
+#include "shadow_overlay.h"
+#include "shadow_shaders.h"
+#include "overlay_shaders/immediate_ps.h"
+#include "overlay_shaders/immediate_vs.h"
 #include "shadow_snapshot.h"
 
 #include <rex/cvar.h>
@@ -18,6 +22,8 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include <rex/ui/window.h>
+#include <rex/ui/imgui_dialog.h>
+#include <imgui.h>
 
 #include <algorithm>
 #include <cstring>
@@ -41,6 +47,9 @@
 
 REXCVAR_DEFINE_BOOL(shadow_renderer, false, "Experiments",
                     "Open a second window drawn by the experimental Vulkan renderer");
+REXCVAR_DEFINE_BOOL(shadow_renderer_only, false, "Experiments",
+                    "Draw the game with the experimental Vulkan renderer only, inside the game "
+                    "window; ReXGlue skips the game's draws once the shaders are converted");
 REXCVAR_DEFINE_BOOL(shadow_debug_resolves, false, "Experiments",
                     "Show each colour resolve of the frame in turn (two seconds each) instead of "
                     "the front buffer, logging which one is on screen");
@@ -49,15 +58,27 @@ REXCVAR_DEFINE_INT32(shadow_debug_after_draw, -1, "Experiments",
                      "(-1: off)");
 REXCVAR_DEFINE_INT32(shadow_debug_flags, 0, "Experiments",
                      "Experimental renderer debugging: 1 depth test off, 2 blending off, "
-                     "4 colour writes forced on");
+                     "4 colour writes forced on, 8 no half-pixel offset, 16 culling off");
 REXCVAR_DEFINE_BOOL(shadow_debug_layout, false, "Experiments",
                     "Every 600 frames, log each draw's render target, state and textures, the "
                     "resolves between them, and the vertex constants of draws 1 and 13");
 REXCVAR_DEFINE_STRING(shadow_shader_dir, "", "Experiments",
                       "Folder of XenosRecomp SPIR-V for the experimental renderer "
-                      "(<vs|ps>_<header hash>.spv)");
+                      "(<vs|ps>_<header hash>.spv); empty: convert automatically into the user "
+                      "data folder");
 
 namespace d3::shadow {
+
+namespace {
+// --shadow_renderer_only: set once the Vulkan renderer has taken over from ReXGlue.
+std::atomic<bool> taken_over{false};
+// Set when the SDK lacks the gpu_host_rendering switch (patches/common/
+// rexglue-host-rendering.patch): the hooks then keep the game's draws from ReXGlue instead.
+std::atomic<bool> skip_in_hooks{false};
+// --shadow_renderer_only with the SDK's host_presentation off: the renderer presents into the
+// game window directly and draws ReXGlue's overlays (shadow_overlay.cpp).
+std::atomic<bool> in_game_window{false};
+}  // namespace
 namespace {
 
 using rex::ui::vulkan::VulkanInstance;
@@ -66,7 +87,7 @@ using rex::ui::vulkan::VulkanInstance;
   X(vkDeviceWaitIdle) X(vkResetCommandBuffer) X(vkGetBufferDeviceAddress)       \
   X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
   X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdBlitImage) X(vkCmdCopyImage)  \
-  X(vkQueueWaitIdle) X(vkCmdClearDepthStencilImage)
+  X(vkQueueWaitIdle) X(vkCmdClearDepthStencilImage) X(vkFreeDescriptorSets)
 
 // Device functions, loaded with the same lists ReXGlue uses, plus a few it leaves out.
 struct DeviceFunctions {
@@ -119,6 +140,8 @@ class Renderer {
       thread_.join();
   }
 
+  bool Running() const { return running_.load(std::memory_order_acquire); }
+
   // Takes the guest frame's draws; an older frame the renderer has not started is dropped.
   void OnGuestPresent(std::unique_ptr<FrameRecord> frame) {
     {
@@ -129,9 +152,15 @@ class Renderer {
           frame->new_textures.push_back(std::move(t));
         for (auto &d : pending_->new_samplers)
           frame->new_samplers.push_back(d);
+        for (auto &b : pending_->new_vertex_blocks)
+          frame->new_vertex_blocks.push_back(std::move(b));
+        frame->freed_vertex_blocks.insert(frame->freed_vertex_blocks.end(),
+                                          pending_->freed_vertex_blocks.begin(),
+                                          pending_->freed_vertex_blocks.end());
       }
-      pending_ = std::move(frame);
+      std::swap(pending_, frame);
     }
+    RecycleFrameRecord(std::move(frame));  // the replaced, never-started frame
     signal_.notify_one();
   }
 
@@ -144,6 +173,7 @@ class Renderer {
       return;
     }
     REXLOG_INFO("shadow_renderer: running on {}", device_name_);
+    running_.store(true, std::memory_order_release);
     while (true) {
       std::unique_ptr<FrameRecord> frame;
       {
@@ -153,8 +183,16 @@ class Renderer {
           break;
         frame = std::move(pending_);
       }
-      if (frame)
+      if (frame) {
+        const auto start = std::chrono::steady_clock::now();
         DrawFrame(*frame);
+        stats_render_ns_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - start)
+                                         .count());
+        stats_capture_ns_ += frame->capture_ns;
+        ++stats_frames_;
+        RecycleFrameRecord(std::move(frame));
+      }
     }
     Destroy();
   }
@@ -289,20 +327,113 @@ class Renderer {
     return true;
   }
 
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+  // The game window: the largest visible top-level window of this process.
+  static HWND FindGameWindow() {
+    struct Search {
+      HWND found = nullptr;
+      LONG area = 0;
+    } search;
+    EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+          auto *s = reinterpret_cast<Search *>(param);
+          DWORD pid = 0;
+          GetWindowThreadProcessId(hwnd, &pid);
+          RECT rect{};
+          if (pid == GetCurrentProcessId() && IsWindowVisible(hwnd) && GetClientRect(hwnd, &rect)) {
+            const LONG area = (rect.right - rect.left) * (rect.bottom - rect.top);
+            if (area > s->area) {
+              s->area = area;
+              s->found = hwnd;
+            }
+          }
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&search));
+    return search.found;
+  }
+
+  // A child window over the game window's client area. It never takes input: clicks fall
+  // through to the game window (HTTRANSPARENT) and it is disabled, so keyboard focus stays
+  // with ReXGlue's window and its input handling. Hidden until the renderer takes over.
+  static LRESULT CALLBACK ChildProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    switch (message) {
+      case WM_NCHITTEST:
+        return HTTRANSPARENT;
+      case WM_ERASEBKGND:
+        return 1;
+      case WM_PAINT:
+        ValidateRect(hwnd, nullptr);
+        return 0;
+      default:
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+  }
+
+  HWND CreateChildWindow(HWND parent) {
+    static const wchar_t *kClass = L"SotrVulkanChild";
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = ChildProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kClass;
+    RegisterClassW(&wc);  // fails harmlessly when already registered
+    RECT rect{};
+    GetClientRect(parent, &rect);
+    return CreateWindowExW(WS_EX_NOPARENTNOTIFY, kClass, L"", WS_CHILD | WS_DISABLED, 0, 0,
+                           std::max<LONG>(rect.right, 1), std::max<LONG>(rect.bottom, 1), parent,
+                           nullptr, wc.hInstance, nullptr);
+  }
+#endif
+
   bool CreateWindowAndSurface() {
-    // ReXGlue (a DLL with its own copy of SDL) creates and pumps the window on the UI thread.
-    // It gets no presenter, so ReXGlue never draws into it; this renderer owns its surface.
-    context_.CallInUIThreadSynchronous([this] {
-      window_ = rex::ui::Window::Create(context_, kWindowTitle, 1280, 720);
-      if (window_ && !window_->Open())
-        window_.reset();
-    });
-    if (!window_) {
-      REXLOG_ERROR("shadow_renderer: cannot open the second window");
-      return false;
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    if (in_game_window.load()) {
+      // ReXGlue attached no presenter, so the game window's surface is ours.
+      for (int attempt = 0; attempt < 50 && !hwnd_; ++attempt) {
+        context_.CallInUIThreadSynchronous([this] { hwnd_ = FindGameWindow(); });
+        if (!hwnd_)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (!hwnd_) {
+        REXLOG_ERROR("shadow_renderer: cannot find the game window");
+        return false;
+      }
+    } else if (REXCVAR_GET(shadow_renderer_only)) {
+      // Child windows belong to the thread that creates them, so create it on the UI thread,
+      // whose message loop then serves it.
+      // The game window may not be shown yet when this thread starts: give it a few seconds.
+      for (int attempt = 0; attempt < 50 && !hwnd_; ++attempt) {
+        context_.CallInUIThreadSynchronous([this] {
+          parent_ = FindGameWindow();
+          if (parent_)
+            hwnd_ = CreateChildWindow(parent_);
+        });
+        if (!hwnd_)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (!hwnd_) {
+        REXLOG_ERROR("shadow_renderer: cannot create a window inside the game window");
+        return false;
+      }
+    }
+#endif
+    if (!hwnd_) {
+      // ReXGlue (a DLL with its own copy of SDL) creates and pumps the window on the UI
+      // thread. It gets no presenter, so ReXGlue never draws into it; this renderer owns its
+      // surface.
+      context_.CallInUIThreadSynchronous([this] {
+        window_ = rex::ui::Window::Create(context_, kWindowTitle, 1280, 720);
+        if (window_ && !window_->Open())
+          window_.reset();
+      });
+      if (!window_) {
+        REXLOG_ERROR("shadow_renderer: cannot open the second window");
+        return false;
+      }
     }
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-    hwnd_ = FindOwnWindow(kWindowTitle);
+    if (!hwnd_)
+      hwnd_ = FindOwnWindow(kWindowTitle);
     HWND hwnd = hwnd_;
     VkWin32SurfaceCreateInfoKHR surface_info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     surface_info.hinstance = GetModuleHandleW(nullptr);
@@ -433,6 +564,21 @@ class Renderer {
   // --- Per frame ---------------------------------------------------------------------------
 
   void DrawFrame(FrameRecord &guest) {
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    if (parent_) {
+      RECT outer{}, inner{};
+      GetClientRect(parent_, &outer);
+      GetClientRect(hwnd_, &inner);
+      const bool show = taken_over.load(std::memory_order_acquire);
+      if (outer.right != inner.right || outer.bottom != inner.bottom || show != child_shown_) {
+        // Asynchronous: the UI thread may be busy, and must never be waited on from here.
+        SetWindowPos(hwnd_, HWND_TOP, 0, 0, std::max<LONG>(outer.right, 1),
+                     std::max<LONG>(outer.bottom, 1),
+                     SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | (show ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+        child_shown_ = show;
+      }
+    }
+#endif
     int width = 0, height = 0;
     ClientSize(&width, &height);
     if (width <= 0 || height <= 0)
@@ -468,17 +614,33 @@ class Renderer {
     ProcessUploads(cmd, frame, guest);
 
     Target *shown = RecordDraws(cmd, frame, guest);
+    // Presenting in the game window: show nothing of the game until its shaders are
+    // converted (a first run), only the progress overlay, rather than a half-drawn frame.
+    if (in_game_window.load(std::memory_order_relaxed) && !shaders::Ready())
+      shown = nullptr;
 
     Barrier(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     if (shown) {
+      // Letterboxed like ReXGlue's presenter: keep the guest image's aspect ratio.
+      const VkClearColorValue bars = {{0.0f, 0.0f, 0.0f, 1.0f}};
+      const VkImageSubresourceRange whole{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      dfn_.vkCmdClearColorImage(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                &bars, 1, &whole);
+      const float sw = float(swapchain_extent_.width), sh = float(swapchain_extent_.height);
+      const float scale = std::min(sw / float(shown->width), sh / float(shown->height));
+      const int32_t w = std::max(int32_t(float(shown->width) * scale + 0.5f), 1);
+      const int32_t h = std::max(int32_t(float(shown->height) * scale + 0.5f), 1);
+      const int32_t x = (int32_t(swapchain_extent_.width) - w) / 2;
+      const int32_t y = (int32_t(swapchain_extent_.height) - h) / 2;
       Transition(cmd, *shown, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
       VkImageBlit blit{};
       blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       blit.srcOffsets[1] = {int32_t(shown->width), int32_t(shown->height), 1};
       blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      blit.dstOffsets[1] = {int32_t(swapchain_extent_.width), int32_t(swapchain_extent_.height), 1};
+      blit.dstOffsets[0] = {x, y, 0};
+      blit.dstOffsets[1] = {x + w, y + h, 1};
       dfn_.vkCmdBlitImage(cmd, shown->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                           swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                           VK_FILTER_LINEAR);
@@ -489,9 +651,22 @@ class Renderer {
       dfn_.vkCmdClearColorImage(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 &black, 1, &range);
     }
-    Barrier(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    if (in_game_window.load(std::memory_order_relaxed)) {
+      // ReXGlue's overlays on top: recorded on the UI thread, drawn here.
+      overlay::RequestFrame(context_, swapchain_extent_.width, swapchain_extent_.height);
+      Barrier(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+      DrawOverlay(cmd, frame, image);
+      Barrier(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
+              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    } else {
+      Barrier(cmd, swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
     dfn_.vkEndCommandBuffer(cmd);
 
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -780,6 +955,7 @@ class Renderer {
   struct Shader {
     VkShaderModule module = VK_NULL_HANDLE;
     std::vector<VertexInput> inputs;  // vertex shaders only
+    uint32_t generation = 0;          // converter generation when the file was looked for
   };
 
   // Vertex inputs from the SPIR-V: DXC names them in.var.<SEMANTIC><index>.
@@ -842,14 +1018,21 @@ class Renderer {
 
   const Shader *GetShader(bool pixel, uint64_t hash) {
     const auto key = std::make_pair(pixel, hash);
-    if (auto found = shaders_.find(key); found != shaders_.end())
-      return found->second.module ? &found->second : nullptr;
+    if (auto found = shaders_.find(key); found != shaders_.end()) {
+      if (found->second.module)
+        return &found->second;
+      // Missing: look again once the converter has delivered more shaders.
+      if (found->second.generation == shaders::Generation())
+        return nullptr;
+      shaders_.erase(found);
+    }
     Shader &shader = shaders_[key];
-    const auto path = std::filesystem::path(REXCVAR_GET(shadow_shader_dir)) /
-                      fmt::format("{}_{:016x}.spv", pixel ? "ps" : "vs", hash);
+    shader.generation = shaders::Generation();
+    const auto path =
+        shaders::SpirvDir() / fmt::format("{}_{:016x}.spv", pixel ? "ps" : "vs", hash);
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-      if (missing_shaders_++ < 5)
+      if (!REXCVAR_GET(shadow_shader_dir).empty() && missing_shaders_++ < 5)
         REXLOG_WARN("shadow_renderer: no SPIR-V at {}", path.string());
       return nullptr;
     }
@@ -912,6 +1095,41 @@ class Renderer {
     }
   }
 
+  // Guest winding mapped to Vulkan's (framebuffer y points down in both).
+  static constexpr VkFrontFace kClockwiseFront = VK_FRONT_FACE_CLOCKWISE;
+  static constexpr VkFrontFace kCounterClockwiseFront = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+  // RB_COLORCONTROL alpha test: bit 3 enable, bits 0-2 function (D3DCMP - 1). XenosRecomp
+  // only implements "pass if alpha >= ref", which covers GREATER and GREATEREQUAL; NEVER and
+  // ALWAYS make the test meaningless and the LESS variants are not supported.
+  static bool AlphaTestEnabled(uint32_t color_control) {
+    if (!(color_control & 8))
+      return false;
+    const uint32_t func = color_control & 7;
+    if (func == 4 || func == 6)
+      return true;
+    if (func != 7) {
+      static uint32_t logged = 0;
+      if (!(logged & (1u << func))) {
+        logged |= 1u << func;
+        REXLOG_WARN("shadow: unsupported alpha test function {}", func);
+      }
+    }
+    return false;
+  }
+
+  // RB_COLORCONTROL bit 4: alpha to coverage. Targets are rendered single-sampled, so it is
+  // approximated by discarding below half alpha (where most samples would be uncovered).
+  static bool AlphaToCoverage(uint32_t color_control) { return (color_control >> 4) & 1; }
+
+  // Spec constant bit SPEC_CONSTANT_ALPHA_TEST, and the threshold the shader clips against.
+  static bool AlphaClip(const decltype(DrawRecord::state) &s, float *threshold) {
+    const bool test = AlphaTestEnabled(s.color_control);
+    const bool coverage = AlphaToCoverage(s.color_control);
+    *threshold = std::max(test ? s.alpha_ref : 0.0f, coverage ? 0.5f : 0.0f);
+    return test || coverage;
+  }
+
   VkPipeline GetPipeline(const DrawRecord &draw, const VertexLayout &layout, VkFormat color_format) {
     bool supported;
     const VkPrimitiveTopology topology = Topology(draw.primitive, &supported);
@@ -920,6 +1138,9 @@ class Renderer {
     std::string key = fmt::format("{:016x}/{:016x}/{}/{:08x}/{:x}/{}/", draw.vertex_shader,
                                   draw.pixel_shader, int(topology), draw.state.blend_control,
                                   draw.state.color_mask & 0xF, int(color_format));
+    float unused_threshold;
+    const uint32_t spec_constants = AlphaClip(draw.state, &unused_threshold) ? 2u : 0u;  // SPEC_CONSTANT_ALPHA_TEST
+    key += fmt::format("{}/", spec_constants);
     for (const auto &e : layout.elements)
       key += fmt::format("{}.{},", e.usage, e.index);
     if (auto found = pipelines_.find(key); found != pipelines_.end())
@@ -928,9 +1149,15 @@ class Renderer {
 
     const Shader *vs = GetShader(false, draw.vertex_shader);
     const Shader *ps = draw.pixel_shader ? GetShader(true, draw.pixel_shader) : nullptr;
-    if (!vs || (draw.pixel_shader && !ps))
+    if (!vs || (draw.pixel_shader && !ps)) {
+      pipelines_.erase(key);  // not converted yet; try again later
       return VK_NULL_HANDLE;
+    }
 
+    // XenosRecomp's g_SpecConstants (constant_id 0): alpha test is compiled into every pixel
+    // shader behind it as clip(oC0.w - g_AlphaThreshold).
+    const VkSpecializationMapEntry spec_entry{0, 0, 4};
+    const VkSpecializationInfo specialization{1, &spec_entry, 4, &spec_constants};
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
@@ -941,6 +1168,7 @@ class Renderer {
       stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
       stages[1].module = ps->module;
       stages[1].pName = "main";
+      stages[1].pSpecializationInfo = &specialization;
     }
 
     // Binding 0: the converted vertices (16 bytes per attribute); binding 1: zeros for
@@ -1111,7 +1339,9 @@ class Renderer {
     info.addressModeV = AddressMode(desc.clamp[1]);
     info.addressModeW = AddressMode(desc.clamp[2]);
     info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    info.maxLod = 0.0f;  // base level only for now
+    // Mip filter 2 (base map) samples level 0 only.
+    info.maxLod = desc.mip == 2 ? 0.0f : VK_LOD_CLAMP_NONE;
+    info.mipLodBias = float(desc.lod_bias) / 32.0f;
     if (dfn_.vkCreateSampler(device_, &info, nullptr, &samplers_[desc.id]) != VK_SUCCESS)
       return;
     VkDescriptorImageInfo image{samplers_[desc.id], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
@@ -1149,17 +1379,20 @@ class Renderer {
   void UploadTexture(VkCommandBuffer cmd, Frame &frame, const TextureUpload &upload,
                      VkDeviceSize staging) {
     const bool volume = upload.id & kTexture3DBit;
-    const uint32_t slot = upload.id & 0x7FFF;
-    if (slot == 0 || slot >= (volume ? kDescriptorSlots[1] : kDescriptorSlots[0]))
+    const bool cube = !volume && (upload.id & kTextureCubeBit);
+    const uint32_t slot = upload.id & (volume ? 0x7FFF : 0x3FFF);
+    const uint32_t set = volume ? 1 : cube ? 2 : 0;
+    if (slot == 0 || slot >= kDescriptorSlots[set])
       return;
-    Image &image = volume ? textures_3d_[slot] : textures_[slot];
+    Image &image = volume ? textures_3d_[slot] : cube ? textures_cube_[slot] : textures_[slot];
     const VkFormat format = HostFormat(upload.format);
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     info.format = format;
     info.extent = {upload.width, upload.height, upload.depth};
-    info.mipLevels = 1;
-    info.arrayLayers = 1;
+    info.mipLevels = upload.levels;
+    info.arrayLayers = upload.layers;
+    info.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -1179,11 +1412,13 @@ class Renderer {
     dfn_.vkBindImageMemory(device_, image.image, image.memory, 0);
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = image.image;
-    view.viewType = volume ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType = volume ? VK_IMAGE_VIEW_TYPE_3D
+                    : cube ? VK_IMAGE_VIEW_TYPE_CUBE
+                           : VK_IMAGE_VIEW_TYPE_2D;
     view.format = format;
     view.components = {Component(upload.swizzle & 7), Component((upload.swizzle >> 3) & 7),
                        Component((upload.swizzle >> 6) & 7), Component((upload.swizzle >> 9) & 7)};
-    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, upload.levels, 0, upload.layers};
     if (dfn_.vkCreateImageView(device_, &view, nullptr, &image.view) != VK_SUCCESS) {
       DestroyImage(image);
       return;
@@ -1196,15 +1431,20 @@ class Renderer {
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image.image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, upload.levels, 0, upload.layers};
     dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                               0, 0, nullptr, 0, nullptr, 1, &barrier);
-    VkBufferImageCopy copy{};
-    copy.bufferOffset = staging;
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {upload.width, upload.height, upload.depth};
+    VkBufferImageCopy copies[16]{};
+    for (uint32_t level = 0; level < upload.levels && level < 16; ++level) {
+      VkBufferImageCopy &copy = copies[level];
+      copy.bufferOffset = staging + upload.level_offsets[level];
+      copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, upload.layers};
+      copy.imageExtent = {std::max(upload.width >> level, 1u), std::max(upload.height >> level, 1u),
+                          std::max(upload.depth >> level, 1u)};
+    }
     dfn_.vkCmdCopyBufferToImage(cmd, frame.arena.buffer, image.image,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                std::min(upload.levels, 16u), copies);
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1216,7 +1456,7 @@ class Renderer {
     VkDescriptorImageInfo descriptor{VK_NULL_HANDLE, image.view,
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = sets_[volume ? 1 : 0];
+    write.dstSet = sets_[set];
     write.dstArrayElement = slot;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -1409,6 +1649,401 @@ class Renderer {
     }
   }
 
+  // --- Overlays (ReXGlue's ImGui, in the game window) ----------------------------------------
+
+  struct OverlayTexture {
+    Image image;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+  };
+
+  bool CreateOverlayResources() {
+    // Set 0 binding 0: a combined image sampler; push constant: the inverse coordinate space
+    // size (ReXGlue's immediate drawer interface, whose SPIR-V is vendored).
+    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_info.bindingCount = 1;
+    set_info.pBindings = &binding;
+    if (dfn_.vkCreateDescriptorSetLayout(device_, &set_info, nullptr, &overlay_set_layout_) !=
+        VK_SUCCESS)
+      return false;
+    VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
+    VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &overlay_set_layout_;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &push;
+    if (dfn_.vkCreatePipelineLayout(device_, &layout, nullptr, &overlay_layout_) != VK_SUCCESS)
+      return false;
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kOverlayTextures};
+    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool.maxSets = kOverlayTextures;
+    pool.poolSizeCount = 1;
+    pool.pPoolSizes = &size;
+    if (dfn_.vkCreateDescriptorPool(device_, &pool, nullptr, &overlay_pool_) != VK_SUCCESS)
+      return false;
+    for (int linear = 0; linear < 2; ++linear)
+      for (int repeat = 0; repeat < 2; ++repeat) {
+        VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        info.magFilter = info.minFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        info.addressModeU = info.addressModeV = info.addressModeW =
+            repeat ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxLod = 0.0f;
+        dfn_.vkCreateSampler(device_, &info, nullptr, &overlay_samplers_[linear * 2 + repeat]);
+      }
+    // Texture 0: white, for untextured draws.
+    overlay::Texture white;
+    white.width = white.height = 1;
+    white.rgba = {255, 255, 255, 255};
+    return CreateOverlayTexture(white, overlay_white_);
+  }
+
+  bool CreateOverlayTexture(const overlay::Texture &source, OverlayTexture &out) {
+    if (!CreateImage(VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
+                     {source.width, source.height, 1}, 1,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT, out.image))
+      return false;
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = overlay_pool_;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &overlay_set_layout_;
+    if (dfn_.vkAllocateDescriptorSets(device_, &alloc, &out.set) != VK_SUCCESS) {
+      DestroyImage(out.image);
+      return false;
+    }
+    VkDescriptorImageInfo info{overlay_samplers_[(source.linear ? 2 : 0) + (source.repeat ? 1 : 0)],
+                               out.image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = out.set;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    dfn_.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    overlay_uploads_.push_back({&out, source.width, source.height, source.rgba});
+    return true;
+  }
+
+  void DestroyOverlayTexture(OverlayTexture &texture) {
+    if (texture.set)
+      dfn_.vkFreeDescriptorSets(device_, overlay_pool_, 1, &texture.set);
+    DestroyImage(texture.image);
+    texture = {};
+  }
+
+  VkPipeline OverlayPipeline(bool lines) {
+    VkPipeline &pipeline = overlay_pipelines_[lines ? 1 : 0];
+    if (overlay_pipeline_format_ != swapchain_format_) {
+      for (VkPipeline &p : overlay_pipelines_)
+        if (p) {
+          dfn_.vkDestroyPipeline(device_, p, nullptr);
+          p = VK_NULL_HANDLE;
+        }
+      overlay_pipeline_format_ = swapchain_format_;
+    }
+    if (pipeline)
+      return pipeline;
+    VkShaderModule modules[2] = {};
+    const std::pair<const uint32_t *, size_t> code[2] = {{immediate_vs, sizeof(immediate_vs)},
+                                                         {immediate_ps, sizeof(immediate_ps)}};
+    for (int i = 0; i < 2; ++i) {
+      VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+      info.codeSize = code[i].second;
+      info.pCode = code[i].first;
+      dfn_.vkCreateShaderModule(device_, &info, nullptr, &modules[i]);
+    }
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = modules[0];
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = modules[1];
+    stages[1].pName = "main";
+    VkVertexInputBindingDescription binding{0, sizeof(overlay::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attributes[3] = {
+        {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(overlay::Vertex, x)},
+        {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(overlay::Vertex, u)},
+        {2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(overlay::Vertex, color)}};
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &binding;
+    vertex_input.vertexAttributeDescriptionCount = 3;
+    vertex_input.pVertexAttributeDescriptions = attributes;
+    VkPipelineInputAssemblyStateCreateInfo assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = lines ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = 0xF;
+    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    blending.attachmentCount = 1;
+    blending.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &swapchain_format_;
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &rendering};
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &blending;
+    info.pDynamicState = &dynamic;
+    info.layout = overlay_layout_;
+    dfn_.vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    for (VkShaderModule m : modules)
+      dfn_.vkDestroyShaderModule(device_, m, nullptr);
+    return pipeline;
+  }
+
+  // Draws the latest overlay recording into swapchain image `image` (colour attachment layout).
+  void DrawOverlay(VkCommandBuffer cmd, Frame &frame, uint32_t image) {
+    if (!overlay_layout_ && !CreateOverlayResources())
+      return;
+    // Texture changes from the UI thread; uploads go through this frame's arena.
+    std::vector<overlay::Texture> created;
+    std::vector<uint32_t> released;
+    overlay::TakeTextureChanges(created, released);
+    for (const overlay::Texture &t : created)
+      CreateOverlayTexture(t, overlay_textures_[t.id]);
+    for (uint32_t id : released) {
+      if (auto it = overlay_textures_.find(id); it != overlay_textures_.end()) {
+        overlay_retired_.emplace_back(block_clock_, it->second);
+        overlay_textures_.erase(it);
+      }
+    }
+    while (!overlay_retired_.empty() &&
+           block_clock_ - overlay_retired_.front().first > kFramesInFlight + 1) {
+      DestroyOverlayTexture(overlay_retired_.front().second);
+      overlay_retired_.pop_front();
+    }
+    std::shared_ptr<const overlay::Frame> recording = overlay::LatestFrame();
+    const bool has_draws = recording && !recording->commands.empty();
+    if (overlay_uploads_.empty() && !has_draws)
+      return;
+
+    // Pending texture uploads (outside rendering).
+    if (!overlay_uploads_.empty()) {
+      // Leave the colour attachment while copying.
+      for (const OverlayUpload &upload : overlay_uploads_) {
+        const VkDeviceSize bytes = VkDeviceSize(upload.width) * upload.height * 4;
+        const VkDeviceSize at = Reserve(frame.arena, bytes, 16);
+        if (at == VK_WHOLE_SIZE)
+          continue;
+        std::memcpy(frame.arena.mapped + at, upload.rgba.data(), bytes);
+        Barrier(cmd, upload.target->image.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = at;
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {upload.width, upload.height, 1};
+        dfn_.vkCmdCopyBufferToImage(cmd, frame.arena.buffer, upload.target->image.image,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        Barrier(cmd, upload.target->image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      }
+      overlay_uploads_.clear();
+    }
+    if (!has_draws)
+      return;
+    // A recording for a different size (the window was just resized) would be misplaced.
+    if (recording->target_width != swapchain_extent_.width ||
+        recording->target_height != swapchain_extent_.height)
+      return;
+
+    const VkDeviceSize vertex_bytes = recording->vertices.size() * sizeof(overlay::Vertex);
+    const VkDeviceSize index_bytes = recording->indices.size() * sizeof(uint16_t);
+    const VkDeviceSize vertices = Reserve(frame.arena, vertex_bytes, 16);
+    const VkDeviceSize indices = Reserve(frame.arena, std::max<VkDeviceSize>(index_bytes, 4), 16);
+    if (vertices == VK_WHOLE_SIZE || indices == VK_WHOLE_SIZE)
+      return;
+    std::memcpy(frame.arena.mapped + vertices, recording->vertices.data(), vertex_bytes);
+    if (index_bytes)
+      std::memcpy(frame.arena.mapped + indices, recording->indices.data(), index_bytes);
+
+    VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = swapchain_views_[image];
+    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea = {{0, 0}, swapchain_extent_};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &attachment;
+    dfn_.vkCmdBeginRendering(cmd, &rendering);
+    const VkViewport viewport{0, 0, float(swapchain_extent_.width),
+                              float(swapchain_extent_.height), 0, 1};
+    dfn_.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    dfn_.vkCmdBindVertexBuffers(cmd, 0, 1, &frame.arena.buffer, &vertices);
+    dfn_.vkCmdBindIndexBuffer(cmd, frame.arena.buffer, indices, VK_INDEX_TYPE_UINT16);
+    dfn_.vkCmdPushConstants(cmd, overlay_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8,
+                            recording->coordinate_size_inv);
+    VkPipeline bound = VK_NULL_HANDLE;
+    VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    for (const overlay::Command &c : recording->commands) {
+      const VkPipeline pipeline = OverlayPipeline(c.lines);
+      if (!pipeline)
+        continue;
+      if (pipeline != bound) {
+        dfn_.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        bound = pipeline;
+      }
+      VkDescriptorSet set = overlay_white_.set;
+      if (c.texture) {
+        auto it = overlay_textures_.find(c.texture);
+        if (it == overlay_textures_.end())
+          continue;
+        set = it->second.set;
+      }
+      if (set != bound_set) {
+        dfn_.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, overlay_layout_, 0, 1,
+                                     &set, 0, nullptr);
+        bound_set = set;
+      }
+      const VkRect2D scissor{{int32_t(c.scissor[0]), int32_t(c.scissor[1])},
+                             {c.scissor[2], c.scissor[3]}};
+      dfn_.vkCmdSetScissor(cmd, 0, 1, &scissor);
+      if (c.indexed)
+        dfn_.vkCmdDrawIndexed(cmd, c.count, 1, c.first_index, c.base_vertex, 0);
+      else
+        dfn_.vkCmdDraw(cmd, c.count, 1, uint32_t(c.base_vertex), 0);
+    }
+    dfn_.vkCmdEndRendering(cmd);
+  }
+
+  void DestroyOverlayResources() {
+    for (auto &[id, texture] : overlay_textures_)
+      DestroyOverlayTexture(texture);
+    for (auto &[when, texture] : overlay_retired_)
+      DestroyOverlayTexture(texture);
+    DestroyOverlayTexture(overlay_white_);
+    for (VkPipeline p : overlay_pipelines_)
+      if (p)
+        dfn_.vkDestroyPipeline(device_, p, nullptr);
+    for (VkSampler sampler : overlay_samplers_)
+      if (sampler)
+        dfn_.vkDestroySampler(device_, sampler, nullptr);
+    if (overlay_pool_)
+      dfn_.vkDestroyDescriptorPool(device_, overlay_pool_, nullptr);
+    if (overlay_layout_)
+      dfn_.vkDestroyPipelineLayout(device_, overlay_layout_, nullptr);
+    if (overlay_set_layout_)
+      dfn_.vkDestroyDescriptorSetLayout(device_, overlay_set_layout_, nullptr);
+  }
+
+  // --- Vertex blocks -----------------------------------------------------------------------
+
+  // Blocks are packed into 32 MiB host-visible chunks (one Vulkan allocation each, since
+  // drivers allow only a few thousand allocations), first fit, with neighbouring free ranges
+  // merged. A block larger than a chunk gets a chunk of its own size.
+  struct VertexChunk {
+    Buffer buffer;
+    std::map<VkDeviceSize, VkDeviceSize> free;  // offset -> size
+  };
+  struct BlockPlace {
+    uint32_t chunk = 0;
+    VkDeviceSize offset = 0, size = 0;
+  };
+  static constexpr VkDeviceSize kVertexChunkSize = VkDeviceSize(32) << 20;
+
+  bool PlaceBlock(VkDeviceSize size, BlockPlace &place) {
+    size = (size + 255) & ~VkDeviceSize(255);
+    for (uint32_t c = 0; c < vertex_chunks_.size(); ++c) {
+      auto &free = vertex_chunks_[c].free;
+      for (auto it = free.begin(); it != free.end(); ++it) {
+        if (it->second < size)
+          continue;
+        place = {c, it->first, size};
+        const VkDeviceSize rest_offset = it->first + size, rest = it->second - size;
+        free.erase(it);
+        if (rest)
+          free.emplace(rest_offset, rest);
+        return true;
+      }
+    }
+    VertexChunk chunk;
+    const VkDeviceSize chunk_size = std::max(kVertexChunkSize, size);
+    if (!CreateHostBuffer(chunk_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, chunk.buffer))
+      return false;
+    if (chunk_size > size)
+      chunk.free.emplace(size, chunk_size - size);
+    vertex_chunks_.push_back(std::move(chunk));
+    place = {uint32_t(vertex_chunks_.size() - 1), 0, size};
+    return true;
+  }
+
+  void ReleaseBlock(const BlockPlace &place) {
+    auto &free = vertex_chunks_[place.chunk].free;
+    auto [it, inserted] = free.emplace(place.offset, place.size);
+    if (auto next = std::next(it); next != free.end() && it->first + it->second == next->first) {
+      it->second += next->second;
+      free.erase(next);
+    }
+    if (it != free.begin()) {
+      auto prev = std::prev(it);
+      if (prev->first + prev->second == it->first) {
+        prev->second += it->second;
+        free.erase(it);
+      }
+    }
+  }
+
+  // New blocks are copied into a chunk; freed ones are released once no frame in flight can
+  // still be drawing them.
+  void UpdateVertexBlocks(const FrameRecord &guest) {
+    ++block_clock_;
+    while (!retired_blocks_.empty() &&
+           block_clock_ - retired_blocks_.front().first > kFramesInFlight + 1) {
+      ReleaseBlock(retired_blocks_.front().second);
+      retired_blocks_.pop_front();
+    }
+    for (uint32_t id : guest.freed_vertex_blocks) {
+      if (auto it = vertex_blocks_.find(id); it != vertex_blocks_.end()) {
+        retired_blocks_.emplace_back(block_clock_, it->second);
+        vertex_blocks_.erase(it);
+      }
+    }
+    for (const VertexBlock &block : guest.new_vertex_blocks) {
+      BlockPlace place;
+      if (block.data.empty() || !PlaceBlock(block.data.size(), place))
+        continue;
+      std::memcpy(vertex_chunks_[place.chunk].buffer.mapped + place.offset, block.data.data(),
+                  block.data.size());
+      vertex_block_bytes_ += block.data.size();
+      vertex_blocks_[block.id] = place;
+    }
+  }
+
   // --- Draws -------------------------------------------------------------------------------
 
   // Replays the guest frame into the render targets; returns the image to present (the last
@@ -1427,6 +2062,7 @@ class Renderer {
     }
     std::memcpy(arena.mapped + vertices, guest.vertices.data(), guest.vertices.size());
     std::memcpy(arena.mapped + indices, guest.indices.data(), guest.indices.size() * 4);
+    UpdateVertexBlocks(guest);
 
     if (REXCVAR_GET(shadow_debug_layout) && guest.guest_frame % 600 == 0) {
       // Layout dump: which target each draw renders into, and where resolves fall.
@@ -1451,10 +2087,11 @@ class Renderer {
           if (d.textures[t])
             tex += fmt::format(" t{}={}", t, d.textures[t]);
         REXLOG_INFO("shadow_layout: draw {} prim {} idx {} surface {:08x} colour {:08x} depth "
-                    "{:08x} dctl {:08x} blend {:08x} mask {:x} vp {:.0f},{:.0f} {:.0f}x{:.0f} vs {:016x} "
+                    "{:08x} dctl {:08x} cctl {:08x} mode {:08x} blend {:08x} mask {:x} vp {:.0f},{:.0f} {:.0f}x{:.0f} vs {:016x} "
                     "ps {:016x}{}",
                     i, d.primitive, d.index_count, d.state.surface_info, d.state.color_info,
-                    d.state.depth_info, d.state.depth_control, d.state.blend_control,
+                    d.state.depth_info, d.state.depth_control, d.state.color_control,
+                    d.state.mode_control, d.state.blend_control,
                     d.state.color_mask & 0xF, d.state.viewport[1] - std::abs(d.state.viewport[0]),
                     d.state.viewport[3] - std::abs(d.state.viewport[2]),
                     2 * std::abs(d.state.viewport[0]), 2 * std::abs(d.state.viewport[2]),
@@ -1575,8 +2212,8 @@ class Renderer {
       dfn_.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
       std::memcpy(arena.mapped + constants, &guest.constants[draw.constants], 512 * 16);
       uint8_t *shared = arena.mapped + constants + 512 * 16;
-      // Shared constants: per sampler register r, the Texture2D index at r*4 (3D and cube
-      // indices at 64 + r*4 and 128 + r*4 stay 0), the sampler index at 192 + r*4.
+      // Shared constants: per sampler register r, the Texture2D index at r*4, the Texture3D
+      // index at 64 + r*4, the TextureCube index at 128 + r*4, the sampler index at 192 + r*4.
       std::memset(shared, 0, kSharedConstantsSize);
       for (uint32_t r = 0; r < kTextureSlots; ++r) {
         uint32_t texture = draw.textures[r];
@@ -1584,6 +2221,11 @@ class Renderer {
           // Volumes: index into the Texture3D array at 64 + r*4.
           const uint32_t volume = textures_ready_.count(texture) ? texture & 0x7FFF : 0;
           std::memcpy(shared + 64 + r * 4, &volume, 4);
+          texture = 0;
+        } else if (texture & kTextureCubeBit) {
+          // Cube maps: index into the TextureCube array at 128 + r*4.
+          const uint32_t cube = textures_ready_.count(texture) ? texture & 0x3FFF : 0;
+          std::memcpy(shared + 128 + r * 4, &cube, 4);
           texture = 0;
         } else if (texture >= kResolveIdBase ? !resolved_ready_.count(texture - kResolveIdBase)
                                              : !textures_ready_.count(texture)) {
@@ -1594,6 +2236,17 @@ class Renderer {
         std::memcpy(shared + 192 + r * 4, &sampler, 4);
       }
       std::memcpy(shared + 256, &draw.booleans, 4);
+      float alpha_threshold;
+      AlphaClip(s, &alpha_threshold);
+      std::memcpy(shared + 272, &alpha_threshold, 4);  // g_AlphaThreshold
+      // g_HalfPixelOffset: D3D9 puts pixel centres at integer coordinates, Vulkan at +0.5. The
+      // shaders add this times w to the clip position: half a pixel right and down, in clip
+      // units of the viewport (PA_CL_VPORT x/y scale = half the viewport size).
+      if (!(REXCVAR_GET(shadow_debug_flags) & 8)) {
+        const float vx = std::abs(s.viewport[0]), vy = std::abs(s.viewport[2]);
+        const float half_pixel[2] = {vx > 0 ? 0.5f / vx : 0.0f, vy > 0 ? -0.5f / vy : 0.0f};
+        std::memcpy(shared + 264, half_pixel, 8);
+      }
       const VkDeviceAddress push[3] = {arena.address + constants,
                                        arena.address + constants + 256 * 16,
                                        arena.address + constants + 512 * 16};
@@ -1617,14 +2270,38 @@ class Renderer {
       }
       dfn_.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
+      // PA_SU_SC_MODE_CNTL: bit 0 cull front, bit 1 cull back, bit 2 clockwise is front.
+      // Triangles only; flag 16 turns culling off for comparison.
+      const uint32_t m = s.mode_control;
+      VkCullModeFlags cull = VK_CULL_MODE_NONE;
+      if (!(REXCVAR_GET(shadow_debug_flags) & 16) && draw.primitive >= 4 && draw.primitive <= 6) {
+        if (m & 1)
+          cull |= VK_CULL_MODE_FRONT_BIT;
+        if (m & 2)
+          cull |= VK_CULL_MODE_BACK_BIT;
+      }
+      dfn_.vkCmdSetCullMode(cmd, cull);
+      dfn_.vkCmdSetFrontFace(cmd, (m & 4) ? kClockwiseFront : kCounterClockwiseFront);
+
       // RB_DEPTHCONTROL: bit 1 test, bit 2 write, bits 4-6 function (same order as VkCompareOp).
       const uint32_t d = s.depth_control;
       dfn_.vkCmdSetDepthTestEnable(cmd, (REXCVAR_GET(shadow_debug_flags) & 1) ? 0 : (d >> 1) & 1);
       dfn_.vkCmdSetDepthWriteEnable(cmd, (d >> 2) & 1);
       dfn_.vkCmdSetDepthCompareOp(cmd, VkCompareOp((d >> 4) & 7));
 
-      const VkDeviceSize vertex_offset = vertices + draw.first_vertex;
-      dfn_.vkCmdBindVertexBuffers(cmd, 0, 1, &arena.buffer, &vertex_offset);
+      if (draw.vertex_block) {
+        auto block = vertex_blocks_.find(draw.vertex_block);
+        if (block == vertex_blocks_.end()) {
+          ++skipped;
+          continue;
+        }
+        const BlockPlace &place = block->second;
+        dfn_.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_chunks_[place.chunk].buffer.buffer,
+                                    &place.offset);
+      } else {
+        const VkDeviceSize vertex_offset = vertices + draw.first_vertex;
+        dfn_.vkCmdBindVertexBuffers(cmd, 0, 1, &arena.buffer, &vertex_offset);
+      }
       dfn_.vkCmdDrawIndexed(cmd, draw.index_count, 1, draw.first_index, 0, 0);
       ++drawn;
       if (int64_t(i) == REXCVAR_GET(shadow_debug_after_draw) && color) {
@@ -1673,11 +2350,20 @@ class Renderer {
                     r.width, r.height, r.xenos_format, r.color_info, r.before_draw);
       }
     }
-    if ((guest.guest_frame % 300) == 0)
+    if ((guest.guest_frame % 300) == 0) {
+      // CPU time per frame, averaged over the frames since the last report: capture on the
+      // game thread, and this thread's DrawFrame (including waits for the GPU and swapchain).
+      const double n = double(std::max<uint64_t>(stats_frames_, 1));
       REXLOG_INFO("shadow_renderer: frame {}: {} draws drawn, {} skipped here, {} skipped in "
-                  "capture, {} resolves, {} colour and {} depth targets",
+                  "capture, {} resolves, {} colour and {} depth targets | inline vertices {} KiB, "
+                  "{} cached blocks in {} chunks ({} MiB uploaded so far), "
+                  "capture {:.2f} ms, render {:.2f} ms per frame ({} frames rendered)",
                   guest.guest_frame, drawn, skipped, guest.skipped, guest.resolves.size(),
-                  color_targets_.size(), depth_targets_.size());
+                  color_targets_.size(), depth_targets_.size(), guest.vertices.size() / 1024,
+                  vertex_blocks_.size(), vertex_chunks_.size(), vertex_block_bytes_ >> 20, stats_capture_ns_ / n / 1e6,
+                  stats_render_ns_ / n / 1e6, stats_frames_);
+      stats_frames_ = stats_capture_ns_ = stats_render_ns_ = 0;
+    }
     return present;
   }
 
@@ -1729,6 +2415,8 @@ class Renderer {
         DestroyImage(image);
       for (Image &image : textures_3d_)
         DestroyImage(image);
+      for (Image &image : textures_cube_)
+        DestroyImage(image);
       for (auto *targets : {&color_targets_, &depth_targets_})
         for (auto &[key, target] : *targets)
           DestroyImage(target.image);
@@ -1738,6 +2426,9 @@ class Renderer {
       for (Image *image : {&white_2d_, &white_3d_, &white_cube_, &depth_})
         DestroyImage(*image);
       DestroyBuffer(zeros_);
+      for (VertexChunk &chunk : vertex_chunks_)
+        DestroyBuffer(chunk.buffer);
+      DestroyOverlayResources();
       for (auto &frame : frames_)
         DestroyBuffer(frame.arena);
       if (command_pool_)
@@ -1751,6 +2442,13 @@ class Renderer {
     if (surface_)
       instance_->functions().vkDestroySurfaceKHR(instance_->instance(), surface_, nullptr);
     surface_ = VK_NULL_HANDLE;
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    if (parent_ && hwnd_) {
+      // Destroyed by its owning (UI) thread; never wait for it from here.
+      context_.CallInUIThread([hwnd = hwnd_] { DestroyWindow(hwnd); });
+      hwnd_ = nullptr;
+    }
+#endif
     if (window_) {
       // Windows are destroyed on the UI thread.
       context_.CallInUIThread([window = std::shared_ptr<rex::ui::Window>(std::move(window_))] {});
@@ -1777,6 +2475,8 @@ class Renderer {
   std::unique_ptr<rex::ui::Window> window_;
 #ifdef VK_USE_PLATFORM_WIN32_KHR
   HWND hwnd_ = nullptr;
+  HWND parent_ = nullptr;  // the game window, in --shadow_renderer_only mode
+  bool child_shown_ = false;
 #endif
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -1799,9 +2499,33 @@ class Renderer {
   std::map<std::pair<bool, uint64_t>, Shader> shaders_;
   std::unordered_map<std::string, VkPipeline> pipelines_;
   uint32_t missing_shaders_ = 0;
+  std::atomic<bool> running_{false};
+  uint64_t stats_frames_ = 0, stats_capture_ns_ = 0, stats_render_ns_ = 0;
+  static constexpr uint32_t kOverlayTextures = 256;
+  struct OverlayUpload {
+    OverlayTexture *target;
+    uint32_t width, height;
+    std::vector<uint8_t> rgba;
+  };
+  VkDescriptorSetLayout overlay_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout overlay_layout_ = VK_NULL_HANDLE;
+  VkDescriptorPool overlay_pool_ = VK_NULL_HANDLE;
+  std::array<VkSampler, 4> overlay_samplers_{};
+  std::array<VkPipeline, 2> overlay_pipelines_{};
+  VkFormat overlay_pipeline_format_ = VK_FORMAT_UNDEFINED;
+  OverlayTexture overlay_white_;
+  std::unordered_map<uint32_t, OverlayTexture> overlay_textures_;
+  std::deque<std::pair<uint64_t, OverlayTexture>> overlay_retired_;
+  std::vector<OverlayUpload> overlay_uploads_;
+  std::vector<VertexChunk> vertex_chunks_;
+  std::unordered_map<uint32_t, BlockPlace> vertex_blocks_;
+  std::deque<std::pair<uint64_t, BlockPlace>> retired_blocks_;
+  uint64_t block_clock_ = 0;
+  uint64_t vertex_block_bytes_ = 0;  // uploaded so far (statistics)
   VkDeviceSize arena_used_ = 0;
   std::vector<Image> textures_ = std::vector<Image>(kDescriptorSlots[0]);
   std::vector<Image> textures_3d_ = std::vector<Image>(kDescriptorSlots[1]);
+  std::vector<Image> textures_cube_ = std::vector<Image>(kDescriptorSlots[2]);
   std::set<uint32_t> textures_ready_;
   std::vector<VkSampler> samplers_ = std::vector<VkSampler>(kDescriptorSlots[3], VK_NULL_HANDLE);
   std::deque<TextureUpload> upload_queue_;
@@ -1818,26 +2542,122 @@ std::unique_ptr<Renderer> renderer;
 std::atomic<Renderer *> active{nullptr};
 SnapshotBuilder snapshot;  // game render thread only
 uint64_t guest_frames = 0;
+uint64_t capture_ns = 0;   // game thread time in the capture hooks this frame
+
+// Adds the time spent in its scope to capture_ns (game thread only).
+struct CaptureTimer {
+  std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+  ~CaptureTimer() {
+    capture_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count());
+  }
+};
 
 }  // namespace
 
-void Initialize(rex::ui::WindowedAppContext &context) {
-  if (!REXCVAR_GET(shadow_renderer) || renderer)
+bool Enabled() { return REXCVAR_GET(shadow_renderer) || REXCVAR_GET(shadow_renderer_only); }
+
+bool SkipGuestRendering() { return skip_in_hooks.load(std::memory_order_relaxed); }
+
+bool HasTakenOver() { return taken_over.load(std::memory_order_relaxed); }
+
+namespace {
+// First run in the game window: the shaders convert while the game loads, and the window
+// shows this instead of a half-drawn game.
+class ShaderProgressDialog : public rex::ui::ImGuiDialog {
+ public:
+  explicit ShaderProgressDialog(rex::ui::ImGuiDrawer *drawer) : ImGuiDialog(drawer) {}
+
+ protected:
+  void OnDraw(ImGuiIO &io) override {
+    if (shaders::Ready()) {
+      Close();
+      return;
+    }
+    uint32_t done = 0, remaining = 0;
+    shaders::Progress(&done, &remaining);
+    if (!done && !remaining)
+      return;  // nothing to convert (yet)
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::Begin("##shader_progress", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted("Preparing graphics for the first launch");
+    ImGui::Text("Converting shaders: %u of %u", done, done + remaining);
+    ImGui::ProgressBar(float(done) / float(std::max(done + remaining, 1u)), ImVec2(320, 0));
+    ImGui::End();
+  }
+};
+}  // namespace
+
+void PreSetup() {
+  if (!REXCVAR_GET(shadow_renderer_only))
     return;
+  if (rex::cvar::SetFlagByName("host_presentation", "false")) {
+    in_game_window = true;
+  } else {
+    REXLOG_WARN("shadow_renderer: this SDK has no host_presentation switch; the Vulkan "
+                "picture goes into a window over ReXGlue's instead");
+  }
+}
+
+std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
+  return in_game_window.load() ? overlay::CreateRecorder() : nullptr;
+}
+
+void Initialize(rex::ui::WindowedAppContext &context, const std::filesystem::path &user_data_root,
+                rex::ui::ImGuiDrawer *imgui_drawer) {
+  if (!Enabled() || renderer)
+    return;
+  shaders::Start(user_data_root / "shader_cache");
+  if (in_game_window.load()) {
+    // ReXGlue has no presenter in the window, so its rendering would go nowhere: off from the
+    // start, and the Vulkan renderer is in charge right away.
+    overlay::SetImGuiDrawer(imgui_drawer);
+    if (imgui_drawer)
+      new ShaderProgressDialog(imgui_drawer);  // deletes itself when closed
+    taken_over = true;
+    if (!rex::cvar::SetFlagByName("gpu_host_rendering", "false"))
+      skip_in_hooks = true;
+    REXLOG_INFO("shadow_renderer: presenting into the game window");
+  }
   renderer = std::make_unique<Renderer>(context);
   renderer->Start();
   active = renderer.get();
 }
 
 void Shutdown() {
+  if (taken_over.exchange(false) && !skip_in_hooks.exchange(false))
+    rex::cvar::SetFlagByName("gpu_host_rendering", "true");
   active = nullptr;
   renderer.reset();
+  shaders::Stop();
 }
 
 void OnGuestDraw(const uint8_t *base, uint32_t device, uint32_t primitive, uint32_t base_vertex,
                  uint32_t start_index, uint32_t index_count) {
-  if (active.load(std::memory_order_acquire))
+  if (active.load(std::memory_order_acquire)) {
+    CaptureTimer timer;
     snapshot.RecordIndexedDraw(base, device, primitive, base_vertex, start_index, index_count);
+  }
+}
+
+void OnGuestAutoIndexDraw(const uint8_t *base, uint32_t device, uint32_t primitive,
+                          uint32_t start_vertex, uint32_t vertex_count) {
+  // Which primitive types arrive this way (rect and quad lists would need converting).
+  static uint32_t seen = 0;
+  if (primitive < 32 && !(seen & (1u << primitive))) {
+    seen |= 1u << primitive;
+    REXLOG_INFO("shadow_renderer: non-indexed draws of primitive type {} (first: {} vertices)",
+                primitive, vertex_count);
+  }
+  if (active.load(std::memory_order_acquire)) {
+    CaptureTimer timer;
+    snapshot.RecordAutoIndexDraw(base, device, primitive, start_vertex, vertex_count);
+  }
 }
 
 void OnGuestResolve(const uint8_t *base, const PPCContext &ctx) {
@@ -1852,8 +2672,32 @@ void OnGuestClear(const uint8_t *base, const PPCContext &ctx) {
 }
 
 void OnGuestPresent() {
-  if (Renderer *r = active.load(std::memory_order_acquire))
-    r->OnGuestPresent(snapshot.Finish(++guest_frames));
+  Renderer *r = active.load(std::memory_order_acquire);
+  if (!r)
+    return;
+  std::unique_ptr<FrameRecord> frame;
+  {
+    CaptureTimer timer;
+    frame = snapshot.Finish(++guest_frames);
+  }
+  frame->capture_ns = capture_ns;
+  capture_ns = 0;
+  r->OnGuestPresent(std::move(frame));
+  // --shadow_renderer_only: ReXGlue keeps drawing until every shader seen so far has been
+  // converted and the renderer is running, then hands over for good (from the next frame).
+  if (REXCVAR_GET(shadow_renderer_only) && !in_game_window.load(std::memory_order_relaxed) &&
+      !taken_over.load(std::memory_order_relaxed) &&
+      r->Running() && shaders::Ready()) {
+    taken_over.store(true, std::memory_order_release);
+    // ReXGlue keeps executing the command stream (fences, interrupts, swaps) but stops
+    // rendering and presenting. Older SDKs lack the switch: skip the calls in the hooks.
+    if (!rex::cvar::SetFlagByName("gpu_host_rendering", "false")) {
+      skip_in_hooks.store(true, std::memory_order_release);
+      REXLOG_WARN("shadow_renderer: this SDK has no gpu_host_rendering switch; the game's "
+                  "draws are kept from ReXGlue in the hooks instead");
+    }
+    REXLOG_INFO("shadow_renderer: taking over from ReXGlue at guest frame {}", guest_frames);
+  }
 }
 
 }  // namespace d3::shadow

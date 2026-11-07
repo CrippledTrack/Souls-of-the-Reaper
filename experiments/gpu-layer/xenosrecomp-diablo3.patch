@@ -10,10 +10,10 @@ index e505a5e..b6adfcf 100644
 +# Feasibility harness: keep asserts in optimized builds.
 +target_compile_options(XenosRecomp PRIVATE -UNDEBUG)
 diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
-index d015145..70e1b3d 100644
+index d015145..01e5101 100644
 --- a/XenosRecomp/main.cpp
 +++ b/XenosRecomp/main.cpp
-@@ -29,8 +29,71 @@ struct RecompiledShader
+@@ -29,8 +29,104 @@ struct RecompiledShader
      uint32_t specConstantsMask = 0;
  };
  
@@ -26,7 +26,7 @@ index d015145..70e1b3d 100644
 +    __except (GetExceptionCode() == 0xE06D7363 ? EXCEPTION_CONTINUE_SEARCH : EXCEPTION_EXECUTE_HANDLER) { return int(GetExceptionCode()); }
 +}
 +
-+static int runBatch(const char* listPath, const char* outDir, const char* includePath)
++static int runBatch(const char* listPath, const char* outDir, const char* includePath, bool spirvOnly = false)
 +{
 +    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 +    size_t includeSize = 0;
@@ -57,10 +57,24 @@ index d015145..70e1b3d 100644
 +            else
 +            {
 +                auto name = std::filesystem::path(path).stem().string();
-+                auto hlsl = (std::filesystem::path(outDir) / (name + ".hlsl")).string();
-+                writeAllBytes(hlsl.c_str(), recompiler.out.data(), recompiler.out.size());
-+                IDxcBlob* dxil = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, recompiler.specConstantsMask != 0, false);
++                if (!spirvOnly)
++                {
++                    auto hlsl = (std::filesystem::path(outDir) / (name + ".hlsl")).string();
++                    writeAllBytes(hlsl.c_str(), recompiler.out.data(), recompiler.out.size());
++                }
++                IDxcBlob* dxil = spirvOnly ? nullptr : dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, recompiler.specConstantsMask != 0, false);
 +                IDxcBlob* spirv = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, false, true);
++                if (spirv)
++                {
++                    // Raw SPIR-V for the experimental renderer, named like the input file.
++                    // Written under a temporary name and renamed, so a reader never sees a
++                    // partial file.
++                    auto spv = std::filesystem::path(outDir) / (name + ".spv");
++                    auto tmp = std::filesystem::path(outDir) / (name + ".spv.tmp");
++                    writeAllBytes(tmp.string().c_str(), spirv->GetBufferPointer(), spirv->GetBufferSize());
++                    std::error_code ec;
++                    std::filesystem::rename(tmp, spv, ec);
++                }
 +                result = fmt::format("{} dxil={} spirv={} spec={}", recompiler.isPixelShader ? "ps" : "vs",
 +                    dxil ? "ok" : "fail", spirv ? "ok" : "fail", recompiler.specConstantsMask);
 +                if (dxil) dxil->Release();
@@ -82,10 +96,29 @@ index d015145..70e1b3d 100644
  {
 +    if (argc == 5 && strcmp(argv[1], "--batch") == 0)
 +        return runBatch(argv[2], argv[3], argv[4]);
++    // Runtime conversion for the game: XenosRecomp --spirv <list.txt> <out_dir> <header>
++    // writes only <out_dir>/<name>.spv per container (no HLSL, no DXIL).
++    if (argc == 5 && strcmp(argv[1], "--spirv") == 0)
++        return runBatch(argv[2], argv[3], argv[4], true);
++    // Debugging: XenosRecomp --hlsl <in.hlsl> <out.spv> <ps|vs> compiles an (edited) HLSL
++    // output to SPIR-V with the same settings as --batch.
++    if (argc == 5 && strcmp(argv[1], "--hlsl") == 0)
++    {
++        size_t size = 0;
++        auto data = readAllBytes(argv[2], size);
++        std::string source(reinterpret_cast<const char*>(data.get()), size);
++        DxcCompiler dxcCompiler;
++        IDxcBlob* spirv = dxcCompiler.compile(source, strcmp(argv[4], "ps") == 0, false, true);
++        if (!spirv)
++            return 1;
++        writeAllBytes(argv[3], spirv->GetBufferPointer(), spirv->GetBufferSize());
++        spirv->Release();
++        return 0;
++    }
  #ifndef XENOS_RECOMP_INPUT
      if (argc < 4)
      {
-@@ -209,10 +272,23 @@ int main(int argc, char** argv)
+@@ -209,10 +305,23 @@ int main(int argc, char** argv)
      }
      else
      {
@@ -132,7 +165,7 @@ index e59682c..aeac4be 100644
 +#undef assert
 +#define assert(e) ((e) ? void(0) : throw std::runtime_error(std::string("line ") + std::to_string(__LINE__) + " " #e))
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index 698a418..ab6fd07 100644
+index 698a418..39cfad4 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -115,7 +115,9 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -162,7 +195,66 @@ index 698a418..ab6fd07 100644
  
      switch (findResult->second.usage)
      {
-@@ -1694,11 +1703,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1509,6 +1518,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     uint32_t instrAddress = 0;
+     uint32_t instrSize = shader->size;
+     bool simpleControlFlow = true;
++    uint32_t scanPc = 0;
+ 
+     while (instrAddress < instrSize)
+     {
+@@ -1520,6 +1530,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         for (auto& cfInstr : controlFlow)
+         {
+             uint32_t address = 0;
++            const uint32_t cfIndex = scanPc++;
+ 
+             switch (cfInstr.opcode)
+             {
+@@ -1542,7 +1553,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             case ControlFlowOpcode::CondJmp:
+             {
+-                if (cfInstr.condJmp.isUnconditional || cfInstr.condJmp.direction)
++                // Backward jumps (loops built from predicated jumps) need the general
++                // pc/switch form. The direction bit is only a hint and is 0 on some backward
++                // jumps, so compare the target with this instruction's index instead.
++                if (cfInstr.condJmp.isUnconditional || cfInstr.condJmp.direction ||
++                    cfInstr.condJmp.address <= cfIndex)
+                     simpleControlFlow = false;
+                 else
+                     ++ifEndLabels[cfInstr.condJmp.address];
+@@ -1605,6 +1620,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 }
+             }
+ 
++            if (getenv("XENOSRECOMP_CF_COMMENTS"))
++            {
++                const uint32_t* w = reinterpret_cast<const uint32_t*>(&cfInstr);
++                println("// cf {}: opcode {} words {:08x} {:04x}", pc, uint32_t(cfInstr.opcode), w[0], w[1] & 0xFFFF);
++            }
++
+             ++pc;
+ 
+             uint32_t address = 0;
+@@ -1639,6 +1660,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 count = cfInstr.condExecPred.count;
+                 sequence = cfInstr.condExecPred.sequence;
+                 shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecPredEnd);
++                // The block only runs when the predicate matches the condition bit.
++                if (count != 0)
++                {
++                    indent();
++                    println("if ({}p0)", cfInstr.condExecPred.condition ? "" : "!");
++                    indent();
++                    out += "{\n";
++                    ++indentation;
++                    shouldCloseCurlyBracket = true;
++                }
+                 break;
+ 
+             case ControlFlowOpcode::LoopStart:
+@@ -1694,11 +1725,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                      }
                      else
                      {
@@ -185,3 +277,18 @@ index 698a418..ab6fd07 100644
                      }
  
                      if (simpleControlFlow)
+@@ -1792,6 +1832,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 instructionCode += 3;
+             }
+ 
++            if (shouldCloseCurlyBracket)
++            {
++                --indentation;
++                indent();
++                out += "}\n";
++                shouldCloseCurlyBracket = false;
++            }
++
+             if (shouldReturn)
+             {
+                 if (isPixelShader)

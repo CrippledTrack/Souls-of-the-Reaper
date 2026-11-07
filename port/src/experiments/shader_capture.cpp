@@ -16,6 +16,9 @@
 // file is compiled into title update builds only.
 #include "generated/update/diablo3_pch.h"
 
+#include "experiments/shadow_renderer.h"
+#include "experiments/shadow_shaders.h"
+
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
@@ -59,7 +62,9 @@ uint64_t Fnv1a64(const uint8_t *data, size_t size) {
 
 void Capture(const uint8_t *base, uint32_t object, uint32_t physical, const char *hook) {
   const std::string &folder = REXCVAR_GET(capture_shaders);
-  if (folder.empty() || object == 0 || physical == 0)
+  // The Vulkan renderer converts every shader the game creates (shadow_shaders.cpp).
+  const bool for_renderer = d3::shadow::Enabled();
+  if ((folder.empty() && !for_renderer) || object == 0 || physical == 0)
     return;
   uint32_t header = 0;
   for (uint32_t offset = 0; offset < kHeaderSearch; offset += 4) {
@@ -86,6 +91,10 @@ void Capture(const uint8_t *base, uint32_t object, uint32_t physical, const char
   const uint64_t hash = Fnv1a64(blob.data(), blob.size());
   blob.insert(blob.end(), base + physical, base + physical + physical_size);
   const uint64_t content = Fnv1a64(blob.data(), blob.size());
+  if (for_renderer)
+    d3::shadow::shaders::OnShaderCreated(flags & 1, hash, blob);
+  if (folder.empty())
+    return;
 
   static std::mutex mutex;
   static std::unordered_map<uint64_t, uint64_t> seen;  // header hash -> content hash

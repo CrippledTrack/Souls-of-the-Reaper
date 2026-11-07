@@ -1,0 +1,245 @@
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 2cf24c4..6a841f8 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -15,6 +15,7 @@
+ 
+ // GPU Core
+ REXCVAR_DECLARE(bool, vsync);
++REXCVAR_DECLARE(bool, gpu_host_rendering);
+ REXCVAR_DECLARE(bool, clear_memory_page_state);
+ REXCVAR_DECLARE(bool, half_pixel_offset);
+ REXCVAR_DECLARE(bool, async_shader_compilation);
+diff --git a/include/rex/graphics/null/graphics_system.h b/include/rex/graphics/null/graphics_system.h
+new file mode 100644
+index 0000000..0fd4967
+--- /dev/null
++++ b/include/rex/graphics/null/graphics_system.h
+@@ -0,0 +1,39 @@
++/**
++ * @file        graphics/null/graphics_system.h
++ * @brief       Graphics system without a host graphics API
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#pragma once
++
++#include <memory>
++#include <string>
++
++#include <rex/graphics/command_processor.h>
++#include <rex/graphics/graphics_system.h>
++
++namespace rex::graphics::null {
++
++// Executes the guest's GPU command stream (register writes, events, fences, interrupts,
++// swaps) and runs the vblank timer like the other backends, but creates no device,
++// presenter or GPU resources and renders nothing. For apps that draw the guest's frames
++// with their own renderer and present into the window themselves (ReXApp's detached
++// overlay mode; host_presentation off).
++class NullGraphicsSystem : public GraphicsSystem {
++ public:
++  NullGraphicsSystem();
++  ~NullGraphicsSystem() override;
++
++  std::string name() const override { return "null"; }
++
++  // No presenter: the app owns the window's surface.
++  X_STATUS SetupPresentation(::rex::ui::WindowedAppContext* app_context) override;
++
++ protected:
++  void CreateProvider(bool with_presentation) override { (void)with_presentation; }
++  std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
++};
++
++}  // namespace rex::graphics::null
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 0d8f8af..2174e09 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(REXGPU_XENOS_SOURCES
+     # GPU system
+     graphics_system.cpp
+     command_processor.cpp
++    null/graphics_system.cpp
+     util/draw_extent_estimator.cpp
+     util/draw.cpp
+     packet_disassembler.cpp
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 3c26a9a..89b87bb 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -970,7 +970,11 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+   uint32_t frontbuffer_height = reader->ReadAndSwap<uint32_t>();
+   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
+ 
+-  IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
++  // With host rendering off another renderer presents the frames; the swap itself (and the
++  // interrupts that follow) still happens.
++  if (REXCVAR_GET(gpu_host_rendering)) {
++    IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
++  }
+ 
+   // [D3DIAG] Swap probe: distinguish "stuck title" (a) vs "advanced but not
+   // rendered" (b). Logs frontbuffer ptr/size every ~60 swaps, and immediately
+@@ -1479,7 +1483,10 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
+   // we don't support yet.
+   reader->AdvanceRead(count_remaining * sizeof(uint32_t));
+ 
+-  if (draw_succeeded) {
++  // With host rendering off, draws and copies (which the backends perform from IssueDraw:
++  // resolves and EDRAM clears) are dropped; their packets and register state were consumed
++  // above as usual.
++  if (draw_succeeded && REXCVAR_GET(gpu_host_rendering)) {
+     auto viz_query = register_file_->Get<reg::PA_SC_VIZ_QUERY>();
+     if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
+       // TODO(Triang3l): Don't drop the draw call completely if the vertex
+diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
+index e2983a4..1fced08 100644
+--- a/src/graphics/flags.cpp
++++ b/src/graphics/flags.cpp
+@@ -28,6 +28,12 @@ REXCVAR_DEFINE_STRING(dump_shaders, "", "GPU", "Path to dump shaders to");
+ REXCVAR_DEFINE_BOOL(use_fuzzy_alpha_epsilon, false, "GPU",
+                     "Use approximate compare for alpha test values to prevent "
+                     "flickering on NVIDIA graphics cards");
++REXCVAR_DEFINE_BOOL(gpu_host_rendering, true, "GPU",
++                    "Render the guest's draws, copies (resolves, EDRAM clears) and swaps on the "
++                    "host. When false the command processor still executes everything else "
++                    "(register writes, events, fences, interrupts), so the game keeps running "
++                    "while another renderer, such as a title's own, draws its frames. Can be "
++                    "changed while running.");
+ REXCVAR_DEFINE_BOOL(gpu_debug_markers, false, "GPU",
+                     "Insert debug markers into GPU command streams for tools "
+                     "like PIX and RenderDoc. Automatically enabled when "
+diff --git a/src/graphics/null/graphics_system.cpp b/src/graphics/null/graphics_system.cpp
+new file mode 100644
+index 0000000..856d381
+--- /dev/null
++++ b/src/graphics/null/graphics_system.cpp
+@@ -0,0 +1,55 @@
++/**
++ * @file        graphics/null/graphics_system.cpp
++ * @brief       Graphics system without a host graphics API
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <rex/graphics/null/graphics_system.h>
++
++#include <rex/logging.h>
++
++namespace rex::graphics::null {
++
++namespace {
++
++// The shared command processor does all the guest-visible work; drawing, copying and
++// presenting are dropped.
++class NullCommandProcessor : public CommandProcessor {
++ public:
++  NullCommandProcessor(GraphicsSystem* graphics_system, system::KernelState* kernel_state)
++      : CommandProcessor(graphics_system, kernel_state) {}
++
++  void IssueSwap(uint32_t, uint32_t, uint32_t) override {}
++
++ protected:
++  bool SetupContext() override { return true; }
++  void ShutdownContext() override {}
++
++  // No shader translation: the active shader pointers are only used by drawing backends.
++  Shader* LoadShader(xenos::ShaderType, uint32_t, const uint32_t*, uint32_t) override {
++    return nullptr;
++  }
++
++  bool IssueDraw(xenos::PrimitiveType, uint32_t, IndexBufferInfo*, bool) override { return true; }
++  bool IssueCopy() override { return true; }
++};
++
++}  // namespace
++
++NullGraphicsSystem::NullGraphicsSystem() = default;
++
++NullGraphicsSystem::~NullGraphicsSystem() = default;
++
++X_STATUS NullGraphicsSystem::SetupPresentation(::rex::ui::WindowedAppContext* app_context) {
++  app_context_ = app_context;
++  REXGPU_INFO("Null graphics backend: no host rendering or presentation");
++  return X_STATUS_SUCCESS;
++}
++
++std::unique_ptr<CommandProcessor> NullGraphicsSystem::CreateCommandProcessor() {
++  return std::make_unique<NullCommandProcessor>(this, kernel_state_);
++}
++
++}  // namespace rex::graphics::null
+diff --git a/src/graphics/plugin_main.cpp b/src/graphics/plugin_main.cpp
+index ec756d3..ec90c91 100644
+--- a/src/graphics/plugin_main.cpp
++++ b/src/graphics/plugin_main.cpp
+@@ -11,8 +11,10 @@
+ 
+ #include <string_view>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/system/gpu_plugin.h>
++#include <rex/graphics/null/graphics_system.h>
+ 
+ #if REX_HAS_D3D12
+ #include <rex/graphics/d3d12/graphics_system.h>
+@@ -38,6 +40,11 @@ extern "C" REX_GPU_PLUGIN_EXPORT rex::system::IGraphicsSystem* rex_gpu_create(
+   }
+ 
+   std::string_view backend = info->backend ? info->backend : "any";
++  // No host graphics API when asked for, or when the app presents into the window itself
++  // (host_presentation off): the guest's GPU commands still run, nothing is rendered.
++  if (backend == "null" || rex::cvar::GetFlagByName("host_presentation") == "false") {
++    return new rex::graphics::null::NullGraphicsSystem();
++  }
+ #if REX_HAS_D3D12
+   if (backend == "any" || backend == "d3d12") {
+     return new rex::graphics::d3d12::D3D12GraphicsSystem();
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 2caeba7..dc02cfb 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -46,6 +46,14 @@
+ #include <filesystem>
+ #include <string_view>
+ 
++REXCVAR_DEFINE_BOOL(host_presentation, true, "GPU",
++                    "Let the GPU plugin's presenter own the window: it shows the guest's frames "
++                    "and draws the overlays. When false the app presents into the window itself "
++                    "(as without a GPU plugin) while the plugin keeps executing the guest's GPU "
++                    "commands with its null backend (no host graphics API); overlays then go "
++                    "through OnCreateImmediateDrawer.")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
+                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
+                       "GPU emulation")
+@@ -359,7 +367,7 @@ bool ReXApp::SetupPresentation() {
+   window_->Open();
+ 
+   auto* graphics_system = config_.graphics.get();
+-  if (graphics_system && graphics_system->presenter()) {
++  if (graphics_system && graphics_system->presenter() && REXCVAR_GET(host_presentation)) {
+     // SDK mode: the emulated-Xenos presenter drives the overlays.
+     auto* presenter = graphics_system->presenter();
+     auto* provider = graphics_system->provider();
+@@ -371,9 +379,11 @@ bool ReXApp::SetupPresentation() {
+       }
+     }
+     window_->SetPresenter(presenter);
+-  } else if (!graphics_system) {
++  } else {
+     // Detached mode: the app brings its own renderer and drives its own paint
+-    // loop. ReXApp owns the returned drawer via immediate_drawer_.
++    // loop, either without a GPU plugin or with host_presentation off (the plugin
++    // still executes the guest's GPU commands). ReXApp owns the returned drawer via
++    // immediate_drawer_.
+     immediate_drawer_ = OnCreateImmediateDrawer();
+     if (immediate_drawer_) {
+       SetupOverlays(/*presenter=*/nullptr, immediate_drawer_.get());

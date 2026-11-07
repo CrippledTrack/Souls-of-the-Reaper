@@ -40,6 +40,7 @@ struct DrawState {
   uint32_t color_info = 0;      // RB_COLOR_INFO (0x2001): EDRAM base (bits 0-11), format (16-19)
   uint32_t depth_info = 0;      // RB_DEPTH_INFO (0x2002): EDRAM base (bits 0-11), format (16)
   std::array<float, 6> viewport{};  // PA_CL_VPORT_X/Y/Z SCALE, OFFSET (0x210F-0x2114)
+  float alpha_ref = 0;           // RB_ALPHA_REF (0x210E); RB_COLORCONTROL bits 0-2 func, 3 enable
 };
 
 // Host texture formats the capture converts Xenos textures into.
@@ -53,13 +54,21 @@ enum class TextureFormat : uint8_t {
 // Texture ids with this bit set name the bindless Texture3D array (id & 0x7FFF).
 constexpr uint16_t kTexture3DBit = 0x8000;
 constexpr uint32_t kTexture3DSlots = 64;
+// Texture ids with this bit set name the bindless TextureCube array (id & 0x3FFF).
+constexpr uint16_t kTextureCubeBit = 0x4000;
+constexpr uint32_t kTextureCubeSlots = 64;
 
 struct TextureUpload {
   uint32_t id = 0;  // slot in the renderer's bindless Texture2D array (0: white placeholder),
                     // or in the Texture3D array with kTexture3DBit
   uint32_t width = 0, height = 0, depth = 1;
+  uint32_t layers = 1;  // 6 for cube maps: each level holds the faces +X -X +Y -Y +Z -Z in turn
   TextureFormat format = TextureFormat::kRGBA8;
   uint32_t swizzle = 0;  // Xenos fetch swizzle: 3 bits per output component (0-3 xyzw, 4 zero, 5 one)
+  // Mip levels, base first, each tightly packed rows of blocks; level_offsets[i] is where level
+  // i starts in data.
+  uint32_t levels = 1;
+  std::vector<uint32_t> level_offsets = {0};
   std::vector<uint8_t> data;
 };
 
@@ -67,7 +76,8 @@ struct TextureUpload {
 struct SamplerDesc {
   uint32_t id = 0;  // slot in the renderer's bindless sampler array
   uint8_t clamp[3] = {};  // Xenos ClampMode
-  uint8_t mag = 1, min = 1, mip = 1;  // Xenos TextureFilter
+  uint8_t mag = 1, min = 1, mip = 1;  // Xenos TextureFilter (mip 2: base map only)
+  int16_t lod_bias = 0;                 // fetch dword 4 bits 12-21, 5 fractional bits
 };
 
 // Texture ids from this value up name the renderer's resolve targets (host images that
@@ -102,12 +112,20 @@ struct ClearRecord {
 // Pixel shader texture slots tf0-tf15 (D3D samplers s0-s15).
 constexpr uint32_t kTextureSlots = 16;
 
+// Converted vertices kept by the renderer across frames, for the static meshes that make up
+// most of a frame. Ids are never reused while a block may still be in use.
+struct VertexBlock {
+  uint32_t id = 0;
+  std::vector<uint8_t> data;  // vertex_count * layout stride bytes
+};
+
 struct DrawRecord {
   uint64_t vertex_shader = 0;  // FNV-1a of the shader header (capture file name)
   uint64_t pixel_shader = 0;   // 0: depth-only draw
   uint32_t primitive = 0;      // Xenos primitive type (4 triangle list, 6 triangle strip, ...)
   uint32_t layout = 0;         // index into FrameRecord::layouts
-  uint32_t first_vertex = 0;   // byte offset in FrameRecord::vertices
+  uint32_t first_vertex = 0;   // byte offset in FrameRecord::vertices (vertex_block 0)
+  uint32_t vertex_block = 0;   // persistent block holding this draw's vertices; 0: inline
   uint32_t vertex_count = 0;
   uint32_t first_index = 0;    // in FrameRecord::indices
   uint32_t index_count = 0;
@@ -132,6 +150,30 @@ struct FrameRecord {
   std::vector<ResolveRecord> resolves;
   std::vector<ClearRecord> clears;
   uint32_t next_sequence = 0;  // capture side: next resolve/clear sequence number
+  uint64_t capture_ns = 0;     // game thread time spent capturing this frame
+  // Vertex blocks (see DrawRecord::vertex_block): new ones carry their converted vertices;
+  // freed ones are no longer referenced by any later frame.
+  std::vector<VertexBlock> new_vertex_blocks;
+  std::vector<uint32_t> freed_vertex_blocks;
+
+  // Empties the record but keeps its vectors' memory, for reuse by the next frame.
+  void Reset() {
+    guest_frame = 0;
+    draws.clear();
+    layouts.clear();
+    vertices.clear();
+    indices.clear();
+    constants.clear();
+    skipped = 0;
+    new_textures.clear();
+    new_samplers.clear();
+    resolves.clear();
+    clears.clear();
+    next_sequence = 0;
+    capture_ns = 0;
+    new_vertex_blocks.clear();
+    freed_vertex_blocks.clear();
+  }
 };
 
 constexpr uint32_t kConstantsPerDraw = 512;
