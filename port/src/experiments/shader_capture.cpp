@@ -1,7 +1,7 @@
 // Experiment (gpu-layer-experiment branch): save every shader the game creates, as a
 // complete container (header followed by the physical part: literal constants, microcode).
 //
-//   --capture_shaders=<dir>   write <dir>/<vs|ps>_<fnv64>.bin once per unique container
+//   --capture_shaders=<dir>   write <dir>/<vs|ps>_<fnv64 of the header>.bin once per shader
 //
 // The game never holds a complete container in memory. Its loader (sub_82585100 for vertex
 // shaders, sub_82585280 for pixel shaders) copies a prebuilt D3D object (object fields, then
@@ -25,7 +25,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 DECLARE_REX_FUNC(sub_82D692A0);
@@ -80,15 +80,23 @@ void Capture(const uint8_t *base, uint32_t object, uint32_t physical, const char
   if (virtual_size == 0 || virtual_size > kMaxPart || physical_size > kMaxPart)
     return;
   std::vector<uint8_t> blob(base + header, base + header + virtual_size);
-  blob.insert(blob.end(), base + physical, base + physical + physical_size);
+  // Files are named by the header alone: the header copy stays unchanged in the D3D object,
+  // while vertex microcode is patched in place, so a draw can find its shader by hashing
+  // the header it binds.
   const uint64_t hash = Fnv1a64(blob.data(), blob.size());
+  blob.insert(blob.end(), base + physical, base + physical + physical_size);
+  const uint64_t content = Fnv1a64(blob.data(), blob.size());
 
   static std::mutex mutex;
-  static std::unordered_set<uint64_t> seen;
+  static std::unordered_map<uint64_t, uint64_t> seen;  // header hash -> content hash
   static bool folder_ready = false;
   std::lock_guard lock(mutex);
-  if (!seen.insert(hash).second)
+  if (auto found = seen.find(hash); found != seen.end()) {
+    if (found->second != content)
+      REXLOG_WARN("capture_shaders: two shaders share header hash {:016x}", hash);
     return;
+  }
+  seen.emplace(hash, content);
   if (!folder_ready) {
     std::error_code error;
     std::filesystem::create_directories(folder, error);

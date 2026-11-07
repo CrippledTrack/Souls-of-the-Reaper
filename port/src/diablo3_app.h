@@ -17,6 +17,9 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
+#ifdef SOULS_TITLE_UPDATE
+#include "experiments/shadow_renderer.h"
+#endif
 #include "window_features.h"
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
@@ -93,8 +96,16 @@ class Diablo3App : public rex::ReXApp {
 #endif
     (void)drawer;
     title_ = CreateWindowTelemetry(app_context(), window());
+#ifdef SOULS_TITLE_UPDATE
+    d3::shadow::Initialize(app_context());  // experiment: --shadow_renderer
+#endif
   }
-  void OnShutdown() override { title_.reset(); }
+  void OnShutdown() override {
+#ifdef SOULS_TITLE_UPDATE
+    d3::shadow::Shutdown();
+#endif
+    title_.reset();
+  }
   void OnKeyDown(rex::ui::KeyEvent& event) override {
     if (event.virtual_key() == rex::ui::VirtualKey::kF11) {
       if (!event.prev_state()) window()->SetFullscreen(!window()->IsFullscreen());

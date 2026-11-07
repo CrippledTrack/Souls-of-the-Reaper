@@ -51,7 +51,17 @@ set(DIABLO3_SOURCES
 )
 if(SOULS_TITLE_UPDATE)
     # gpu-layer experiment: --capture_shaders hooks (addresses are update-only).
-    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp)
+    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp
+        src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
+        src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp)
+    # rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
+    find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
+        PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
+        NO_DEFAULT_PATH)
+    if(SOULS_RENDERDOC_INCLUDE)
+        set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
+            INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
+    endif()
 else()
     list(APPEND DIABLO3_SOURCES src/base_exit.cpp)
 endif()
