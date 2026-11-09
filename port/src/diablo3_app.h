@@ -100,7 +100,14 @@ class Diablo3App : public rex::ReXApp {
     (void)drawer;
     title_ = CreateWindowTelemetry(app_context(), window());
 #ifdef SOULS_TITLE_UPDATE
-    d3::shadow::Initialize(app_context(), user_data_root(), drawer);  // experiment
+    // ReXGlue's presenter, looked up when a capture is taken (the graphics system is
+    // attached to the runtime after the dialogs are created).
+    d3::shadow::Initialize(app_context(), user_data_root(), drawer,
+                           [this]() -> rex::ui::Presenter * {
+                             return runtime() && runtime()->graphics_system()
+                                        ? runtime()->graphics_system()->presenter()
+                                        : nullptr;
+                           });  // experiment
 #endif
   }
 #ifdef SOULS_TITLE_UPDATE

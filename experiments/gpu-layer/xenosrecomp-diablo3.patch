@@ -164,8 +164,35 @@ index e59682c..aeac4be 100644
 +// Feasibility harness: a failed assert throws so one process can test every shader.
 +#undef assert
 +#define assert(e) ((e) ? void(0) : throw std::runtime_error(std::string("line ") + std::to_string(__LINE__) + " " #e))
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 1c74034..44427ab 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -30,6 +30,11 @@ struct PushConstants
+ #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
+ #define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
+ #define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
++// Host pixels per guest pixel, inverted: the renderer draws at another resolution than the
++// game's (1.0 at native resolution). vPos is converted back to guest pixels with it.
++#define g_ResolutionScaleInv       vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 276)
++// Alpha test direction: +1 keeps alpha >= g_AlphaThreshold, -1 keeps alpha <= it.
++#define g_AlphaTestDirection       vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 280)
+ 
+ [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+ 
+@@ -41,7 +46,9 @@ struct PushConstants
+     uint g_Booleans : packoffset(c16.x); \
+     uint g_SwappedTexcoords : packoffset(c16.y); \
+     float2 g_HalfPixelOffset : packoffset(c16.z); \
+-    float g_AlphaThreshold : packoffset(c17.x);
++    float g_AlphaThreshold : packoffset(c17.x); \
++    float g_ResolutionScaleInv : packoffset(c17.y); \
++    float g_AlphaTestDirection : packoffset(c17.z);
+ 
+ uint g_SpecConstants();
+ 
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index 698a418..39cfad4 100644
+index 698a418..2c801f6 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -115,7 +115,9 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -195,7 +222,18 @@ index 698a418..39cfad4 100644
  
      switch (findResult->second.usage)
      {
-@@ -1509,6 +1518,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1464,7 +1473,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             print("\tfloat4 r{} = ", i);
+             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
+             {
+-                out += "float4((iPos.xy - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
++                // vPos in guest pixels: the host may render at another resolution
++                // (g_ResolutionScaleInv is 1.0 at the game's own).
++                out += "float4((iPos.xy * g_ResolutionScaleInv - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
+             }
+         #ifdef UNLEASHED_RECOMP
+             else if (!isPixelShader && hasIndexCount && i == 0)
+@@ -1509,6 +1520,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      uint32_t instrAddress = 0;
      uint32_t instrSize = shader->size;
      bool simpleControlFlow = true;
@@ -203,7 +241,7 @@ index 698a418..39cfad4 100644
  
      while (instrAddress < instrSize)
      {
-@@ -1520,6 +1530,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1520,6 +1532,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          for (auto& cfInstr : controlFlow)
          {
              uint32_t address = 0;
@@ -211,7 +249,7 @@ index 698a418..39cfad4 100644
  
              switch (cfInstr.opcode)
              {
-@@ -1542,7 +1553,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1542,7 +1555,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
              case ControlFlowOpcode::CondJmp:
              {
@@ -224,7 +262,7 @@ index 698a418..39cfad4 100644
                      simpleControlFlow = false;
                  else
                      ++ifEndLabels[cfInstr.condJmp.address];
-@@ -1605,6 +1620,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1605,6 +1622,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  }
              }
  
@@ -237,7 +275,7 @@ index 698a418..39cfad4 100644
              ++pc;
  
              uint32_t address = 0;
-@@ -1639,6 +1660,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1639,6 +1662,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  count = cfInstr.condExecPred.count;
                  sequence = cfInstr.condExecPred.sequence;
                  shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecPredEnd);
@@ -254,7 +292,7 @@ index 698a418..39cfad4 100644
                  break;
  
              case ControlFlowOpcode::LoopStart:
-@@ -1694,11 +1725,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1694,11 +1727,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                      }
                      else
                      {
@@ -277,7 +315,7 @@ index 698a418..39cfad4 100644
                      }
  
                      if (simpleControlFlow)
-@@ -1792,6 +1832,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1792,6 +1834,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  instructionCode += 3;
              }
  
@@ -292,3 +330,14 @@ index 698a418..39cfad4 100644
              if (shouldReturn)
              {
                  if (isPixelShader)
+@@ -1804,7 +1854,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     out += '{';
+ 
+                     indent();
+-                    out += "\tclip(oC0.w - g_AlphaThreshold);\n";
++                    // g_AlphaTestDirection: +1 passes alpha >= threshold (GREATER, GEQUAL),
++                    // -1 passes alpha <= threshold (LESS, LEQUAL).
++                    out += "\tclip((oC0.w - g_AlphaThreshold) * g_AlphaTestDirection);\n";
+ 
+                     indent();
+                     out += "}";

@@ -19,6 +19,8 @@ Both modes are off unless asked for on the command line:
 |---|---|
 | `--shadow_renderer=true` | Opens a second window drawn by the Shadow renderer, beside ReXGlue's normal one. Useful for comparing the two. |
 | `--shadow_renderer_only=true` | Draws the game window with the Shadow renderer alone. ReXGlue keeps running the game's GPU command stream on a null backend (no D3D12 or other host graphics API) and its overlays (settings, console, debug, toasts) are drawn by the Shadow renderer. The window title ends in "Vulkan Experimental". |
+| `--shadow_render_height=<n>` | Test option: draws the game at another vertical resolution, e.g. `1080` or `1440` (0, the default, is the game's own 720). Any value works: everything is scaled by n / 720. Read at startup. |
+| **F9** / `--shadow_compare_every=<s>` | Side-by-side capture (with `--shadow_renderer=true`): saves ReXGlue's frame, the Shadow renderer's, and a combined ReXGlue \| Vulkan \| difference image (difference brightened 4x) to `<user data>/shadow_compare` (`--shadow_compare_dir`), and logs how much they differ. The two renderers run independently, so pause the game for exact comparisons, and give both the same resolution. |
 | `--shadow_shader_dir=<dir>` | Uses a hand-made folder of `<vs\|ps>_<hash>.spv` instead of the automatic conversion. |
 | `--shadow_shader_workers=<n>` | Number of XenosRecomp processes converting in parallel (default: half the CPU threads, at most 6). |
 
@@ -75,7 +77,8 @@ the performance work and the debug options. In short:
 - **60 FPS in gameplay** in both modes. Capturing a frame costs about 4.5 ms on the game
   thread; static meshes are converted once and kept on the GPU.
 - **Not done yet:** MSAA, stencil, a few alpha-test functions, stacked textures and 3D
-  mipmaps, window surfaces for Linux and macOS, dynamic resolution and ultrawide.
+  mipmaps, window surfaces for Linux and macOS, dynamic resolution (a fixed render
+  resolution can already be set for testing) and ultrawide.
 - **Draw coverage:** the game has been seen drawing through two of its 14 Direct3D draw
   functions, both captured. The others log a warning the first time they are called.
 

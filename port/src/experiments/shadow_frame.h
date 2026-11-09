@@ -40,6 +40,7 @@ struct DrawState {
   uint32_t color_info = 0;      // RB_COLOR_INFO (0x2001): EDRAM base (bits 0-11), format (16-19)
   uint32_t depth_info = 0;      // RB_DEPTH_INFO (0x2002): EDRAM base (bits 0-11), format (16)
   std::array<float, 6> viewport{};  // PA_CL_VPORT_X/Y/Z SCALE, OFFSET (0x210F-0x2114)
+  std::array<float, 4> blend_constant{};  // RB_BLEND_RED/GREEN/BLUE/ALPHA (0x2105-0x2108)
   float alpha_ref = 0;           // RB_ALPHA_REF (0x210E); RB_COLORCONTROL bits 0-2 func, 3 enable
 };
 
@@ -155,6 +156,8 @@ struct FrameRecord {
   // freed ones are no longer referenced by any later frame.
   std::vector<VertexBlock> new_vertex_blocks;
   std::vector<uint32_t> freed_vertex_blocks;
+  // Texture ids no longer used: the renderer releases their images (the ids are reused).
+  std::vector<uint16_t> freed_textures;
 
   // Empties the record but keeps its vectors' memory, for reuse by the next frame.
   void Reset() {
@@ -173,6 +176,7 @@ struct FrameRecord {
     capture_ns = 0;
     new_vertex_blocks.clear();
     freed_vertex_blocks.clear();
+    freed_textures.clear();
   }
 };
 

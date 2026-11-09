@@ -213,7 +213,7 @@ uint64_t HashBytes(const void *data, size_t size, uint64_t hash) {
 uint16_t TextureCache::Texture(const uint8_t *base, const uint32_t fetch[6], FrameRecord &frame) {
   const uint64_t memo = Fnv(fetch, 6 * sizeof(uint32_t));
   if (auto found = frame_memo_.find(memo); found != frame_memo_.end())
-    return found->second;
+    return found->second;  // already marked used this frame
   const uint16_t id = FindOrDecode(base, fetch, frame);
   frame_memo_.emplace(memo, id);
   return id;
@@ -265,6 +265,7 @@ uint16_t TextureCache::FindOrDecode(const uint8_t *base, const uint32_t fetch[6]
   const uint32_t identity[6] = {fetch[0] & 0xFFC00003u, fetch[1], fetch[2], fetch[3] & 0x1FFFu,
                                 fetch[4] & 0x3FCu, fetch[5] & 0xFFFFFE00u};
   uint64_t key = Fnv(identity, sizeof(identity));
+  const uint64_t identity_key = key;
   // Volumes: tiled ones use TiledOffset3D; linear slices are 4 KiB aligned.
   const uint32_t height_aligned = (blocks_h + 31) & ~31u;
   const size_t slice_pitch = (size_t(row_pitch) * blocks_h + 4095) & ~size_t(4095);
@@ -300,32 +301,55 @@ uint16_t TextureCache::FindOrDecode(const uint8_t *base, const uint32_t fetch[6]
             (tiled ? size_t(TiledOffset2D(0, int32_t(blocks_h - 1), pitch_blocks, bpb_log2)) +
                          size_t(pitch_blocks) * 32 * bpb
                    : size_t(row_pitch) * blocks_h);
-  // Small textures are hashed whole: the game edits some in place (the font atlas gains glyphs
-  // over time), which a sparse sample misses. Large ones are sampled at 16 points.
-  if (span <= kFullHashBytes) {
+  // Small textures, and any texture seen changing in place (cutscene video frames, whose
+  // letterbox bars and slow pans defeat a sparse sample), are hashed whole: the game edits
+  // some in place (the font atlas gains glyphs over time). Other large ones are sampled at
+  // 256 points.
+  const auto live_entry = live_.find(identity_key);
+  const bool dynamic = live_entry != live_.end() && live_entry->second.dynamic;
+  if (span <= kFullHashBytes || dynamic) {
     key = HashBytes(source, span, key);
   } else {
-    for (uint32_t i = 0; i < 16; ++i) {
-      const size_t at = (span / 16) * i;
+    constexpr uint32_t kSamples = 256;
+    for (uint32_t i = 0; i < kSamples; ++i) {
+      const size_t at = (span / kSamples) * i;
       key = HashBytes(source + at, std::min<size_t>(16, span - at), key);
     }
   }
-  if (auto found = textures_.find(key); found != textures_.end())
+  if (auto found = textures_.find(key); found != textures_.end()) {
+    ids_[found->second].last_used = frame_number_;
     return found->second;
-  if (volume ? next_texture_3d_ >= kTexture3DSlots
-      : cube ? next_texture_cube_ >= kTextureCubeSlots
-             : next_texture_ >= kMaxTextures) {
+  }
+  // New contents. For a texture seen before with other contents, update the other of its two
+  // images instead of allocating one more.
+  const int kind = volume ? 1 : cube ? 2 : 0;
+  Live &live = live_[identity_key];
+  uint16_t id = 0;
+  if (live.ids[live.current]) {
+    live.dynamic = true;  // same texture, new contents
+    const uint8_t next = live.current ^ 1;
+    id = live.ids[next];
+    if (id) {
+      textures_.erase(ids_[id].content);  // that image's old contents are gone
+    } else {
+      id = live.ids[next] = AllocateId(kind);
+    }
+    if (id)
+      live.current = next;
+  } else {
+    id = live.ids[live.current] = AllocateId(kind);
+  }
+  if (!id) {
     if (!full_warned_) {
       full_warned_ = true;
       REXLOG_WARN("shadow_renderer: texture table full ({} textures)", kMaxTextures);
     }
     return 0;
   }
+  ids_[id] = {key, identity_key, frame_number_};
 
   TextureUpload upload;
-  upload.id = volume ? (kTexture3DBit | next_texture_3d_++)
-              : cube ? (kTextureCubeBit | next_texture_cube_++)
-                     : next_texture_++;
+  upload.id = id;
   upload.layers = layers;
   upload.width = width;
   upload.height = height;
@@ -410,6 +434,57 @@ uint16_t TextureCache::FindOrDecode(const uint8_t *base, const uint32_t fetch[6]
   textures_.emplace(key, uint16_t(upload.id));
   frame.new_textures.push_back(std::move(upload));
   return uint16_t(frame.new_textures.back().id);
+}
+
+uint16_t TextureCache::AllocateId(int kind) {
+  if (!free_ids_[kind].empty()) {
+    const uint16_t id = free_ids_[kind].back();
+    free_ids_[kind].pop_back();
+    return id;
+  }
+  switch (kind) {
+    case 1:
+      return next_texture_3d_ < kTexture3DSlots ? uint16_t(kTexture3DBit | next_texture_3d_++) : 0;
+    case 2:
+      return next_texture_cube_ < kTextureCubeSlots ? uint16_t(kTextureCubeBit | next_texture_cube_++)
+                                                    : 0;
+    default:
+      return next_texture_ < kMaxTextures ? uint16_t(next_texture_++) : 0;
+  }
+}
+
+void TextureCache::ForgetId(uint16_t id) {
+  auto info = ids_.find(id);
+  if (info == ids_.end())
+    return;
+  if (auto t = textures_.find(info->second.content); t != textures_.end() && t->second == id)
+    textures_.erase(t);
+  if (auto l = live_.find(info->second.identity); l != live_.end()) {
+    for (uint16_t &slot : l->second.ids)
+      if (slot == id)
+        slot = 0;
+    if (!l->second.ids[0] && !l->second.ids[1])
+      live_.erase(l);
+  }
+  ids_.erase(info);
+}
+
+void TextureCache::FinishFrame(FrameRecord &frame) {
+  ++frame_number_;
+  // Every 5 seconds, free textures unused for 10 (at 60 frames per second). The renderer
+  // releases their images; no frame in flight can still use them by then.
+  constexpr uint64_t kCheckEvery = 300, kUnusedFor = 600;
+  if (frame_number_ % kCheckEvery)
+    return;
+  std::vector<uint16_t> stale;
+  for (const auto &[id, info] : ids_)
+    if (frame_number_ - info.last_used > kUnusedFor)
+      stale.push_back(id);
+  for (uint16_t id : stale) {
+    ForgetId(id);
+    frame.freed_textures.push_back(id);
+    free_ids_[(id & kTexture3DBit) ? 1 : (id & kTextureCubeBit) ? 2 : 0].push_back(id);
+  }
 }
 
 uint16_t TextureCache::Sampler(const uint32_t fetch[6], FrameRecord &frame) {

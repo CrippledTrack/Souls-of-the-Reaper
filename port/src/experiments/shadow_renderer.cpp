@@ -9,6 +9,7 @@
 //
 // Not handled yet: MSAA, stencil, non-indexed draws (see experiments/gpu-layer/RENDERING.md).
 #include "shadow_renderer.h"
+#include "shadow_compare.h"
 #include "shadow_overlay.h"
 #include "shadow_shaders.h"
 #include "overlay_shaders/immediate_ps.h"
@@ -23,9 +24,12 @@
 
 #include <rex/ui/window.h>
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/presenter.h>
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <array>
 #include <atomic>
@@ -62,6 +66,15 @@ REXCVAR_DEFINE_INT32(shadow_debug_flags, 0, "Experiments",
 REXCVAR_DEFINE_BOOL(shadow_debug_layout, false, "Experiments",
                     "Every 600 frames, log each draw's render target, state and textures, the "
                     "resolves between them, and the vertex constants of draws 1 and 13");
+REXCVAR_DEFINE_INT32(shadow_render_height, 0, "Experiments",
+                     "Vertical resolution the Shadow renderer draws the game at (e.g. 1080, "
+                     "1440); 0: the game's own 720. Any value works: guest coordinates are "
+                     "scaled by height / 720. Read at startup");
+REXCVAR_DEFINE_STRING(shadow_compare_dir, "", "Experiments",
+                      "Folder for side-by-side captures (F9, --shadow_compare_every); empty: "
+                      "<user data>/shadow_compare");
+REXCVAR_DEFINE_INT32(shadow_compare_every, 0, "Experiments",
+                     "Save a side-by-side capture every this many seconds (0: only on F9)");
 REXCVAR_DEFINE_STRING(shadow_shader_dir, "", "Experiments",
                       "Folder of XenosRecomp SPIR-V for the experimental renderer "
                       "(<vs|ps>_<header hash>.spv); empty: convert automatically into the user "
@@ -78,6 +91,10 @@ std::atomic<bool> skip_in_hooks{false};
 // --shadow_renderer_only with the SDK's host_presentation off: the renderer presents into the
 // game window directly and draws ReXGlue's overlays (shadow_overlay.cpp).
 std::atomic<bool> in_game_window{false};
+// Side-by-side captures: requested by F9; ReXGlue's presenter (null in Vulkan-only mode).
+std::atomic<bool> capture_requested{false};
+std::function<rex::ui::Presenter *()> rexglue_presenter;  // set once at Initialize
+std::filesystem::path compare_dir;
 }  // namespace
 namespace {
 
@@ -148,8 +165,10 @@ class Renderer {
       std::lock_guard lock(mutex_);
       // Keep the texture and sampler announcements of a frame that is replaced unseen.
       if (pending_) {
-        for (auto &t : pending_->new_textures)
-          frame->new_textures.push_back(std::move(t));
+        // Older uploads first: the same id may be updated by both frames.
+        frame->new_textures.insert(frame->new_textures.begin(),
+                                   std::make_move_iterator(pending_->new_textures.begin()),
+                                   std::make_move_iterator(pending_->new_textures.end()));
         for (auto &d : pending_->new_samplers)
           frame->new_samplers.push_back(d);
         for (auto &b : pending_->new_vertex_blocks)
@@ -157,6 +176,10 @@ class Renderer {
         frame->freed_vertex_blocks.insert(frame->freed_vertex_blocks.end(),
                                           pending_->freed_vertex_blocks.begin(),
                                           pending_->freed_vertex_blocks.end());
+        // Frees first: a dropped frame's freed ids may be reused by this frame's uploads.
+        frame->freed_textures.insert(frame->freed_textures.begin(),
+                                     pending_->freed_textures.begin(),
+                                     pending_->freed_textures.end());
       }
       std::swap(pending_, frame);
     }
@@ -166,6 +189,8 @@ class Renderer {
 
  private:
   void Run() {
+    if (REXCVAR_GET(shadow_render_height) > 0)
+      scale_ = float(REXCVAR_GET(shadow_render_height)) / 720.0f;
     if (!CreateDevice() || !CreateWindowAndSurface() || !CreateSwapchain() || !CreateFrames() ||
         !CreateResources()) {
       REXLOG_ERROR("shadow_renderer: setup failed; the second window stays off");
@@ -173,6 +198,8 @@ class Renderer {
       return;
     }
     REXLOG_INFO("shadow_renderer: running on {}", device_name_);
+    REXLOG_INFO("shadow_renderer: drawing at {}x{} (scale {:.3f})", Scaled(1280), Scaled(720),
+                scale_);
     running_.store(true, std::memory_order_release);
     while (true) {
       std::unique_ptr<FrameRecord> frame;
@@ -604,6 +631,7 @@ class Renderer {
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
       return;
     dfn_.vkResetFences(device_, 1, &frame.fence);
+    ++submit_counter_;
 
     VkCommandBuffer cmd = frame.commands;
     dfn_.vkResetCommandBuffer(cmd, 0);
@@ -644,6 +672,8 @@ class Renderer {
       dfn_.vkCmdBlitImage(cmd, shown->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                           swapchain_images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                           VK_FILTER_LINEAR);
+      if (CaptureDue())
+        RecordCapture(cmd, *shown);
       Transition(cmd, *shown, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     } else {
       const VkClearColorValue black = {{0.02f, 0.02f, 0.03f, 1.0f}};
@@ -679,6 +709,8 @@ class Renderer {
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &render_done_[image];
     dfn_.vkQueueSubmit(queue_, 1, &submit, frame.fence);
+    if (capture_.buffer.buffer)
+      FinishCapture(frame, guest.guest_frame);
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
@@ -716,7 +748,8 @@ class Renderer {
   // Upload budget per frame; the rest of a burst of new textures waits for later frames.
   static constexpr VkDeviceSize kUploadBudget = VkDeviceSize(32) << 20;
   // XenosRecomp shared constants: descriptor indices, then g_Booleans at 256,
-  // g_SwappedTexcoords at 260, g_HalfPixelOffset at 264, g_AlphaThreshold at 272.
+  // g_SwappedTexcoords at 260, g_HalfPixelOffset at 264, g_AlphaThreshold at 272,
+  // g_ResolutionScaleInv at 276, g_AlphaTestDirection at 280.
   static constexpr uint32_t kSharedConstantsSize = 288;
 
   uint32_t MemoryType(uint32_t bits, VkMemoryPropertyFlags flags) const {
@@ -1099,35 +1132,75 @@ class Renderer {
   static constexpr VkFrontFace kClockwiseFront = VK_FRONT_FACE_CLOCKWISE;
   static constexpr VkFrontFace kCounterClockwiseFront = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
-  // RB_COLORCONTROL alpha test: bit 3 enable, bits 0-2 function (D3DCMP - 1). XenosRecomp
-  // only implements "pass if alpha >= ref", which covers GREATER and GREATEREQUAL; NEVER and
-  // ALWAYS make the test meaningless and the LESS variants are not supported.
-  static bool AlphaTestEnabled(uint32_t color_control) {
+  // RB_COLORCONTROL alpha test: bit 3 enable, bits 0-2 function (0 never, 1 less, 2 equal,
+  // 3 less-equal, 4 greater, 5 not-equal, 6 greater-equal, 7 always). XenosRecomp's shaders
+  // keep a pixel when (alpha - threshold) * direction >= 0, which covers the greater and less
+  // families (equality is treated as passing). Returns the direction: +1, -1, or 0 for no test.
+  static int AlphaTestDirection(uint32_t color_control) {
     if (!(color_control & 8))
-      return false;
-    const uint32_t func = color_control & 7;
-    if (func == 4 || func == 6)
-      return true;
-    if (func != 7) {
-      static uint32_t logged = 0;
-      if (!(logged & (1u << func))) {
-        logged |= 1u << func;
-        REXLOG_WARN("shadow: unsupported alpha test function {}", func);
+      return 0;
+    switch (color_control & 7) {
+      case 4: case 6: return 1;
+      case 1: case 3: return -1;
+      case 0: case 7: return 0;  // never: the draw is skipped; always: no test
+      default: {
+        static uint32_t logged = 0;
+        const uint32_t func = color_control & 7;
+        if (!(logged & (1u << func))) {
+          logged |= 1u << func;
+          REXLOG_WARN("shadow: unsupported alpha test function {}", func);
+        }
+        return 0;
       }
     }
-    return false;
+  }
+
+  // Alpha test "never": no pixel passes, so the draw writes nothing (colour or depth).
+  static bool AlphaTestRejectsAll(uint32_t color_control) {
+    return (color_control & 8) && (color_control & 7) == 0;
   }
 
   // RB_COLORCONTROL bit 4: alpha to coverage. Targets are rendered single-sampled, so it is
   // approximated by discarding below half alpha (where most samples would be uncovered).
   static bool AlphaToCoverage(uint32_t color_control) { return (color_control >> 4) & 1; }
 
-  // Spec constant bit SPEC_CONSTANT_ALPHA_TEST, and the threshold the shader clips against.
-  static bool AlphaClip(const decltype(DrawRecord::state) &s, float *threshold) {
-    const bool test = AlphaTestEnabled(s.color_control);
+  // Spec constant bit SPEC_CONSTANT_ALPHA_TEST, and the threshold and direction the shader
+  // clips with.
+  static bool AlphaClip(const decltype(DrawRecord::state) &s, float *threshold, float *direction) {
+    const int test = AlphaTestDirection(s.color_control);
     const bool coverage = AlphaToCoverage(s.color_control);
+    if (test < 0) {  // keep low alpha; the coverage cut (keep high alpha) can't be combined
+      *threshold = s.alpha_ref;
+      *direction = -1.0f;
+      return true;
+    }
     *threshold = std::max(test ? s.alpha_ref : 0.0f, coverage ? 0.5f : 0.0f);
-    return test || coverage;
+    *direction = 1.0f;
+    return test != 0 || coverage;
+  }
+
+  // Logs, once per kind (reason, primitive type and shaders), why a draw could not be drawn,
+  // so effects that silently go missing can be traced to their cause.
+  void NoteSkippedDraw(const DrawRecord &draw, const char *reason) {
+    std::string why;
+    bool supported = true;
+    Topology(draw.primitive, &supported);
+    if (reason) {
+      why = reason;
+    } else if (!supported) {
+      why = fmt::format("primitive type {} not supported", draw.primitive);
+    } else if (!GetShader(false, draw.vertex_shader) ||
+               (draw.pixel_shader && !GetShader(true, draw.pixel_shader))) {
+      why = "shader not converted (yet)";
+    } else {
+      why = "pipeline creation failed";
+    }
+    const std::string key = fmt::format("{}/{:016x}/{:016x}", why, draw.vertex_shader,
+                                        draw.pixel_shader);
+    if (skip_reasons_.insert(key).second)
+      REXLOG_WARN("shadow_renderer: skipped a draw ({}): primitive {}, {} indices, vs {:016x}, "
+                  "ps {:016x}",
+                  why, draw.primitive, draw.index_count, draw.vertex_shader, draw.pixel_shader);
   }
 
   VkPipeline GetPipeline(const DrawRecord &draw, const VertexLayout &layout, VkFormat color_format) {
@@ -1138,8 +1211,9 @@ class Renderer {
     std::string key = fmt::format("{:016x}/{:016x}/{}/{:08x}/{:x}/{}/", draw.vertex_shader,
                                   draw.pixel_shader, int(topology), draw.state.blend_control,
                                   draw.state.color_mask & 0xF, int(color_format));
-    float unused_threshold;
-    const uint32_t spec_constants = AlphaClip(draw.state, &unused_threshold) ? 2u : 0u;  // SPEC_CONSTANT_ALPHA_TEST
+    float unused_threshold, unused_direction;
+    const uint32_t spec_constants =
+        AlphaClip(draw.state, &unused_threshold, &unused_direction) ? 2u : 0u;  // SPEC_CONSTANT_ALPHA_TEST
     key += fmt::format("{}/", spec_constants);
     for (const auto &e : layout.elements)
       key += fmt::format("{}.{},", e.usage, e.index);
@@ -1358,6 +1432,15 @@ class Renderer {
   void ProcessUploads(VkCommandBuffer cmd, Frame &frame, FrameRecord &guest) {
     for (const SamplerDesc &desc : guest.new_samplers)
       CreateSampler(desc);
+    // Textures the game stopped using (unused for seconds, so no frame in flight has them).
+    for (uint16_t id : guest.freed_textures) {
+      if (Image *image = TextureImage(id))
+        DestroyImage(*image);
+      textures_ready_.erase(id);
+      texture_shapes_.erase(id);
+      texture_last_submit_.erase(id);
+      std::erase_if(upload_queue_, [id](const TextureUpload &u) { return u.id == id; });
+    }
     for (TextureUpload &upload : guest.new_textures)
       upload_queue_.push_back(std::move(upload));
     guest.new_textures.clear();
@@ -1386,6 +1469,28 @@ class Renderer {
       return;
     Image &image = volume ? textures_3d_[slot] : cube ? textures_cube_[slot] : textures_[slot];
     const VkFormat format = HostFormat(upload.format);
+    // New contents for an id that already has an image (a texture the game rewrites, such
+    // as cutscene video frames): copy into the same image when its shape is unchanged.
+    const TextureShape shape = {uint32_t(format), upload.width, upload.height, upload.depth,
+                                upload.levels, upload.layers, upload.swizzle};
+    if (image.image) {
+      // The previous submission may still be sampling it.
+      if (auto used = texture_last_submit_.find(upload.id);
+          used != texture_last_submit_.end() && used->second + 1 >= submit_counter_)
+        dfn_.vkQueueWaitIdle(queue_);
+      if (auto old = texture_shapes_.find(upload.id);
+          old == texture_shapes_.end() || old->second != shape)
+        DestroyImage(image);
+    }
+    texture_shapes_[upload.id] = shape;
+    const bool reuse = image.image != VK_NULL_HANDLE;
+    if (!reuse && !CreateTextureImage(upload, format, volume, cube, image))
+      return;
+    UploadTextureData(cmd, frame, upload, staging, image, volume, cube, reuse);
+  }
+
+  bool CreateTextureImage(const TextureUpload &upload, VkFormat format, bool volume, bool cube,
+                          Image &image) {
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     info.format = format;
@@ -1397,7 +1502,7 @@ class Renderer {
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (dfn_.vkCreateImage(device_, &info, nullptr, &image.image) != VK_SUCCESS)
-      return;
+      return false;
     VkMemoryRequirements requirements;
     dfn_.vkGetImageMemoryRequirements(device_, image.image, &requirements);
     VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -1407,7 +1512,7 @@ class Renderer {
     if (alloc.memoryTypeIndex == UINT32_MAX ||
         dfn_.vkAllocateMemory(device_, &alloc, nullptr, &image.memory) != VK_SUCCESS) {
       DestroyImage(image);
-      return;
+      return false;
     }
     dfn_.vkBindImageMemory(device_, image.image, image.memory, 0);
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -1421,9 +1526,15 @@ class Renderer {
     view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, upload.levels, 0, upload.layers};
     if (dfn_.vkCreateImageView(device_, &view, nullptr, &image.view) != VK_SUCCESS) {
       DestroyImage(image);
-      return;
+      return false;
     }
+    return true;
+  }
 
+  void UploadTextureData(VkCommandBuffer cmd, Frame &frame, const TextureUpload &upload,
+                         VkDeviceSize staging, Image &image, bool volume, bool cube, bool reuse) {
+    const uint32_t slot = upload.id & (volume ? 0x7FFF : 0x3FFF);
+    const uint32_t set = volume ? 1 : cube ? 2 : 0;
     std::memcpy(frame.arena.mapped + staging, upload.data.data(), upload.data.size());
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1453,16 +1564,29 @@ class Renderer {
                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
                               0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    VkDescriptorImageInfo descriptor{VK_NULL_HANDLE, image.view,
-                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = sets_[set];
-    write.dstArrayElement = slot;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    write.pImageInfo = &descriptor;
-    dfn_.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    if (!reuse) {  // a reused image keeps its view, so its descriptor stays valid
+      VkDescriptorImageInfo descriptor{VK_NULL_HANDLE, image.view,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      write.dstSet = sets_[set];
+      write.dstArrayElement = slot;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      write.pImageInfo = &descriptor;
+      dfn_.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
     textures_ready_.insert(upload.id);
+  }
+
+  // The image behind a texture id (2D, 3D or cube), or null.
+  Image *TextureImage(uint32_t id) {
+    const bool volume = id & kTexture3DBit;
+    const bool cube = !volume && (id & kTextureCubeBit);
+    const uint32_t slot = id & (volume ? 0x7FFF : 0x3FFF);
+    const uint32_t set = volume ? 1 : cube ? 2 : 0;
+    if (slot == 0 || slot >= kDescriptorSlots[set])
+      return nullptr;
+    return volume ? &textures_3d_[slot] : cube ? &textures_cube_[slot] : &textures_[slot];
   }
 
   // --- Render targets ------------------------------------------------------------------------
@@ -1471,8 +1595,17 @@ class Renderer {
   // for depth, all kTargetWidth x kTargetHeight; draws use guest pixel coordinates. Formats
   // that alias the same EDRAM do not share contents yet, and MSAA is rendered as 1x.
 
-  static constexpr uint32_t kTargetWidth = 2048;
+  static constexpr uint32_t kTargetWidth = 2048;   // guest pixels
   static constexpr uint32_t kTargetHeight = 1536;
+  // Host pixels per guest pixel (--shadow_render_height / 720), fixed for the session. Every
+  // guest pixel quantity (target sizes, viewports, scissors, resolve rectangles) is scaled by
+  // it; shaders get its inverse for vPos (XenosRecomp's g_ResolutionScaleInv).
+  float scale_ = 1.0f;
+  uint32_t TargetWidth() const { return uint32_t(std::ceil(kTargetWidth * scale_)); }
+  uint32_t TargetHeight() const { return uint32_t(std::ceil(kTargetHeight * scale_)); }
+  uint32_t Scaled(uint32_t guest_pixels) const {
+    return uint32_t(std::lround(double(guest_pixels) * scale_));
+  }
 
   struct Target {
     Image image;
@@ -1518,13 +1651,13 @@ class Renderer {
     if (target.image.image)
       return &target;
     target.format = format;
-    target.width = kTargetWidth;
-    target.height = kTargetHeight;
+    target.width = TargetWidth();
+    target.height = TargetHeight();
     const VkImageUsageFlags usage =
         (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!CreateImage(VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, format,
-                     {kTargetWidth, kTargetHeight, 1}, 1, usage,
+                     {TargetWidth(), TargetHeight(), 1}, 1, usage,
                      depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, target.image)) {
       targets.erase(key);
       return nullptr;
@@ -1554,8 +1687,8 @@ class Renderer {
       return nullptr;
     Target &source = *source_target;
     const VkFormat dest_format = r.depth ? VK_FORMAT_R32_SFLOAT : source.format;
-    const uint32_t width = std::min(r.width, source.width);
-    const uint32_t height = std::min(r.height, source.height);
+    const uint32_t width = std::min(Scaled(r.width), source.width);
+    const uint32_t height = std::min(Scaled(r.height), source.height);
     Target &dest = resolved_[r.slot];
     if (!dest.image.image || dest.format != dest_format || dest.width != width ||
         dest.height != height) {
@@ -1647,6 +1780,89 @@ class Renderer {
                                          &value, 1, &range);
       }
     }
+  }
+
+  // --- Side-by-side captures (shadow_compare.cpp) -------------------------------------------
+
+  struct Capture {
+    Image image;  // the shown frame converted to RGBA8
+    Buffer buffer;
+    uint32_t width = 0, height = 0;
+  };
+
+  // F9 (any thread) or the --shadow_compare_every timer.
+  bool CaptureDue() {
+    if (capture_requested.exchange(false))
+      return true;
+    const int every = REXCVAR_GET(shadow_compare_every);
+    if (every <= 0)
+      return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_capture_ < std::chrono::seconds(every))
+      return false;
+    last_capture_ = now;
+    return true;
+  }
+
+  // Copies the shown image (transfer source) into a host buffer as RGBA8.
+  void RecordCapture(VkCommandBuffer cmd, Target &shown) {
+    Capture &c = capture_;
+    c.width = shown.width;
+    c.height = shown.height;
+    if (!CreateImage(VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
+                     {c.width, c.height, 1}, 1,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT, c.image) ||
+        !CreateHostBuffer(VkDeviceSize(c.width) * c.height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          c.buffer)) {
+      DestroyImage(c.image);
+      c = {};
+      return;
+    }
+    Barrier(cmd, c.image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit blit{};
+    blit.srcSubresource = blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = blit.dstOffsets[1] = {int32_t(c.width), int32_t(c.height), 1};
+    dfn_.vkCmdBlitImage(cmd, shown.image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c.image.image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    Barrier(cmd, c.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {c.width, c.height, 1};
+    dfn_.vkCmdCopyImageToBuffer(cmd, c.image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                c.buffer.buffer, 1, &region);
+  }
+
+  // After the submit: waits for it, and saves the Vulkan frame with ReXGlue's latest one.
+  void FinishCapture(Frame &frame, uint64_t guest_frame) {
+    Capture &c = capture_;
+    dfn_.vkWaitForFences(device_, 1, &frame.fence, VK_TRUE, UINT64_MAX);
+    compare::Image vulkan{c.width, c.height,
+                          std::vector<uint8_t>(c.buffer.mapped,
+                                               c.buffer.mapped + size_t(c.width) * c.height * 4)};
+    DestroyBuffer(c.buffer);
+    DestroyImage(c.image);
+    c = {};
+    // ReXGlue's guest output at the same moment (absent in Vulkan-only mode).
+    compare::Image rexglue;
+    rex::ui::Presenter *presenter = rexglue_presenter ? rexglue_presenter() : nullptr;
+    if (presenter && !in_game_window.load()) {
+      rex::ui::RawImage raw;
+      if (presenter->CaptureGuestOutput(raw)) {
+        rexglue.width = raw.width;
+        rexglue.height = raw.height;
+        rexglue.rgba.resize(size_t(raw.width) * raw.height * 4);
+        for (uint32_t y = 0; y < raw.height; ++y)
+          std::memcpy(&rexglue.rgba[size_t(y) * raw.width * 4], &raw.data[y * raw.stride],
+                      size_t(raw.width) * 4);
+      }
+    }
+    compare::SaveAsync(compare_dir, guest_frame, std::move(vulkan), std::move(rexglue));
   }
 
   // --- Overlays (ReXGlue's ImGui, in the game window) ----------------------------------------
@@ -2146,6 +2362,8 @@ class Renderer {
     for (size_t i = 0; i < guest.draws.size(); ++i) {
       run_resolves(i);
       const DrawRecord &draw = guest.draws[i];
+      if (AlphaTestRejectsAll(draw.state.color_control))
+        continue;  // alpha test "never": nothing would be written
       const auto &s = draw.state;
 
       // Bind the draw's render target and depth buffer, starting a new rendering pass when
@@ -2179,7 +2397,7 @@ class Renderer {
         depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         depth_attachment.clearValue.depthStencil = {0.0f, 0};
         VkRenderingInfo rendering_info{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        rendering_info.renderArea = {{0, 0}, {kTargetWidth, kTargetHeight}};
+        rendering_info.renderArea = {{0, 0}, {TargetWidth(), TargetHeight()}};
         rendering_info.layerCount = 1;
         rendering_info.colorAttachmentCount = 1;
         rendering_info.pColorAttachments = &color_attachment;
@@ -2198,7 +2416,7 @@ class Renderer {
         dfn_.vkCmdSetBlendConstants(cmd, blend_constants);
         dfn_.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
         dfn_.vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-        VkRect2D scissor{{0, 0}, {kTargetWidth, kTargetHeight}};
+        VkRect2D scissor{{0, 0}, {TargetWidth(), TargetHeight()}};
         dfn_.vkCmdSetScissor(cmd, 0, 1, &scissor);
       }
 
@@ -2206,6 +2424,7 @@ class Renderer {
       VkPipeline pipeline = GetPipeline(draw, layout, color_format);
       const VkDeviceSize constants = reserve(512 * 16 + kSharedConstantsSize, 256);
       if (!pipeline || constants == VK_WHOLE_SIZE) {
+        NoteSkippedDraw(draw, constants == VK_WHOLE_SIZE ? "frame arena full" : nullptr);
         ++skipped;
         continue;
       }
@@ -2217,6 +2436,8 @@ class Renderer {
       std::memset(shared, 0, kSharedConstantsSize);
       for (uint32_t r = 0; r < kTextureSlots; ++r) {
         uint32_t texture = draw.textures[r];
+        if ((texture && texture < kResolveIdBase) || (texture & (kTexture3DBit | kTextureCubeBit)))
+          texture_last_submit_[texture] = submit_counter_;
         if (texture & kTexture3DBit) {
           // Volumes: index into the Texture3D array at 64 + r*4.
           const uint32_t volume = textures_ready_.count(texture) ? texture & 0x7FFF : 0;
@@ -2236,9 +2457,12 @@ class Renderer {
         std::memcpy(shared + 192 + r * 4, &sampler, 4);
       }
       std::memcpy(shared + 256, &draw.booleans, 4);
-      float alpha_threshold;
-      AlphaClip(s, &alpha_threshold);
+      float alpha_threshold, alpha_direction;
+      AlphaClip(s, &alpha_threshold, &alpha_direction);
       std::memcpy(shared + 272, &alpha_threshold, 4);  // g_AlphaThreshold
+      std::memcpy(shared + 280, &alpha_direction, 4);  // g_AlphaTestDirection
+      const float scale_inv = 1.0f / scale_;
+      std::memcpy(shared + 276, &scale_inv, 4);  // g_ResolutionScaleInv
       // g_HalfPixelOffset: D3D9 puts pixel centres at integer coordinates, Vulkan at +0.5. The
       // shaders add this times w to the clip position: half a pixel right and down, in clip
       // units of the viewport (PA_CL_VPORT x/y scale = half the viewport size).
@@ -2259,16 +2483,18 @@ class Renderer {
       VkViewport viewport{};
       const float xs = std::abs(v[0]), ys = std::abs(v[2]);
       if (xs > 0 && ys > 0) {
-        viewport.x = v[1] - xs;
-        viewport.y = v[3] - ys;
-        viewport.width = 2 * xs;
-        viewport.height = 2 * ys;
+        viewport.x = (v[1] - xs) * scale_;
+        viewport.y = (v[3] - ys) * scale_;
+        viewport.width = 2 * xs * scale_;
+        viewport.height = 2 * ys * scale_;
         viewport.minDepth = std::clamp(v[5], 0.0f, 1.0f);
         viewport.maxDepth = std::clamp(v[5] + v[4], 0.0f, 1.0f);
       } else {
-        viewport = {0, 0, 1280, 720, 0, 1};
+        viewport = {0, 0, 1280 * scale_, 720 * scale_, 0, 1};
       }
       dfn_.vkCmdSetViewport(cmd, 0, 1, &viewport);
+      // RB_BLEND_RGBA: the constant colour of the CONSTANT_COLOR/ALPHA blend factors (fades).
+      dfn_.vkCmdSetBlendConstants(cmd, s.blend_constant.data());
 
       // PA_SU_SC_MODE_CNTL: bit 0 cull front, bit 1 cull back, bit 2 clockwise is front.
       // Triangles only; flag 16 turns culling off for comparison.
@@ -2316,8 +2542,8 @@ class Renderer {
           DestroyImage(debug_.image);
           debug_ = {};
           debug_.format = source->format;
-          debug_.width = std::min(w, kTargetWidth);
-          debug_.height = std::min(h, kTargetHeight);
+          debug_.width = std::min(w, TargetWidth());
+          debug_.height = std::min(h, TargetHeight());
           CreateImage(VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, debug_.format,
                       {debug_.width, debug_.height, 1}, 1,
                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -2356,11 +2582,12 @@ class Renderer {
       const double n = double(std::max<uint64_t>(stats_frames_, 1));
       REXLOG_INFO("shadow_renderer: frame {}: {} draws drawn, {} skipped here, {} skipped in "
                   "capture, {} resolves, {} colour and {} depth targets | inline vertices {} KiB, "
-                  "{} cached blocks in {} chunks ({} MiB uploaded so far), "
+                  "{} cached blocks in {} chunks ({} MiB uploaded so far), {} textures, "
                   "capture {:.2f} ms, render {:.2f} ms per frame ({} frames rendered)",
                   guest.guest_frame, drawn, skipped, guest.skipped, guest.resolves.size(),
                   color_targets_.size(), depth_targets_.size(), guest.vertices.size() / 1024,
-                  vertex_blocks_.size(), vertex_chunks_.size(), vertex_block_bytes_ >> 20, stats_capture_ns_ / n / 1e6,
+                  vertex_blocks_.size(), vertex_chunks_.size(), vertex_block_bytes_ >> 20,
+                  textures_ready_.size(), stats_capture_ns_ / n / 1e6,
                   stats_render_ns_ / n / 1e6, stats_frames_);
       stats_frames_ = stats_capture_ns_ = stats_render_ns_ = 0;
     }
@@ -2501,6 +2728,9 @@ class Renderer {
   uint32_t missing_shaders_ = 0;
   std::atomic<bool> running_{false};
   uint64_t stats_frames_ = 0, stats_capture_ns_ = 0, stats_render_ns_ = 0;
+  Capture capture_;
+  std::set<std::string> skip_reasons_;  // NoteSkippedDraw: kinds already logged
+  std::chrono::steady_clock::time_point last_capture_ = std::chrono::steady_clock::now();
   static constexpr uint32_t kOverlayTextures = 256;
   struct OverlayUpload {
     OverlayTexture *target;
@@ -2527,6 +2757,12 @@ class Renderer {
   std::vector<Image> textures_3d_ = std::vector<Image>(kDescriptorSlots[1]);
   std::vector<Image> textures_cube_ = std::vector<Image>(kDescriptorSlots[2]);
   std::set<uint32_t> textures_ready_;
+  // Per texture id: the shape of its image (to reuse it for new contents) and the last
+  // submission that sampled it (to never rewrite it while that may still run).
+  using TextureShape = std::array<uint32_t, 7>;
+  std::unordered_map<uint32_t, TextureShape> texture_shapes_;
+  std::unordered_map<uint32_t, uint64_t> texture_last_submit_;
+  uint64_t submit_counter_ = 0;
   std::vector<VkSampler> samplers_ = std::vector<VkSampler>(kDescriptorSlots[3], VK_NULL_HANDLE);
   std::deque<TextureUpload> upload_queue_;
   std::unordered_map<uint64_t, Target> color_targets_, depth_targets_;
@@ -2609,9 +2845,17 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
 }
 
 void Initialize(rex::ui::WindowedAppContext &context, const std::filesystem::path &user_data_root,
-                rex::ui::ImGuiDrawer *imgui_drawer) {
+                rex::ui::ImGuiDrawer *imgui_drawer,
+                std::function<rex::ui::Presenter *()> game_presenter) {
   if (!Enabled() || renderer)
     return;
+  rexglue_presenter = std::move(game_presenter);
+  compare_dir = REXCVAR_GET(shadow_compare_dir).empty()
+                    ? user_data_root / "shadow_compare"
+                    : std::filesystem::path(REXCVAR_GET(shadow_compare_dir));
+  rex::ui::RegisterBind("bind_shadow_compare", "F9",
+                        "Save a Shadow renderer side-by-side capture",
+                        [] { capture_requested = true; });
   shaders::Start(user_data_root / "shader_cache");
   if (in_game_window.load()) {
     // ReXGlue has no presenter in the window, so its rendering would go nowhere: off from the

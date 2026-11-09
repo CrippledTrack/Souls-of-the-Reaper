@@ -54,7 +54,8 @@ if(SOULS_TITLE_UPDATE)
     list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp
         src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
         src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
-        src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp)
+        src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp
+        src/experiments/shadow_compare.cpp)
     # rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
     find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
         PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"

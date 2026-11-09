@@ -215,6 +215,7 @@ Debug options (`port/src/experiments/shadow_renderer.cpp`):
 | `--shadow_debug_after_draw=<n>` | shows the target right after draw *n* |
 | `--shadow_debug_flags` | 1 depth test off, 2 blending off, 4 all colour writes on, 8 no half-pixel offset, 16 culling off |
 | `--shadow_dump_textures=<dir>` | writes decoded uncompressed 8- and 32-bit textures as PGM/PAM |
+| F9, `--shadow_compare_every=<s>`, `--shadow_compare_dir` | side-by-side captures: ReXGlue's presenter output (`CaptureGuestOutput`) and the Shadow renderer's shown image (read back as RGBA8), plus a ReXGlue \| Vulkan \| difference x4 image at ReXGlue's size; the log gives the mean difference and the share of pixels off by more than 16. Uncompressed PNGs (`shadow_compare.cpp`) |
 | `--shadow_debug_layout` | logs targets, state (including colour and mode control), textures and resolves per draw |
 | `--trace_sequence=<n>` | logs the D3D calls the game makes in frame *n* |
 
@@ -369,6 +370,70 @@ The guest now holds 60 FPS in gameplay with either option. Capture still costs ~
 game thread time (indices 0.6, vertices 1.3, constants 0.3, textures and draw state 1.4),
 and the renderer ~1.2-1.5 ms on its own thread. A sampled check can miss a partial in-place
 edit of a large vertex range.
+
+### Render resolution (test option, 2026-11-08)
+
+`--shadow_render_height=<n>` draws at n lines instead of 720, with a fractional scale
+`n / 720` (1.5 for 1080, 2 for 1440), not an integer multiple. Every guest pixel quantity is
+scaled by it: render target size, viewports, the full-target scissor and render area, and
+resolve rectangles (so resolved textures, the front buffer included, come out at the higher
+resolution and are sampled by UV as before). The half-pixel offset stays in guest pixels,
+which is correct at any scale. Pixel shaders that read their screen position (`vPos`, 15 of
+787) would get host pixels, so the XenosRecomp fork now emits
+`iPos.xy * g_ResolutionScaleInv - 0.5` (a new shared constant at `+276`, `1.0` at native
+resolution); changing the converter rebuilt the shader cache automatically. Checked on the
+title screen and main menu at 1080 and 1440 (60 FPS, sharper text and models); gameplay at
+higher resolutions and the `vPos` shaders specifically are not checked yet. Effects whose
+texel offsets the game computes for 720p (blurs) keep their 720p footprint in screen terms.
+
+### Textures that change in place (2026-11-08)
+
+Cutscene video frames are decoded into the same textures every frame. The cache identified
+textures by their contents, so each video frame became a new texture with a new image that was
+never freed: VRAM grew through every cutscene (and would have slowly through texture streaming),
+until the 4,096-id table filled. Large textures were also only checked at 16 points, which a
+letterboxed or slowly panning video can leave unchanged, so stale frames were shown again.
+
+- A texture is now also tracked by its identity (address and description). New contents for
+  the same identity alternate between two ids, and the renderer copies into the existing image
+  when its shape is unchanged. The other id's image is never the one the previous frame used;
+  the renderer also records the last submission that sampled each id and waits if a rewrite
+  would race it (only possible when it skipped a frame).
+- Ids unused for 10 seconds are freed (checked every 5) and reused; the renderer releases
+  their images. A dropped frame's uploads now go before the next frame's.
+- Textures seen changing in place are hashed whole; other large ones at 256 points.
+- Measured with idle runs through the attract cutscenes: dedicated VRAM stays flat (about
+  225 MB at 720, 650 MB at 1440) and the live texture count stays constant during video.
+
+### Side-by-side review findings (2026-11-08)
+
+From captures in Act I (the Captain Daltyn fight in the cellar, New Tristram, the cathedral):
+
+- **Alpha test functions 1 and 3 (less, less-equal)** were used in gameplay but ignored, so
+  draws that should keep only low-alpha pixels drew everything (a likely cause of the
+  elite ground ring under Captain Daltyn showing blue instead of orange). The XenosRecomp
+  fork now clips with `(alpha - threshold) * g_AlphaTestDirection` (shared `+280`, +1 or -1)
+  and the renderer sets it; "never" skips the draw. Equal and not-equal are still logged as
+  unsupported.
+- **Skipped draws are now logged** once per reason, primitive type and shader pair
+  (`shadow_renderer: skipped a draw (...)`). A gameplay run had none outside the first
+  seconds of shader conversion.
+- **Blend constant (`RB_BLEND_RED`..`ALPHA`, `0x2105`-`0x2108`) was never passed** (always zero).
+  Gameplay frames use it: draws blend with `060c060c` (source constant colour, destination
+  source alpha) into the buffer at EDRAM base 0 before the main scene, which is resolved to a
+  1024x1024 texture (likely the top-down ground-effect map the terrain samples: skill glows
+  such as Grasp of the Dead, elite rings, ground swirls). Now captured per draw and set with
+  `vkCmdSetBlendConstants`. The user's captures of the missing effects predate this fix.
+  Rechecked by the user (run3): Grasp of the Dead's green cracks, hands and area glow are
+  now drawn as in ReXGlue, only dimmer, and they fade out faster. That remaining difference is in
+  intensity (suspect: ignored exponent bias on the HDR render targets), not missing draws.
+- **Character shadows** under units are drawn by the Shadow renderer and missing in ReXGlue's
+  D3D12 renderer; that is a ReXGlue issue (confirmed by the user), not a Vulkan one.
+- **Still open (recheck with the blend constant fix):** large blue swirl or ring effects during
+  the Captain Daltyn fight were missing in Vulkan, and bright glow effects (town portal, cathedral fire) come out brighter and fuller
+  than in ReXGlue, which shows more of the scene through them. Suspects: render targets read
+  through another format (EDRAM aliasing is not modelled) and the ignored exponent bias.
+  Needs a log and capture from that fight.
 
 Next:
 

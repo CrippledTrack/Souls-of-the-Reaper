@@ -447,6 +447,8 @@ void SnapshotBuilder::RecordDraw(const uint8_t *base, uint32_t device, uint32_t 
   s.mode_control = Be32(base, device + kRegs2200 + 0x5 * 4);
   s.vte_control = Be32(base, device + kRegs2200 + 0x6 * 4);
   s.color_mask = Be32(base, device + kRegs2100 + 0x4 * 4);
+  for (uint32_t i = 0; i < 4; ++i)
+    s.blend_constant[i] = BeFloat(base, device + kRegs2100 + (0x5 + i) * 4);
   s.surface_info = Be32(base, device + kRegs2000 + 0x0 * 4);
   s.color_info = Be32(base, device + kRegs2000 + 0x1 * 4);
   s.depth_info = Be32(base, device + kRegs2000 + 0x2 * 4);
@@ -533,6 +535,7 @@ std::unique_ptr<FrameRecord> SnapshotBuilder::Finish(uint64_t guest_frame) {
                 phase_ns[0] / 300e6, phase_ns[1] / 300e6, phase_ns[2] / 300e6, phase_ns[3] / 300e6);
     std::fill(std::begin(phase_ns), std::end(phase_ns), 0);
   }
+  textures_.FinishFrame(*frame);
   frame->freed_vertex_blocks = std::move(freed_blocks_);
   freed_blocks_.clear();
   frame->guest_frame = guest_frame;
