@@ -12,9 +12,9 @@
 // Vertex shaders are patched per vertex layout after this, so these hooks save the pieces
 // just before the init runs, while both are still the originals.
 //
-// Addresses are for the verified USA title update executable (update-usa.json), so this
-// file is compiled into title update builds only.
-#include "generated/update/diablo3_pch.h"
+// Addresses: guest_addresses.h (base disc and USA title update; the names above are the
+// title update's).
+#include "experiments/guest_addresses.h"
 
 #include "experiments/shadow_renderer.h"
 #include "experiments/shadow_shaders.h"
@@ -31,8 +31,8 @@
 #include <unordered_map>
 #include <vector>
 
-DECLARE_REX_FUNC(sub_82D692A0);
-DECLARE_REX_FUNC(sub_82D66188);
+D3_DECLARE(D3_FN_VERTEX_SHADER_INIT);
+D3_DECLARE(D3_FN_PIXEL_SHADER_INIT);
 
 REXCVAR_DEFINE_STRING(capture_shaders, "", "Experiments",
                       "Directory to save every shader container the game creates (empty: off)");
@@ -125,12 +125,12 @@ void Capture(const uint8_t *base, uint32_t object, uint32_t physical, const char
 
 } // namespace
 
-extern "C" void sub_82D692A0(PPCContext &ctx, uint8_t *base) {
+D3_HOOK(D3_FN_VERTEX_SHADER_INIT) {
   Capture(base, ctx.r3.u32, ctx.r4.u32, "vertex init");
-  __imp__sub_82D692A0(ctx, base);
+  D3_ORIGINAL(D3_FN_VERTEX_SHADER_INIT)(ctx, base);
 }
 
-extern "C" void sub_82D66188(PPCContext &ctx, uint8_t *base) {
+D3_HOOK(D3_FN_PIXEL_SHADER_INIT) {
   Capture(base, ctx.r3.u32, ctx.r4.u32, "pixel init");
-  __imp__sub_82D66188(ctx, base);
+  D3_ORIGINAL(D3_FN_PIXEL_SHADER_INIT)(ctx, base);
 }

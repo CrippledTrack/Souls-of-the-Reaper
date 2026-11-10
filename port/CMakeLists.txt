@@ -49,21 +49,23 @@ set(DIABLO3_SOURCES
     src/kernel_overrides.cpp
     src/window_features.cpp
 )
+# Shadow renderer experiment (src/experiments/): the guest addresses it hooks are known for
+# the base disc and the USA title update (src/experiments/guest_addresses.h).
+list(APPEND DIABLO3_SOURCES src/experiments/shader_capture.cpp
+    src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
+    src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
+    src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp
+    src/experiments/shadow_compare.cpp src/experiments/shadow_aspect.cpp)
+# rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
+find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
+    PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
+    NO_DEFAULT_PATH)
+if(SOULS_RENDERDOC_INCLUDE)
+    set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
+endif()
 if(SOULS_TITLE_UPDATE)
-    # gpu-layer experiment: --capture_shaders hooks (addresses are update-only).
-    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp src/experiments/shader_capture.cpp
-        src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
-        src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
-        src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp
-        src/experiments/shadow_compare.cpp)
-    # rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
-    find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
-        PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
-        NO_DEFAULT_PATH)
-    if(SOULS_RENDERDOC_INCLUDE)
-        set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
-            INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
-    endif()
+    list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp)
 else()
     list(APPEND DIABLO3_SOURCES src/base_exit.cpp)
 endif()
@@ -79,7 +81,7 @@ endif()
 # (src/experiments/shadow_shaders.cpp). Skipped when the fork has not been built.
 set(SOULS_XENOSRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/XenosRecomp" CACHE PATH
     "XenosRecomp fork (source tree with build/) staged for the experimental Vulkan renderer")
-if(SOULS_TITLE_UPDATE AND WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
+if(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
     set(_xr_build "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp")
     add_custom_command(TARGET diablo3 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"

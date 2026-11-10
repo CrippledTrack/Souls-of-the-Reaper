@@ -1,18 +1,27 @@
 """Generate counting hooks for every guest function in an address range.
 
-Usage: python gen_range_hooks.py <diablo3_funcs.h> <out.inc> [start] [end]
-Defaults to the Direct3D library range 0x82D40000..0x82DB0000. The output is included by
-port/src/experiments/draw_trace.cpp: one RANGE_HOOK(address, index) line per function.
+Usage: python gen_range_hooks.py [--base] <diablo3_funcs.h> <out.inc> [start] [end]
+Defaults to the title update's Direct3D library range 0x82D40000..0x82DB0000 (with --base,
+the base disc's 0x82D37E40..0x82DA7E40, the same library linked 0x81C0 lower). The output is
+included by port/src/experiments/draw_trace.cpp: one RANGE_HOOK(address, index) line per
+function. Title update: d3d_range_hooks.inc; base disc: d3d_range_hooks_base.inc.
 """
 import re
 import sys
 
-source, out = sys.argv[1:3]
-start = int(sys.argv[3], 16) if len(sys.argv) > 3 else 0x82D40000
-end = int(sys.argv[4], 16) if len(sys.argv) > 4 else 0x82DB0000
+args = sys.argv[1:]
+base_disc = "--base" in args
+if base_disc:
+    args.remove("--base")
+shift = 0x81C0 if base_disc else 0  # base disc: the library is linked this much lower
+source, out = args[0:2]
+start = int(args[2], 16) if len(args) > 2 else 0x82D40000 - shift
+end = int(args[3], 16) if len(args) > 3 else 0x82DB0000 - shift
 # Hooked elsewhere: present, draw, resolve and clear in draw_trace.cpp, and the shader init functions
 # (shader_capture.cpp).
-skip = {0x82D58DD8, 0x82D692A0, 0x82D66188, 0x82D621B0, 0x82D5B9D0, 0x82D57638, 0x82D61D98}
+# (guest_addresses.h names them per executable.)
+skip = {a - shift for a in (0x82D58DD8, 0x82D692A0, 0x82D66188, 0x82D621B0, 0x82D5B9D0,
+                            0x82D57638, 0x82D61D98)}
 
 addresses = sorted({int(a, 16) for a in re.findall(r"DECLARE_REX_FUNC\(sub_([0-9A-F]{8})\)", open(source).read())})
 selected = [a for a in addresses if start <= a < end and a not in skip]

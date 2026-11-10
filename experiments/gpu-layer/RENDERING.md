@@ -386,6 +386,20 @@ title screen and main menu at 1080 and 1440 (60 FPS, sharper text and models); g
 higher resolutions and the `vPos` shaders specifically are not checked yet. Effects whose
 texel offsets the game computes for 720p (blurs) keep their 720p footprint in screen terms.
 
+### Base disc support (2026-11-09)
+
+Everything above was measured on the USA title update. The base disc links the same code at
+other addresses: matching every function body with addresses normalized away showed the
+Direct3D library 0x81C0 lower (all 3094 functions in its range, and every hooked one
+identical apart from global data addresses) and the game's own code 0x3C30 lower (the
+shader loaders, the display mode function, the renderer's draw call site). The hooks now
+name functions through `guest_addresses.h`, which holds both sets, and both executables
+build the experiment; `gen_range_hooks.py --base` writes the base disc's
+`d3d_range_hooks_base.inc`. Device and structure offsets inside the library are unchanged.
+Checked in Vulkan-only mode from a fresh profile: the title screen into the attract mode's
+Act I gameplay, with every draw drawn once its shaders converted. The widescreen options'
+hook runs on the base disc but wider shapes were not re-checked there.
+
 ### Textures that change in place (2026-11-08)
 
 Cutscene video frames are decoded into the same textures every frame. The cache identified
@@ -435,6 +449,33 @@ From captures in Act I (the Captain Daltyn fight in the cellar, New Tristram, th
   through another format (EDRAM aliasing is not modelled) and the ignored exponent bias.
   Needs a log and capture from that fight.
 
+### Wider than 16:9 (Hor+, 2026-11-09)
+
+The 16:9 picture is the game's own choice, not only ReXGlue's letterboxing: `sub_82579690`
+reads `XGetVideoMode` and picks 1280x720 for any HD widescreen mode (1024/852/768/640
+otherwise), ignoring the real display width; `--video_mode_width=2560
+--video_mode_height=1080` alone still gives a 1280x720 front buffer. It stores the size in a
+52-byte display description (`+32` width, `+36` height, `+40` refresh, `+48` aspect float)
+and the aspect again in the graphics manager at `+1216`.
+
+`--shadow_guest_width=<n>` (Vulkan-only mode; `shadow_aspect.cpp`) wraps that function and
+widens the width, scaling both aspect values to match. The engine follows completely: the
+front buffer, render targets and resolves come out n wide, the 3D view is Hor+ (more of the
+world at the sides, no stretching), and the HUD anchors to the new edges (orbs and skills
+bottom-left, minimap bottom-right, quest tracker top-left). Checked at 1680 (21:9) on the
+main menu and in New Tristram. The main menu's backdrop is a fixed 16:9 painting, so its
+right edge smears past where the art ends. `--shadow_guest_height=<n>` does the
+same for the height (both can be combined), and `--shadow_render_height` then scales from that
+height instead of 720.
+
+The engine keeps a fixed vertical field of view, so the view follows the aspect, not the
+pixel count: 16:10 as 1152x720 or 1280x800 shows the same scene (sides trimmed, same as
+the PC version, which players report "zooms in" at 16:10 rather than showing more
+vertically), with the HUD scaled by height. 1280x800 is the better 16:10 choice (more pixels;
+`--shadow_render_height=1600` is exactly 2x for 2560x1600). Checked 2026-11-09 in New Tristram.
+Limits for now: read once at startup (no live resize); at most 2048 (the renderer's guest-space targets; 21:9 and 24:10 fit, 32:9 does
+not); not applied side by side, where ReXGlue's 10 MiB EDRAM and its letterboxing still
+assume the game's size.
 Next:
 
 1. **MSAA** (the menu scene is 2x), with real alpha to coverage; then EDRAM aliasing and
@@ -450,7 +491,7 @@ Next:
    Dynamic resolution and ultrawide come after that.
 6. **Replace ReXGlue's presenter** once the new renderer matches it.
 
-## Tools (title update builds, `port/src/experiments/`)
+## Tools (`port/src/experiments/`)
 
 - `--capture_shaders=<dir>` saves each shader at creation, named by header hash.
 - `--trace_draws=true` counts calls to every function in the D3D library range, per frame,

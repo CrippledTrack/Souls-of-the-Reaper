@@ -68,8 +68,10 @@ REXCVAR_DEFINE_BOOL(shadow_debug_layout, false, "Experiments",
                     "resolves between them, and the vertex constants of draws 1 and 13");
 REXCVAR_DEFINE_INT32(shadow_render_height, 0, "Experiments",
                      "Vertical resolution the Shadow renderer draws the game at (e.g. 1080, "
-                     "1440); 0: the game's own 720. Any value works: guest coordinates are "
-                     "scaled by height / 720. Read at startup");
+                     "1440); 0: the game's own height. Any value works: guest coordinates are "
+                     "scaled by height / the game's height (720 or --shadow_guest_height). "
+                     "Read at startup");
+REXCVAR_DECLARE(int32_t, shadow_guest_height);  // shadow_aspect.cpp
 REXCVAR_DEFINE_STRING(shadow_compare_dir, "", "Experiments",
                       "Folder for side-by-side captures (F9, --shadow_compare_every); empty: "
                       "<user data>/shadow_compare");
@@ -189,8 +191,13 @@ class Renderer {
 
  private:
   void Run() {
+    // Relative to the game's own height (720, or --shadow_guest_height in Vulkan-only mode).
+    const int32_t guest_height = REXCVAR_GET(shadow_renderer_only) &&
+                                         REXCVAR_GET(shadow_guest_height) > 0
+                                     ? REXCVAR_GET(shadow_guest_height)
+                                     : 720;
     if (REXCVAR_GET(shadow_render_height) > 0)
-      scale_ = float(REXCVAR_GET(shadow_render_height)) / 720.0f;
+      scale_ = float(REXCVAR_GET(shadow_render_height)) / float(guest_height);
     if (!CreateDevice() || !CreateWindowAndSurface() || !CreateSwapchain() || !CreateFrames() ||
         !CreateResources()) {
       REXLOG_ERROR("shadow_renderer: setup failed; the second window stays off");

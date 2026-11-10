@@ -17,9 +17,7 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
-#ifdef SOULS_TITLE_UPDATE
 #include "experiments/shadow_renderer.h"
-#endif
 #include "window_features.h"
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
@@ -47,11 +45,8 @@ class Diablo3App : public rex::ReXApp {
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 
-#if defined(SOULS_GPU_PLUGIN) || defined(SOULS_ENABLE_EXTRA_FEATURES) || defined(SOULS_TITLE_UPDATE)
   void OnPreSetup(rex::RuntimeConfig& config) override {
-#ifdef SOULS_TITLE_UPDATE
     d3::shadow::PreSetup();  // experiment: --shadow_renderer_only presents in the game window
-#endif
 #ifdef SOULS_GPU_PLUGIN
     config.gpu_plugin = "xenos";
 #else
@@ -77,7 +72,6 @@ class Diablo3App : public rex::ReXApp {
     }
 #endif
   }
-#endif
 #ifdef SOULS_GPU_PLUGIN
   void OnLoadXexImage(std::string& xex_image) override {
     xex_image = "game:\\Default.xex";
@@ -99,7 +93,6 @@ class Diablo3App : public rex::ReXApp {
 #endif
     (void)drawer;
     title_ = CreateWindowTelemetry(app_context(), window());
-#ifdef SOULS_TITLE_UPDATE
     // ReXGlue's presenter, looked up when a capture is taken (the graphics system is
     // attached to the runtime after the dialogs are created).
     d3::shadow::Initialize(app_context(), user_data_root(), drawer,
@@ -108,18 +101,13 @@ class Diablo3App : public rex::ReXApp {
                                         ? runtime()->graphics_system()->presenter()
                                         : nullptr;
                            });  // experiment
-#endif
   }
-#ifdef SOULS_TITLE_UPDATE
   // Experiment: ReXGlue's overlays for the Vulkan renderer when it owns the game window.
   std::unique_ptr<rex::ui::ImmediateDrawer> OnCreateImmediateDrawer() override {
     return d3::shadow::CreateOverlayDrawer();
   }
-#endif
   void OnShutdown() override {
-#ifdef SOULS_TITLE_UPDATE
     d3::shadow::Shutdown();
-#endif
     title_.reset();
   }
   void OnKeyDown(rex::ui::KeyEvent& event) override {

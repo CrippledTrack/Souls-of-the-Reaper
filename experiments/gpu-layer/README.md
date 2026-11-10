@@ -8,8 +8,9 @@ first milestone, when it only ran in the shadow of ReXGlue's renderer, drawing t
 frames side by side.
 
 It is experimental. It has been tested on Windows only, with the verified USA title update
-build only (the hooks use that executable's addresses), from the title screen through the
-main menu, the inventory and early Act I gameplay.
+(title screen through the main menu, the inventory and early Act I gameplay) and the base
+disc (title screen into early Act I gameplay). The hooks use each executable's own addresses
+(`port/src/experiments/guest_addresses.h`); other executables are not supported.
 
 ## Using it
 
@@ -20,6 +21,8 @@ Both modes are off unless asked for on the command line:
 | `--shadow_renderer=true` | Opens a second window drawn by the Shadow renderer, beside ReXGlue's normal one. Useful for comparing the two. |
 | `--shadow_renderer_only=true` | Draws the game window with the Shadow renderer alone. ReXGlue keeps running the game's GPU command stream on a null backend (no D3D12 or other host graphics API) and its overlays (settings, console, debug, toasts) are drawn by the Shadow renderer. The window title ends in "Vulkan Experimental". |
 | `--shadow_render_height=<n>` | Test option: draws the game at another vertical resolution, e.g. `1080` or `1440` (0, the default, is the game's own 720). Any value works: everything is scaled by n / 720. Read at startup. |
+| `--shadow_guest_width=<n>` | Vulkan-only test option: sets the width of the game's own display (default 1280), e.g. `1680` for 21:9 at 720 lines; wider than 16:9 shows more at the sides and the HUD moves to the window edges. At most 2048. Read at startup. |
+| `--shadow_guest_height=<n>` | Vulkan-only test option: sets the height of the game's own display (default 720), e.g. `800` for 16:10 at 1280 wide. Like the PC version, a taller shape trims the sides rather than showing more above and below. `--shadow_render_height` scales from this height. At most 1536. Read at startup. |
 | **F9** / `--shadow_compare_every=<s>` | Side-by-side capture (with `--shadow_renderer=true`): saves ReXGlue's frame, the Shadow renderer's, and a combined ReXGlue \| Vulkan \| difference image (difference brightened 4x) to `<user data>/shadow_compare` (`--shadow_compare_dir`), and logs how much they differ. The two renderers run independently, so pause the game for exact comparisons, and give both the same resolution. |
 | `--shadow_shader_dir=<dir>` | Uses a hand-made folder of `<vs\|ps>_<hash>.spv` instead of the automatic conversion. |
 | `--shadow_shader_workers=<n>` | Number of XenosRecomp processes converting in parallel (default: half the CPU threads, at most 6). |
@@ -28,6 +31,12 @@ For example, from the title update build folder:
 
 ```
 diablo3.exe --game_data_root "<game>" --update_data_root "<game>\update" --user_data_root "<saves>" --shadow_renderer_only=true
+```
+
+or from the base disc build folder (no update data root):
+
+```
+diablo3.exe --game_data_root "<game>" --user_data_root "<saves>" --shadow_renderer_only=true
 ```
 
 **Shaders convert automatically.** The game's shaders can't be shipped, so every shader the
@@ -63,8 +72,8 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILE
 cmake --build build --target XenosRecomp
 ```
 
-Then rebuild the title update executable (`python scripts/build_windows.py --title-update usa
---skip-codegen`). The build copies `XenosRecomp.exe`, its DXC libraries and `shader_common.h`
+Then rebuild the executable (`python scripts/build_windows.py --skip-codegen` for the base
+disc, with `--title-update usa` for the title update). The build copies `XenosRecomp.exe`, its DXC libraries and `shader_common.h`
 into `<build>/xenosrecomp/` when `tools/XenosRecomp/build` exists.
 
 ## Status
@@ -101,8 +110,8 @@ first test (12% passing, crashes, out-of-memory errors) measured that junk, not 
 
 ### Capture at creation
 
-`port/src/experiments/shader_capture.cpp` fixes this. It is compiled into title update
-builds only, because the addresses are for the USA update executable. It hooks the
+`port/src/experiments/shader_capture.cpp` fixes this. Its addresses come from
+`guest_addresses.h` (the names here are the title update's). It hooks the
 Direct3D in-place init functions that the game's loader (`sub_82585100` / `sub_82585280`)
 calls with the D3D object and the GPU copy:
 
