@@ -55,6 +55,25 @@ index 0000000..0fd4967
 +};
 +
 +}  // namespace rex::graphics::null
+diff --git a/include/rex/ui/window.h b/include/rex/ui/window.h
+index f607be2..2089f11 100644
+--- a/include/rex/ui/window.h
++++ b/include/rex/ui/window.h
+@@ -290,6 +290,14 @@ class Window {
+   /// Valid after Open() returns successfully.
+   virtual void* GetNativeWindowHandle() const { return nullptr; }
+ 
++  /// Creates a Surface of the native window for an app that presents into the window
++  /// itself (host_presentation off, or a window that never gets a Presenter). Null while a
++  /// Presenter is attached, unless the window is open, or if none of the allowed types is
++  /// available. UI thread only; destroy it before the window closes.
++  std::unique_ptr<Surface> CreateAppSurface(Surface::TypeFlags allowed_types) {
++    return presenter_ ? nullptr : CreateSurface(allowed_types);
++  }
++
+   // Desired state stored by the common Window, externally modifiable, read-only
+   // in the implementation.
+   void SetMainMenu(std::unique_ptr<MenuItem> new_main_menu);
 diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
 index 0d8f8af..2174e09 100644
 --- a/src/graphics/CMakeLists.txt

@@ -201,6 +201,18 @@
     lbl_path:['Render Path','Ruta de Render','Chemin de Rendu','Renderpfad','Percorso di Rendering','Caminho de Renderização','Путь рендеринга'],
     lbl_fps:['Frame Rate','Cuadros por Segundo','Fréquence d’Images','Bildrate','Frequenza Fotogrammi','Taxa de Quadros','Частота кадров'],
     lbl_scale:['Image Scaling','Escalado de Imagen','Mise à l’Échelle','Bildskalierung','Ridimensionamento Immagine','Escala de Imagem','Масштабирование изображения'],
+    // Shadow renderer rows (experimental builds on the cross-platform host only).
+    lbl_shres:['Render Resolution','Resolución de Render','Résolution de Rendu','Renderauflösung','Risoluzione di Rendering','Resolução de Renderização','Разрешение рендеринга'],
+    tip_shres:['The Shadow renderer draws the game at this height directly, with no 1×/2×/3× steps. 720p is the game’s own.','El renderizador Shadow dibuja el juego directamente a esta altura, sin pasos 1×/2×/3×. 720p es la del juego.','Le moteur Shadow dessine le jeu directement à cette hauteur, sans paliers 1×/2×/3×. 720p est celle du jeu.','Der Shadow-Renderer zeichnet das Spiel direkt in dieser Höhe, ohne 1×/2×/3×-Stufen. 720p ist die des Spiels.','Il renderer Shadow disegna il gioco direttamente a questa altezza, senza passi 1×/2×/3×. 720p è quella del gioco.','O renderizador Shadow desenha o jogo diretamente nesta altura, sem passos 1×/2×/3×. 720p é a do jogo.','Рендерер Shadow рисует игру сразу в этой высоте, без шагов 1×/2×/3×. 720p — родная для игры.'],
+    val_native:['Native','Nativa','Native','Nativ','Nativa','Nativa','Родное'],
+    val_custom:['Custom','Personalizada','Personnalisée','Eigene','Personalizzata','Personalizada','Своё'],
+    lbl_shcustom:['Custom Height','Altura Personalizada','Hauteur Personnalisée','Eigene Höhe','Altezza Personalizzata','Altura Personalizada','Своя высота'],
+    tip_shcustom:['Lines to draw at, 360 to 2880. The width follows the aspect ratio.','Líneas a dibujar, de 360 a 2880. El ancho sigue la relación de aspecto.','Lignes à dessiner, de 360 à 2880. La largeur suit le format d’image.','Zeilen, 360 bis 2880. Die Breite folgt dem Seitenverhältnis.','Righe da disegnare, da 360 a 2880. La larghezza segue le proporzioni.','Linhas a desenhar, de 360 a 2880. A largura segue a proporção.','Число строк, от 360 до 2880. Ширина следует соотношению сторон.'],
+    tip_native:['Native matches this display when the game starts.','Nativa iguala esta pantalla al iniciar el juego.','Native reprend cet écran au lancement du jeu.','Nativ übernimmt diesen Bildschirm beim Spielstart.','Nativa segue questo schermo all’avvio del gioco.','Nativa acompanha esta tela ao iniciar o jogo.','«Родное» берёт параметры этого экрана при запуске игры.'],
+    tip_aspect_auto:['Auto takes the shape of this display when the game starts (up to about 2.8:1).','Auto toma la forma de esta pantalla al iniciar el juego (hasta 2,8:1 aprox.).','Auto reprend la forme de cet écran au lancement du jeu (jusqu’à 2,8:1 environ).','Auto übernimmt die Form dieses Bildschirms beim Spielstart (bis etwa 2,8:1).','Auto segue la forma di questo schermo all’avvio del gioco (fino a circa 2,8:1).','Auto usa a forma desta tela ao iniciar o jogo (até cerca de 2,8:1).','«Авто» берёт форму этого экрана при запуске игры (примерно до 2,8:1).'],
+    lbl_aspect:['Aspect Ratio','Relación de Aspecto','Format d’Image','Seitenverhältnis','Proporzioni','Proporção de Tela','Соотношение сторон'],
+    tip_aspect:['Shape of the game’s own picture. 21:9 shows more at the sides; 16:10 trims them.','Forma de la imagen del juego. 21:9 muestra más a los lados; 16:10 los recorta.','Forme de l’image du jeu. 21:9 montre plus sur les côtés ; 16:10 les rogne.','Form des Spielbilds. 21:9 zeigt mehr an den Seiten; 16:10 beschneidet sie.','Forma dell’immagine del gioco. 21:9 mostra di più ai lati; 16:10 li taglia.','Forma da imagem do jogo. 21:9 mostra mais nas laterais; 16:10 as corta.','Форма изображения игры. 21:9 показывает больше по бокам; 16:10 обрезает их.'],
+    tip_shadow:['Shadow: experimental Vulkan renderer that draws the game itself. Unfinished; the first launch converts shaders.','Shadow: renderizador Vulkan experimental que dibuja el juego por sí mismo. Sin terminar; el primer inicio convierte shaders.','Shadow : moteur Vulkan expérimental qui dessine le jeu lui-même. Inachevé ; le premier lancement convertit les shaders.','Shadow: experimenteller Vulkan-Renderer, der das Spiel selbst zeichnet. Unfertig; der erste Start konvertiert Shader.','Shadow: renderer Vulkan sperimentale che disegna il gioco da sé. Incompleto; il primo avvio converte gli shader.','Shadow: renderizador Vulkan experimental que desenha o jogo por conta própria. Inacabado; a primeira execução converte shaders.','Shadow: экспериментальный рендерер Vulkan, который сам рисует игру. Не завершён; первый запуск конвертирует шейдеры.'],
     lbl_res:['Internal Resolution','Resolución Interna','Résolution Interne','Interne Auflösung','Risoluzione Interna','Resolução Interna','Внутреннее разрешение'],
     lbl_display:['Display','Pantalla','Affichage','Anzeige','Schermo','Tela','Экран'],
     tip_path:['ROV: stable, faithful. RTV: higher FPS, same visuals.','ROV: estable y fiel. RTV: más FPS, mismo resultado visual.','ROV : stable et fidèle. RTV : plus de FPS, même rendu visuel.','ROV: stabil und originalgetreu. RTV: mehr FPS, gleiches Bild.','ROV: stabile e fedele. RTV: più FPS, stesso risultato visivo.','ROV: estável e fiel. RTV: mais FPS, mesmo visual.','ROV: стабильно и точно как в оригинале. RTV: больше FPS, та же картинка.'],
@@ -257,13 +269,24 @@
   // VK() is true whenever the Vulkan rows apply (always on Linux).
   const WIN_VK=()=>!LINUX&&Array.isArray(CAPS.backends)&&CAPS.backends.includes('vulkan');
   const VK=()=>LINUX||(WIN_VK()&&state.backend===1);
+  // The experimental Shadow renderer: offered for an experimental build while the host
+  // has experimental options on (CAPS.experimental). It is a Render Path choice on
+  // Linux and a Renderer choice on Windows, and replaces the rows it makes moot.
+  const SHADOW_OK=()=>{const b=curBuild();return !!(CAPS.experimental&&b&&b.experimental);};
+  const SHADOW=()=>SHADOW_OK()&&(LINUX?state.vkpath===2:state.backend===2);
+  // Render Resolution: -1 Native (the host reads the display), presets, 9 Custom
+  // (state.shcustom lines). Aspect Ratio: -1 Auto (from the display), presets.
+  const SHADOW_HEIGHTS=[0,1080,1440,2160];  // 0: the game's own 720 lines
+  const SHADOW_ASPECTS=['16:9','16:10','21:9'];
+  const SHADOW_CUSTOM=9,SHADOW_MIN=360,SHADOW_MAX=2880;
+  const customHeight=()=>Math.min(SHADOW_MAX,Math.max(SHADOW_MIN,Math.round(Number(state.shcustom)||1080)));
   function curBuild(){
     if(!CAPS.builds||!CAPS.builds.length)return null;
     return CAPS.builds.find(b=>b.id===state.build)||CAPS.builds[0];
   }
   const EXTRAS=()=>{const b=curBuild();return !!(b&&b.extras);};
   // Frame-rate choices for the selected renderer and render path.
-  const fpsList=()=>FPS[VK()?1:state.path];
+  const fpsList=()=>FPS[VK()||SHADOW()?1:state.path];
 
   // Game language options, injected by Launcher.ps1. Each: {code, name,
   // langId, countryId, uiIdx}. Fixed list of 5 (independent of which CPKs are
@@ -290,7 +313,7 @@
   // vkpath/vkscale are the Vulkan rows; build is a CAPS.builds id. vsyncMode
   // -1 is Auto (on for caps up to 60 FPS); the older on/off `vsync` key, which
   // only Vulkan showed, is not read so D3D12 users keep the automatic rule.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:2,vkpath:0,vsyncMode:-1,backend:0,build:null,username:''};
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,glyphs:2,vkpath:0,vsyncMode:-1,backend:0,build:null,username:'',shres:-1,shaspect:-1,shcustom:1080};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
     const v=window.SAVED_STATE[k];
     if(typeof v==='number'||((k==='build'||k==='username')&&typeof v==='string'))_sdefault[k]=v;});}
@@ -351,29 +374,46 @@
     const rows=[];
     if(CAPS.builds&&CAPS.builds.length)
       rows.push({key:'build',label:T.lbl_build[L],opts:CAPS.builds.map(b=>({v:b.id,t:b.label})),tip:T.tip_build[L]});
+    const shadowOk=SHADOW_OK(),shadow=SHADOW();
     if(WIN_VK())
-      rows.push({key:'backend',label:T.lbl_backend[L],opts:opts(['D3D12','Vulkan']),tip:T.tip_backend[L]});
-    rows.push(VK()
-      ? {key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host']),tip:T.tip_path_vk[L]}
-      : {key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
+      rows.push({key:'backend',label:T.lbl_backend[L],opts:opts(['D3D12','Vulkan'].concat(shadowOk?['Shadow']:[])),
+        tip:shadow?T.tip_shadow[L]:T.tip_backend[L]});
+    // The Shadow renderer has no render paths of its own (Windows: it is the Renderer).
+    if(VK()||LINUX)
+      rows.push({key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host'].concat(shadowOk&&LINUX?['Shadow']:[])),
+        tip:shadow?T.tip_shadow[L]:T.tip_path_vk[L]});
+    else if(!shadow)
+      rows.push({key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
     // The frame limiter and the 60 Hz game timing (vsync) are shared by both
     // renderers. Vulkan has no ROV path, so it offers the RTV frame rates.
     rows.push({key:'fps',label:T.lbl_fps[L],opts:opts(fpsList().map(f=>f+' FPS'))});
     rows.push({key:'vsyncMode',label:'VSync',tip:T.tip_vsync[L],
       opts:[{v:-1,t:T.val_auto[L]},{v:1,t:T.val_on[L]},{v:0,t:T.val_off[L]}]});
+    if(shadow){
+      // It presents its own picture (no FSR/CAS) and draws at any height directly, so
+      // Image Scaling and the 1×/2×/3× Internal Resolution give way to these two.
+      rows.push({key:'shres',label:T.lbl_shres[L],tip:T.tip_shres[L]+' '+T.tip_native[L],
+        opts:[{v:-1,t:T.val_native[L]}].concat(opts(['720p','1080p','1440p','2160p']),[{v:SHADOW_CUSTOM,t:T.val_custom[L]}])});
+      // Any height works, so odd displays and supersampling get a box to type one in.
+      if(state.shres===SHADOW_CUSTOM)
+        rows.push({key:'shcustom',label:T.lbl_shcustom[L],input:heightInput,novals:true,tip:T.tip_shcustom[L]});
+      rows.push({key:'shaspect',label:T.lbl_aspect[L],tip:T.tip_aspect[L]+' '+T.tip_aspect_auto[L],
+        opts:[{v:-1,t:T.val_auto[L]}].concat(opts(SHADOW_ASPECTS))});
+    }else{
     // Vulkan's scaling row puts Off (plain bilinear) first so it stays the default.
     rows.push(VK()
       ? {key:'vkscale',label:T.lbl_scale[L],opts:opts([T.val_off[L],'FSR','CAS']),tip:T.tip_scale[L]}
       : {key:'scale',label:T.lbl_scale[L],opts:opts(['FSR','CAS',T.val_off[L]]),tip:T.tip_scale[L]});
     rows.push({key:'res',label:T.lbl_res[L],opts:ingame.concat(opts(['1×','2×','3×'])),
       tip:T.tip_res[L]+(ext?' '+T.tip_ingame[L]:'')});
+    }
     rows.push({key:'display',label:T.lbl_display[L],opts:ingame.concat(opts([T.val_full[L],T.val_win[L]])),
       tip:ext?T.tip_ingame[L]:undefined});
     rows.push({key:'mouse',label:T.lbl_mouse[L],opts:opts([T.val_off[L],T.val_on[L]])});
     // The cvar behind this only exists in builds that carry the extras.
     if(ext)rows.push({key:'glyphs',label:T.lbl_glyphs[L],opts:opts(['Xbox','PlayStation',T.val_auto[L]]),tip:T.tip_glyphs[L]});
     // The player name is only offered by hosts that report one in SAVED_STATE.
-    if(HAS_NAME)rows.push({key:'username',label:T.lbl_name[L],input:true,novals:true,tip:T.tip_name[L]});
+    if(HAS_NAME)rows.push({key:'username',label:T.lbl_name[L],input:nameInput,novals:true,tip:T.tip_name[L]});
     rows.push({key:'remap',label:T.remapBtn[L],nav:true,novals:true});
     return rows;
   }
@@ -402,7 +442,7 @@
         cls:(d.key===lastKey?'active':'')+(d.nav?' nav':''),
       });
       row.dataset.key=d.key;
-      if(d.input)row.appendChild(nameInput());
+      if(d.input)row.appendChild(d.input());
       row.addEventListener('focus',()=>{lastKey=d.key;
         document.querySelectorAll('.opt-row').forEach(x=>x.classList.remove('active'));row.classList.add('active');});
       menu.appendChild(row);
@@ -417,6 +457,19 @@
     input.placeholder='User';input.value=state.username;input.setAttribute('aria-label',T.lbl_name[UIL()]);
     input.addEventListener('input',()=>{state.username=input.value;});
     // Keep Space/Enter/arrows for typing instead of the row's own key handling.
+    input.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')input.closest('.opt-row').focus();});
+    input.addEventListener('click',e=>e.stopPropagation());
+    return input;
+  }
+
+  // Number box for the Shadow renderer's custom render height.
+  function heightInput(){
+    const input=document.createElement('input');
+    input.className='opt-name';input.type='text';input.inputMode='numeric';input.maxLength=4;input.spellcheck=false;
+    input.placeholder='1080';input.value=String(customHeight());input.setAttribute('aria-label',T.lbl_shcustom[UIL()]);
+    input.addEventListener('input',()=>{input.value=input.value.replace(/\D/g,'');state.shcustom=Number(input.value)||0;});
+    // Out-of-range entries snap into range when the box is left.
+    input.addEventListener('blur',()=>{state.shcustom=customHeight();input.value=String(state.shcustom);});
     input.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')input.closest('.opt-row').focus();});
     input.addEventListener('click',e=>e.stopPropagation());
     return input;
@@ -507,8 +560,15 @@
   render();
 
   function buildLaunchConfig(){
-    const b=curBuild(),res=eff('res'),display=eff('display');
+    const b=curBuild(),shadow=SHADOW(),res=shadow?0:eff('res'),display=eff('display');
     return {
+      // Experimental Shadow renderer (experimental builds): it draws the game itself, at
+      // shadowHeight lines (0: the game's own 720) in the shadowAspect shape.
+      shadow,
+      // shadowNative: the host uses the display's height. shadowAspect 'auto': its shape.
+      shadowNative:shadow&&eff('shres')===-1,
+      shadowHeight:!shadow||eff('shres')===-1?0:eff('shres')===SHADOW_CUSTOM?customHeight():SHADOW_HEIGHTS[eff('shres')],
+      shadowAspect:!shadow?'16:9':eff('shaspect')===-1?'auto':SHADOW_ASPECTS[eff('shaspect')],
       // Cross-platform host only (Launcher.ps1 ignores these): selected build,
       // Vulkan path, and null/0 for "In-game" display/resolution.
       build:b?b.id:null,

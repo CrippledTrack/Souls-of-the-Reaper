@@ -249,6 +249,149 @@ test('Launch failures stay visible and restore the Play button', async () => {
   assert.equal(doc.getElementById('playBtn').disabled, false);
 });
 
+const EXPERIMENTAL_BUILD = { id: 'update-extras-experimental', label: 'Update + Extras (Experimental)', update: true, extras: true, experimental: true, executable: '/r/linux-amd64-update-experimental-relwithdebinfo/diablo3' };
+const TOOLS_OK = { ready: true, tools: [], profileTools: [], sdk: { installed: true } };
+
+test('Experimental builds are offered under Game Version only while experimental options are on', async () => {
+  const off = tauriPage({ builds: [...BUILDS, EXPERIMENTAL_BUILD] });
+  assert.doesNotMatch(off.doc.getElementById('menu').textContent, /Experimental/);
+  off.click(off.doc.getElementById('setupBtn'));
+  assert.match(off.doc.getElementById('buildList').textContent, /\(Experimental\)/, 'still listed under Builds found');
+  assert.equal(off.doc.getElementById('experimentalOptions').hidden, true);
+
+  const { doc, click, calls } = tauriPage({ builds: [...BUILDS, EXPERIMENTAL_BUILD], settings: { experimental: true }, saved: { res: -1, display: -1, build: EXPERIMENTAL_BUILD.id } });
+  assert.match(doc.getElementById('menu').textContent, /Update \+ Extras \(Experimental\)/);
+  click(doc.getElementById('setupBtn'));
+  assert.equal(doc.getElementById('experimentalOptions').hidden, false);
+  assert.match(doc.getElementById('experimentalNote').textContent, /^Experimental build found: Update \+ Extras \(Experimental\)/);
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const launch = calls.find(c => c.command === 'launch_game').args;
+  assert.equal(launch.options.build, EXPERIMENTAL_BUILD.id);
+  assert.equal(launch.options.shadow, false, 'the Shadow renderer is a menu choice, off until picked');
+});
+
+test('Shadow is a Render Path choice of experimental builds and swaps the scaling rows for its own', async () => {
+  const labels = p => p.rows().map(r => r.label);
+  const p = tauriPage({ builds: [...BUILDS, EXPERIMENTAL_BUILD], settings: { experimental: true }, saved: { res: -1, display: -1, build: EXPERIMENTAL_BUILD.id } });
+  assert.deepEqual(labels(p).slice(0, 6), ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Image Scaling', 'Internal Resolution']);
+  p.next('Render Path'); p.next('Render Path');
+  assert.equal(p.row('Render Path').value, 'Shadow');
+  assert.deepEqual(labels(p).slice(0, 6), ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Render Resolution', 'Aspect Ratio']);
+  // Defaults follow the display: the host works both out from the monitor.
+  assert.equal(p.row('Render Resolution').value, 'Native');
+  assert.equal(p.row('Aspect Ratio').value, 'Auto');
+  p.click(p.doc.getElementById('playBtn'));
+  await tick();
+  const first = p.calls.find(c => c.command === 'launch_game').args.options;
+  assert.deepEqual([first.shadow, first.shadowNative, first.shadowHeight, first.shadowAspect], [true, true, 0, 'auto']);
+  assert.equal(first.vkPath, 'fsi', 'the SDK path stays valid; its backend draws nothing');
+
+  // Presets: Native, 720p, 1080p, 1440p ... and 16:9, 16:10, 21:9 after Auto.
+  for (let i = 0; i < 3; i++) p.next('Render Resolution');
+  for (let i = 0; i < 3; i++) p.next('Aspect Ratio');
+  assert.equal(p.row('Custom Height'), undefined);
+  p.click(p.doc.getElementById('playBtn'));
+  await tick();
+  const preset = p.calls.filter(c => c.command === 'launch_game').at(-1).args;
+  assert.deepEqual([preset.options.shadowNative, preset.options.shadowHeight, preset.options.shadowAspect], [false, 1440, '21:9']);
+  assert.equal(preset.settings.uiState.vkpath, 2);
+  assert.equal(preset.settings.uiState.shres, 2);
+
+  // Custom: a box for any height, kept within what the host accepts.
+  p.next('Render Resolution'); p.next('Render Resolution');
+  assert.equal(p.row('Render Resolution').value, 'Custom');
+  const type = text => {
+    const box = p.row('Custom Height').row.querySelector('input');
+    box.value = text; box.dispatchEvent(new p.dom.window.Event('input'));
+    return box;
+  };
+  assert.equal(type('1200p').value, '1200', 'digits only');
+  p.click(p.doc.getElementById('playBtn'));
+  await tick();
+  const custom = p.calls.filter(c => c.command === 'launch_game').at(-1).args;
+  assert.deepEqual([custom.options.shadowNative, custom.options.shadowHeight], [false, 1200]);
+  assert.equal(custom.settings.uiState.shcustom, 1200);
+  const box = type('99');
+  box.dispatchEvent(new p.dom.window.Event('blur'));
+  assert.equal(box.value, '360', 'snaps into range');
+
+  // A normal build has no such choice, and a saved Shadow selection falls back to FSI.
+  const normal = tauriPage({ builds: [...BUILDS, EXPERIMENTAL_BUILD], settings: { experimental: true }, saved: { res: -1, display: -1, build: 'base', vkpath: 2 } });
+  assert.equal(normal.row('Render Path').value, 'FSI');
+  normal.next('Render Path'); normal.next('Render Path');
+  assert.equal(normal.row('Render Path').value, 'FSI', 'FSI, Host, and round again');
+  assert.equal(normal.row('Render Resolution'), undefined);
+
+  // Windows: it is a Renderer, and has no render path of its own.
+  const win = tauriPage({ platform: 'windows', builds: [...BUILDS, EXPERIMENTAL_BUILD], settings: { experimental: true }, saved: { res: -1, display: -1, build: EXPERIMENTAL_BUILD.id, backend: 2 } });
+  assert.equal(win.row('Renderer').value, 'Shadow');
+  assert.equal(win.row('Render Path'), undefined);
+  assert.equal(win.row('Image Scaling'), undefined);
+  assert.notEqual(win.row('Render Resolution'), undefined);
+});
+
+test('Turning experimental options on says a rebuild is needed and opens the build for it', async () => {
+  const { doc, click, calls } = tauriPage({ responses: { check_build_tools: () => TOOLS_OK } });
+  click(doc.getElementById('setupBtn'));
+  const master = doc.getElementById('experimental');
+  click(master);
+  assert.equal(doc.getElementById('experimentalOptions').hidden, false);
+  assert.match(doc.getElementById('experimentalOptions').textContent, /This needs a rebuild\./);
+  assert.match(doc.getElementById('experimentalNote').textContent, /^No experimental build yet\./);
+  click(doc.getElementById('saveSetup'));
+  await tick(); await tick();
+  const saved = calls.find(c => c.command === 'save_settings').args.settings;
+  assert.equal(saved.experimental, true);
+  assert.match(doc.getElementById('launchStatus').textContent, /need the experimental build, which is not built yet/);
+  assert.equal(doc.getElementById('buildPanel').hidden, false, 'the Build panel opens');
+  assert.equal(doc.getElementById('optExperimentalLabel').hidden, false);
+  assert.equal(doc.getElementById('optExperimental').checked, true);
+  assert.match(doc.getElementById('buildSummary').textContent, /Experimental build: a separate build/);
+  assert.equal(calls.filter(c => c.command === 'check_build_tools').at(-1).args.profile, 'experimental');
+});
+
+test('The Build panel builds the experimental profile only when asked, lists its tools and reports its warning', async () => {
+  let finish;
+  const { doc, click, calls, emit } = tauriPage({
+    settings: { experimental: true, buildIso: '/isos/d3.iso' },
+    responses: {
+      check_build_tools: ({ profile }) => ({ ...TOOLS_OK, profileTools: profile === 'experimental' ? [{ label: 'clang-cl (LLVM)', found: true, note: '', url: '' }] : [] }),
+      start_build: () => new Promise(resolve => { finish = resolve; }),
+    },
+  });
+  click(doc.getElementById('setupBtn'));
+  click(doc.getElementById('openBuild'));
+  await tick();
+  assert.match(doc.getElementById('toolList').textContent, /clang-cl \(LLVM\) \(experimental build only\)/);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(calls.find(c => c.command === 'start_build').args.request.profile, 'experimental');
+  emit('build-output', '::warning::The shader converter was not built.');
+  finish([...BUILDS, EXPERIMENTAL_BUILD, { ...EXPERIMENTAL_BUILD, id: 'base-experimental', label: 'Base (Experimental)', update: false, extras: false }]);
+  await tick(); await tick();
+  assert.match(doc.getElementById('launchStatus').textContent, /^Build complete, with a warning: The shader converter/);
+  assert.match(doc.getElementById('menu').textContent, /‹Base \(Experimental\)›/, 'the new build is selected');
+  assert.match(doc.getElementById('menu').textContent, /‹Shadow›/, 'with its renderer');
+
+  // Unticking it, or experimental options being off, builds the normal profile.
+  const normal = tauriPage({ settings: { experimental: true, buildIso: '/isos/d3.iso' }, responses: { check_build_tools: () => TOOLS_OK, start_build: () => new Promise(() => {}) } });
+  normal.click(normal.doc.getElementById('setupBtn'));
+  normal.click(normal.doc.getElementById('openBuild'));
+  const box = normal.doc.getElementById('optExperimental');
+  box.checked = false; box.dispatchEvent(new normal.dom.window.Event('change'));
+  assert.doesNotMatch(normal.doc.getElementById('buildSummary').textContent, /Experimental/);
+  normal.click(normal.doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(normal.calls.find(c => c.command === 'start_build').args.request.profile, 'normal');
+
+  const off = tauriPage({ settings: { experimental: false } });
+  off.click(off.doc.getElementById('setupBtn'));
+  off.click(off.doc.getElementById('openBuild'));
+  assert.equal(off.doc.getElementById('optExperimentalLabel').hidden, true);
+  assert.doesNotMatch(off.doc.getElementById('buildSummary').textContent, /Experimental/);
+});
+
 test('Launch settings show defaults and save a blank Vulkan device as automatic', async () => {
   const { doc, click, calls } = tauriPage();
   click(doc.getElementById('setupBtn'));
@@ -298,7 +441,7 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   click(doc.getElementById('startBuild'));
   await tick();
   const { request, settings } = calls.find(c => c.command === 'start_build').args;
-  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'], downloadSdk: false, downloadSources: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), { iso: '/isos/d3.iso', titleUpdate: '/isos/title-update', cmake: '', variants: ['update'], downloadSdk: false, downloadSources: false, profile: 'normal' });
   assert.equal(settings.buildIso, '/isos/d3.iso');
   assert.equal(doc.getElementById('playBtn').disabled, true);
   assert.equal(doc.getElementById('cancelBuild').hidden, false);

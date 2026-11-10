@@ -21,6 +21,11 @@ pub const UPDATE_CPKS: [&str; 4] = [
 ];
 /// Only executables compiled with the optional PC features register this cvar.
 const EXTRAS_MARKER: &[u8] = b"pc_use_saved_render_scale";
+/// Only executables compiled with the experimental features (the build scripts'
+/// `experimental` profile) register this cvar.
+const EXPERIMENTAL_MARKER: &[u8] = b"shadow_renderer_only";
+/// Build-folder suffix of the experimental profile (scripts/build_profiles.py).
+const EXPERIMENTAL_SUFFIX: &str = "-experimental";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Platform {
@@ -65,6 +70,9 @@ pub struct Build {
     /// Launch with `--extra_features`. An executable that carries the features
     /// is offered twice, with and without this, so the plain game stays one click away.
     pub extras: bool,
+    /// Compiled with the experimental features: a separate executable beside the normal
+    /// one, offered only while experimental options are enabled in Launch settings.
+    pub experimental: bool,
     pub executable: PathBuf,
     /// Release installs pair the executable with the game folder beside it.
     pub game_dir: Option<PathBuf>,
@@ -86,9 +94,18 @@ fn make_build(update: bool, extras: bool, executable: PathBuf, game_dir: Option<
         label: label.into(),
         update,
         extras,
+        experimental: false,
         executable,
         game_dir,
     }
+}
+
+/// The experimental-profile build of the same variant: its own id and label.
+fn into_experimental(mut build: Build) -> Build {
+    build.id += EXPERIMENTAL_SUFFIX;
+    build.label += " (Experimental)";
+    build.experimental = true;
+    build
 }
 
 /// Folder names the overlay is staged under, newest first.
@@ -113,13 +130,12 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(&data)))
 }
 
-fn has_extras_marker(executable: &Path) -> bool {
+/// (extras, experimental) as read from the executable itself.
+fn executable_markers(executable: &Path) -> (bool, bool) {
+    let has = |data: &[u8], marker: &[u8]| data.windows(marker.len()).any(|w| w == marker);
     fs::read(executable)
-        .map(|data| {
-            data.windows(EXTRAS_MARKER.len())
-                .any(|w| w == EXTRAS_MARKER)
-        })
-        .unwrap_or(false)
+        .map(|data| (has(&data, EXTRAS_MARKER), has(&data, EXPERIMENTAL_MARKER)))
+        .unwrap_or((false, false))
 }
 
 /// Adds the builds an executable offers: plain, and with extras when it was
@@ -128,19 +144,23 @@ fn push_builds(
     builds: &mut Vec<Build>,
     update: bool,
     has_extras: bool,
+    experimental: bool,
     executable: &Path,
     game_dir: Option<&Path>,
 ) {
     for extras in [false, true] {
-        if (extras && !has_extras) || builds.iter().any(|b| b.update == update && b.extras == extras) {
+        if (extras && !has_extras)
+            || builds.iter().any(|b| b.update == update && b.extras == extras && b.experimental == experimental)
+        {
             continue;
         }
-        builds.push(make_build(
+        let build = make_build(
             update,
             extras,
             executable.to_path_buf(),
             game_dir.map(Path::to_path_buf),
-        ));
+        );
+        builds.push(if experimental { into_experimental(build) } else { build });
     }
 }
 
@@ -148,8 +168,9 @@ fn push_builds(
 /// beside the launcher and its game folder; its update flavour is read from that
 /// folder's Default.xex and whether it carries the extras from the executable
 /// itself. A source checkout is found from `search_from` upwards and offers
-/// every built `port/out/build/<platform>-amd64[-update][-plain]-<config>`
-/// variant (`-plain` was compiled without the extras).
+/// every built `port/out/build/<platform>-amd64[-update][-plain][-experimental]-<config>`
+/// variant (`-plain` was compiled without the extras; `-experimental` is the
+/// experimental build profile). Normal builds come first, experimental ones after.
 pub fn discover_builds(
     platform: Platform,
     launcher_dir: &Path,
@@ -160,16 +181,23 @@ pub fn discover_builds(
     if installed.is_file() {
         let game = launcher_dir.join("game");
         let update = sha256_file(&update_layout(&game).1).is_ok_and(|h| h == USA_UPDATE_HASH);
-        push_builds(&mut builds, update, has_extras_marker(&installed), &installed, Some(&game));
+        let (extras, experimental) = executable_markers(&installed);
+        push_builds(&mut builds, update, extras, experimental, &installed, Some(&game));
     }
     if let Some(root) = repository_root(search_from) {
-        for (update, plain) in [(false, false), (true, false), (false, true), (true, true)] {
+        let variants = [(false, false), (true, false), (false, true), (true, true)];
+        for (experimental, (update, plain)) in
+            [false, true].into_iter().flat_map(|e| variants.into_iter().map(move |v| (e, v)))
+        {
             // Update builds compiled before the rename live in `…-tu2-…` directories.
             let flavours: &[&str] = if update { &["-update", "-tu2"] } else { &[""] };
             let found = flavours.iter().find_map(|flavour| {
                 let mut name = platform.build_prefix().to_string() + flavour;
                 if plain {
                     name += "-plain";
+                }
+                if experimental {
+                    name += EXPERIMENTAL_SUFFIX;
                 }
                 ["relwithdebinfo", "release", "debug"].iter().find_map(|config| {
                     let exe = root
@@ -180,7 +208,7 @@ pub fn discover_builds(
                 })
             });
             if let Some(exe) = found {
-                push_builds(&mut builds, update, !plain, &exe, None);
+                push_builds(&mut builds, update, !plain, experimental, &exe, None);
             }
         }
     }
@@ -210,6 +238,9 @@ pub struct Settings {
     pub vulkan_device: i32,
     /// Linux display server: "" (automatic), "wayland" or "x11".
     pub video_driver: String,
+    /// Master switch for experimental builds and what they add to the menu (the
+    /// Shadow renderer), which only applies to an experimental build while this is on.
+    pub experimental: bool,
     /// Last inputs of the Build panel (scripts/build_client.py).
     pub build_iso: String,
     pub build_title_update: String,
@@ -227,6 +258,7 @@ impl Default for Settings {
             username: String::new(),
             vulkan_device: -1,
             video_driver: String::new(),
+            experimental: false,
             build_iso: String::new(),
             build_title_update: String::new(),
             build_cmake: String::new(),
@@ -447,7 +479,7 @@ pub fn apply_default_build(
 pub const BUILD_VARIANTS: [&str; 4] = ["base", "update", "base-plain", "update-plain"];
 
 /// Inputs of the Build panel.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildRequest {
     pub iso: String,
@@ -460,6 +492,22 @@ pub struct BuildRequest {
     /// The user agreed to fetch the repository sources when the launcher has no checkout.
     #[serde(default)]
     pub download_sources: bool,
+    /// Build profile (scripts/build_profiles.py): empty or "normal" for the normal
+    /// build, "experimental" for the separate build with the experimental features.
+    #[serde(default)]
+    pub profile: String,
+}
+
+impl BuildRequest {
+    /// The profile to pass to the build script; None for the normal build.
+    pub fn profile(&self) -> Result<Option<&str>, String> {
+        match self.profile.trim() {
+            "" | "normal" => Ok(None),
+            // The script knows which profiles exist; only the shape is checked here.
+            p if p.len() <= 32 && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') => Ok(Some(p)),
+            p => Err(format!("Unknown build profile {p}.")),
+        }
+    }
 }
 
 /// Arguments for scripts/build_client.py, writing into the launcher's game
@@ -503,6 +551,9 @@ pub fn build_client_arguments(
     if !request.download_sdk {
         args.push("--no-sdk-download".into());
     }
+    if let Some(profile) = request.profile()? {
+        args.push(format!("--profile={profile}"));
+    }
     Ok(args)
 }
 
@@ -533,6 +584,126 @@ pub struct GameOptions {
     /// Linux display server, filled from the saved settings (the page does not send it).
     #[serde(default)]
     pub video_driver: String,
+    /// Experimental Shadow renderer (`--shadow_renderer_only`), a menu choice. The host
+    /// clears it unless the build is experimental and experimental options are on.
+    #[serde(default)]
+    pub shadow: bool,
+    /// Lines the Shadow renderer draws at (a preset or a typed value); 0 is the game's
+    /// own 720. Ignored with `shadow_native`.
+    #[serde(default)]
+    pub shadow_height: u32,
+    /// Draw at the display's own resolution (`monitor`).
+    #[serde(default)]
+    pub shadow_native: bool,
+    /// Shape of the game's picture under the Shadow renderer: "" or "16:9", "16:10",
+    /// "21:9", or "auto" for the display's own (`monitor`).
+    #[serde(default)]
+    pub shadow_aspect: String,
+    /// The display's size in pixels, filled by the host (the page does not send it);
+    /// None when it is unknown, which leaves Native and Auto at the game's own 720p, 16:9.
+    #[serde(skip)]
+    pub monitor: Option<(u32, u32)>,
+}
+
+/// Largest display the Shadow renderer lets the game build (its guest-space targets,
+/// port/src/experiments/shadow_aspect.cpp), and the game's own.
+const SHADOW_GUEST_MAX: (u32, u32) = (2048, 1536);
+const SHADOW_GUEST: (u32, u32) = (1280, 720);
+/// Render heights the launcher accepts when typed in.
+/// (The renderer's per-frame memory grows with the square of the height.)
+pub const SHADOW_HEIGHT_RANGE: std::ops::RangeInclusive<u32> = 360..=2880;
+
+/// The display's real size in pixels. A toolkit that only knows whole-number scales
+/// (GTK 3 on Wayland) reports a fractionally scaled display rounded up: a 2560x1600
+/// panel at 125% arrives as 2048x1280 at scale 2, so `reported` is 4096x2560. The
+/// displays' own native modes (`native_modes`, from the system) settle it: the one
+/// mode of the same shape between the logical and the reported size is the real one.
+/// Anything else (an exact scale, no such mode, or several) keeps `reported`.
+pub fn true_monitor_size(reported: (u32, u32), scale: f64, native_modes: &[(u32, u32)]) -> (u32, u32) {
+    if scale <= 1.0 || reported.0 == 0 || reported.1 == 0 {
+        return reported;
+    }
+    let logical = (f64::from(reported.0) / scale, f64::from(reported.1) / scale);
+    let shape = f64::from(reported.0) / f64::from(reported.1);
+    let mut fits: Vec<(u32, u32)> = native_modes
+        .iter()
+        .copied()
+        .filter(|&(w, h)| {
+            h > 0
+                && (f64::from(w) / f64::from(h) / shape - 1.0).abs() < 0.01
+                && f64::from(w) >= logical.0 - 1.0
+                && w <= reported.0
+        })
+        .collect();
+    fits.sort_unstable();
+    fits.dedup();
+    match fits.as_slice() {
+        [only] => *only,
+        _ => reported,
+    }
+}
+
+/// Native modes of the connected displays (Linux: the first mode each connector
+/// lists under /sys/class/drm). Empty elsewhere or when unreadable.
+pub fn native_display_modes(drm: &Path) -> Vec<(u32, u32)> {
+    let Ok(entries) = fs::read_dir(drm) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let dir = entry.path();
+            if fs::read_to_string(dir.join("status")).ok()?.trim() != "connected" {
+                return None;
+            }
+            let modes = fs::read_to_string(dir.join("modes")).ok()?;
+            // "2560x1600", possibly with an interlace suffix ("1920x1080i").
+            let (w, h) = modes.lines().next()?.split_once('x')?;
+            let h: String = h.chars().take_while(char::is_ascii_digit).collect();
+            Some((w.trim().parse().ok()?, h.parse().ok()?))
+        })
+        .collect()
+}
+
+/// What the Shadow renderer is asked for: the game's own display size `(width, height)`
+/// (1280x720 unless the aspect ratio differs from 16:9) and the lines to draw at (0: as
+/// many as that display has).
+///
+/// The game's display keeps 720 lines and grows sideways for wider shapes, or keeps 1280
+/// columns and grows taller for narrower ones, as far as the renderer allows; a shape
+/// beyond that (wider than about 2.84:1) is clamped and shown with bars. Native draws
+/// at the display's height, or at fewer lines when the picture is the wider of the two
+/// and so fills the display's width first.
+pub fn shadow_display(options: &GameOptions) -> Result<((u32, u32), u32), String> {
+    let even = |v: f64| ((v / 2.0).round() as u32) * 2;
+    let guest = match (options.shadow_aspect.as_str(), options.monitor) {
+        ("" | "16:9", _) | ("auto", None) => SHADOW_GUEST,
+        ("16:10", _) => (1280, 800),
+        ("21:9", _) => (1680, 720),
+        ("auto", Some((w, h))) if w > 0 && h > 0 => {
+            let aspect = f64::from(w) / f64::from(h);
+            if aspect >= 16.0 / 9.0 {
+                (even(720.0 * aspect).clamp(SHADOW_GUEST.0, SHADOW_GUEST_MAX.0), 720)
+            } else {
+                (1280, even(1280.0 / aspect).clamp(SHADOW_GUEST.1, SHADOW_GUEST_MAX.1))
+            }
+        }
+        ("auto", _) => SHADOW_GUEST,
+        _ => return Err("Unsupported aspect ratio.".into()),
+    };
+    let height = match (options.shadow_native, options.monitor) {
+        (true, Some((w, h))) if w > 0 && h > 0 => {
+            let fit_width = even(f64::from(w) * f64::from(guest.1) / f64::from(guest.0));
+            h.min(fit_width).clamp(*SHADOW_HEIGHT_RANGE.start(), *SHADOW_HEIGHT_RANGE.end())
+        }
+        (true, _) => 0,
+        (false, _) if options.shadow_height == 0 => 0,
+        (false, _) if SHADOW_HEIGHT_RANGE.contains(&options.shadow_height) => options.shadow_height,
+        _ => return Err(format!(
+            "Choose a render height from {} to {}.",
+            SHADOW_HEIGHT_RANGE.start(),
+            SHADOW_HEIGHT_RANGE.end()
+        )),
+    };
+    Ok((guest, height))
 }
 
 /// Image scaling for the Vulkan presenter. The effect is only compiled into
@@ -554,7 +725,9 @@ pub fn launch_arguments(
     options: &GameOptions,
     vulkan_device: i32,
 ) -> Result<Vec<String>, String> {
-    if options.res_scale > 3 || (options.res_scale == 0 && !build.extras) {
+    let shadow = options.shadow.then(|| shadow_display(options)).transpose()?;
+    if shadow.is_some() {
+    } else if options.res_scale > 3 || (options.res_scale == 0 && !build.extras) {
         return Err("Choose a supported internal resolution.".into());
     }
     if options.fullscreen.is_none() && !build.extras {
@@ -636,11 +809,29 @@ pub fn launch_arguments(
             args.push("--mnk_cursor_visible=false".into());
         }
     }
+    if options.shadow {
+        // The game's own Vulkan renderer takes the window; the SDK's backend chosen
+        // above keeps running the game's GPU commands without drawing.
+        args.push("--shadow_renderer_only=true".into());
+        // The game's own display (1280x720) reshaped; the render height is the lines
+        // actually drawn, whatever that display's height.
+        let ((width, height), lines) = shadow.unwrap_or((SHADOW_GUEST, 0));
+        if width != SHADOW_GUEST.0 {
+            args.push(format!("--shadow_guest_width={width}"));
+        }
+        if height != SHADOW_GUEST.1 {
+            args.push(format!("--shadow_guest_height={height}"));
+        }
+        if lines > 0 && lines != height {
+            args.push(format!("--shadow_render_height={lines}"));
+        }
+    }
     args.push("--mnk_mode=true".into());
     args.push(format!("--mnk_mouse={}", options.mnk_mouse));
     args.push(format!("--user_language={}", options.lang_id));
     args.push(format!("--user_country={}", options.country_id));
-    if options.res_scale > 0 {
+    // The Shadow renderer draws at its own resolution; the SDK's scale would do nothing.
+    if options.res_scale > 0 && !options.shadow {
         args.push(format!("--draw_resolution_scale_x={}", options.res_scale));
         args.push(format!("--draw_resolution_scale_y={}", options.res_scale));
         if build.extras {
@@ -700,6 +891,11 @@ mod tests {
             glyphs: String::new(),
             backend: String::new(),
             video_driver: String::new(),
+            shadow: false,
+            shadow_height: 0,
+            shadow_native: false,
+            shadow_aspect: String::new(),
+            monitor: None,
         }
     }
 
@@ -711,6 +907,7 @@ mod tests {
             cmake: String::new(),
             download_sdk: false,
             download_sources: false,
+            profile: String::new(),
         }
     }
 
@@ -747,6 +944,19 @@ mod tests {
         )
         .unwrap();
         assert!(!args.contains(&"--no-sdk-download".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("--profile")));
+        approved.profile = "experimental".into();
+        let args = build_client_arguments(
+            Platform::Linux,
+            Path::new("/repo"),
+            &approved,
+            Path::new("/g"),
+            Path::new("/g"),
+        )
+        .unwrap();
+        assert!(args.contains(&"--profile=experimental".to_string()));
+        approved.profile = "x; rm".into();
+        assert!(build_client_arguments(Platform::Linux, Path::new("/repo"), &approved, Path::new("/g"), Path::new("/g")).is_err());
     }
 
     #[test]
@@ -807,6 +1017,112 @@ mod tests {
     fn display_server_setting_loads_and_defaults_to_automatic() {
         assert_eq!(parse_settings(br#"{"videoDriver":"x11"}"#).video_driver, "x11");
         assert_eq!(parse_settings(br#"{"gameDir":"/g"}"#).video_driver, "");
+    }
+
+    #[test]
+    fn experimental_settings_load_and_default_to_off() {
+        // shadowRenderer was a settings toggle before it became a menu choice; it is ignored.
+        assert!(parse_settings(br#"{"experimental":true,"shadowRenderer":true}"#).experimental);
+        assert!(!parse_settings(br#"{"gameDir":"/g"}"#).experimental);
+    }
+
+    #[test]
+    fn shadow_renderer_is_passed_only_when_enabled() {
+        for platform in [Platform::Linux, Platform::Windows] {
+            let run = |on| {
+                let mut o = options();
+                o.shadow = on;
+                launch_arguments(platform, &build(false, false), Path::new("/g"), Path::new("/s"), &o, -1).unwrap()
+            };
+            let on = run(true);
+            assert!(on.contains(&"--shadow_renderer_only=true".to_string()));
+            assert!(!on.iter().any(|a| a.starts_with("--draw_resolution_scale") || a.starts_with("--shadow_render_height")
+                || a.starts_with("--shadow_guest")), "the game's own 720p, 16:9");
+            let off = run(false);
+            assert!(!off.iter().any(|a| a.starts_with("--shadow_")));
+            assert!(off.iter().any(|a| a.starts_with("--draw_resolution_scale_x")));
+        }
+    }
+
+    #[test]
+    fn shadow_renderer_resolution_and_aspect_are_passed_and_checked() {
+        let run = |height, aspect: &str| {
+            let mut o = options();
+            o.shadow = true;
+            o.shadow_height = height;
+            o.shadow_aspect = aspect.into();
+            o.res_scale = 0; // "In-game" or anything else: not used by this renderer
+            launch_arguments(Platform::Linux, &build(false, false), Path::new("/g"), Path::new("/s"), &o, -1)
+        };
+        let wide = run(1440, "21:9").unwrap();
+        assert!(wide.contains(&"--shadow_render_height=1440".to_string()));
+        assert!(wide.contains(&"--shadow_guest_width=1680".to_string()));
+        assert!(run(2160, "16:10").unwrap().contains(&"--shadow_guest_height=800".to_string()));
+        assert!(run(1000, "16:9").unwrap().contains(&"--shadow_render_height=1000".to_string()), "any typed height");
+        assert!(run(200, "16:9").is_err());
+        assert!(run(3000, "16:9").is_err());
+        assert!(run(1080, "4:3").is_err());
+    }
+
+    #[test]
+    fn fractionally_scaled_displays_report_their_real_size() {
+        let modes = [(1920, 1080), (2560, 1440), (2560, 1600)];
+        // 2560x1600 at 125%: GTK says 2048x1280 at scale 2.
+        assert_eq!(true_monitor_size((4096, 2560), 2.0, &modes), (2560, 1600));
+        // Unscaled, or a true 200%: as reported.
+        assert_eq!(true_monitor_size((2560, 1440), 1.0, &modes), (2560, 1440));
+        assert_eq!(true_monitor_size((2560, 1600), 2.0, &modes), (2560, 1600));
+        // 4K at 150% (2560x1440 logical, reported 5120x2880) beside a 1440p display of
+        // the same shape: two candidates, so nothing is assumed.
+        assert_eq!(true_monitor_size((5120, 2880), 2.0, &[(3840, 2160), (2560, 1440)]), (5120, 2880));
+        assert_eq!(true_monitor_size((5120, 2880), 2.0, &[(3840, 2160), (1920, 1200)]), (3840, 2160));
+        assert_eq!(true_monitor_size((4096, 2560), 2.0, &[]), (4096, 2560));
+
+        let drm = scratch("drm");
+        for (name, status, modes) in [("card1-eDP-1", "connected", "2560x1600\n1920x1200\n"), ("card0-DP-3", "disconnected", ""), ("card0-DP-4", "connected", "1920x1080i\n")] {
+            fs::create_dir_all(drm.join(name)).unwrap();
+            fs::write(drm.join(name).join("status"), status).unwrap();
+            fs::write(drm.join(name).join("modes"), modes).unwrap();
+        }
+        let mut found = native_display_modes(&drm);
+        found.sort_unstable();
+        assert_eq!(found, [(1920, 1080), (2560, 1600)]);
+        assert!(native_display_modes(&drm.join("missing")).is_empty());
+        fs::remove_dir_all(drm).unwrap();
+    }
+
+    #[test]
+    fn shadow_native_and_auto_follow_the_display() {
+        let display = |monitor, native, aspect: &str| {
+            let mut o = options();
+            o.shadow = true;
+            o.shadow_native = native;
+            o.shadow_aspect = aspect.into();
+            o.monitor = monitor;
+            shadow_display(&o).unwrap()
+        };
+        // 16:9 displays: the game's own shape at the display's lines.
+        assert_eq!(display(Some((2560, 1440)), true, "auto"), ((1280, 720), 1440));
+        // 16:10 and 3:2 grow taller; 21:9 grows wider.
+        assert_eq!(display(Some((2560, 1600)), true, "auto"), ((1280, 800), 1600));
+        assert_eq!(display(Some((2256, 1504)), true, "auto"), ((1280, 854), 1504));
+        assert_eq!(display(Some((3440, 1440)), true, "auto"), ((1720, 720), 1440));
+        // 32:9 is beyond what the renderer builds: clamped, still at the display's lines.
+        assert_eq!(display(Some((5120, 1440)), true, "auto"), ((2048, 720), 1440));
+        // A picture wider than the display fills its width, so fewer lines are drawn.
+        assert_eq!(display(Some((2560, 1440)), true, "21:9"), ((1680, 720), 1098));
+        // Unknown display: the game's own 720p, 16:9.
+        assert_eq!(display(None, true, "auto"), ((1280, 720), 0));
+        // Arguments: only what differs from the game's own display is passed.
+        let mut o = options();
+        o.shadow = true;
+        o.shadow_native = true;
+        o.shadow_aspect = "auto".into();
+        o.monitor = Some((3440, 1440));
+        let args = launch_arguments(Platform::Linux, &build(false, false), Path::new("/g"), Path::new("/s"), &o, -1).unwrap();
+        assert!(args.contains(&"--shadow_guest_width=1720".to_string()));
+        assert!(args.contains(&"--shadow_render_height=1440".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("--shadow_guest_height")));
     }
 
     #[test]
@@ -1185,6 +1501,31 @@ mod tests {
     }
 
     #[test]
+    fn experimental_builds_are_found_beside_the_normal_ones() {
+        let root = scratch("discover-experimental");
+        fs::create_dir_all(root.join("port")).unwrap();
+        fs::write(root.join("port/CMakeLists.txt"), "").unwrap();
+        for name in ["linux-amd64-update-relwithdebinfo", "linux-amd64-update-experimental-relwithdebinfo"] {
+            let dir = root.join("port/out/build").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("diablo3"), "").unwrap();
+        }
+        let builds = discover_builds(Platform::Linux, &root, std::slice::from_ref(&root));
+        let ids: Vec<_> = builds.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["update", "update-extras", "update-experimental", "update-extras-experimental"]);
+        assert!(!builds[1].experimental && builds[3].experimental);
+        assert_eq!(builds[3].label, "Update + Extras (Experimental)");
+        assert!(builds[3].executable.ends_with("linux-amd64-update-experimental-relwithdebinfo/diablo3"));
+        fs::remove_dir_all(&root).unwrap();
+        // A release install says so itself.
+        let root = scratch("release-experimental");
+        fs::write(root.join("diablo3"), b"..shadow_renderer_only..").unwrap();
+        let builds = discover_builds(Platform::Linux, &root, &[]);
+        assert!(builds.iter().all(|b| b.experimental));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn release_install_detects_extras_from_the_executable() {
         let root = scratch("release");
         fs::write(root.join("diablo3"), b"...pc_use_saved_render_scale...").unwrap();
@@ -1336,6 +1677,7 @@ mod tests {
             cmake: String::new(),
             download_sdk: false,
             download_sources: false,
+            profile: String::new(),
         };
         let args = build_client_arguments(Platform::Linux, Path::new("/r"), &request, &game, &game).unwrap();
         assert!(!args.iter().any(|a| a.starts_with("--game-dir-update")));

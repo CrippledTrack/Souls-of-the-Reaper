@@ -27,10 +27,11 @@ def lock():
     return json.loads((ROOT / "port/base/rexglue.lock.json").read_text())
 
 
-def patch_hash(host):
-    """Digest of everything this port adds to the SDK for `host` ("linux" or "win")."""
+def patch_hash(host, extra=()):
+    """Digest of everything this port adds to the SDK for `host` ("linux" or "win"), plus
+    the patch folders in `extra` (a build profile's own, see build_profiles.py)."""
     digest = hashlib.sha256()
-    for name in PATCH_DIRS[host]:
+    for name in (*PATCH_DIRS[host], *extra):
         base = ROOT / "patches" / name
         for path in sorted(p for p in base.rglob("*") if p.is_file()):
             digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
@@ -58,9 +59,9 @@ def codegen_patch_hash():
     return digest.hexdigest()
 
 
-def write_stamp(prefix, host):
+def write_stamp(prefix, host, extra=()):
     """Record which SDK revision and patch set an install was built from."""
-    (prefix / STAMP).write_text(json.dumps({"commit": lock()["commit"], "patches": patch_hash(host)}) + "\n")
+    (prefix / STAMP).write_text(json.dumps({"commit": lock()["commit"], "patches": patch_hash(host, extra)}) + "\n")
 
 
 def clear_stamp(prefix):
@@ -68,14 +69,14 @@ def clear_stamp(prefix):
     (prefix / STAMP).unlink(missing_ok=True)
 
 
-def stamp_state(prefix, host):
+def stamp_state(prefix, host, extra=()):
     """"current" when the install matches the pinned commit and patches, else "stale"
     (an install from before stamps existed has no stamp and counts as stale)."""
     try:
         stamp = json.loads((prefix / STAMP).read_text())
     except (OSError, ValueError):
         return "stale"
-    return "current" if stamp == {"commit": lock()["commit"], "patches": patch_hash(host)} else "stale"
+    return "current" if stamp == {"commit": lock()["commit"], "patches": patch_hash(host, extra)} else "stale"
 
 
 def remove_tree(path):
@@ -171,6 +172,12 @@ def apply_common_patches(sdk):
     install_sources(sdk)
     for name in COMMON_PATCHES:
         apply_patch(sdk, COMMON_DIR / name)
+
+
+def apply_profile_patches(sdk, profile):
+    """A build profile's own SDK patches, after the usual ones (build_profiles.py)."""
+    for patch in profile.sdk_patches():
+        apply_patch(sdk, patch)
 
 
 def apply_linux_patches(sdk):

@@ -24,6 +24,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <spawn.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <cerrno>
+#include <cstring>
+extern char **environ;
 #endif
 
 REXCVAR_DECLARE(std::string, shadow_shader_dir);
@@ -151,9 +159,39 @@ bool RunConverter(const fs::path &list) {
   CloseHandle(process.hProcess);
   return true;
 #else
-  (void)list;
-  REXLOG_ERROR("shadow_shaders: automatic conversion is only implemented on Windows");
-  return false;
+  // posix_spawn rather than fork: the game's threads keep running. The converter finds
+  // libdxcompiler.so beside itself through its $ORIGIN run path. `nice` keeps it below the
+  // game, like BELOW_NORMAL_PRIORITY_CLASS above.
+  const std::string tool_path = tool.string(), list_path = list.string(),
+                    out_path = spirv_dir.string(), header_path = header.string();
+  const char *argv[] = {"nice",          "-n",              "5",
+                        tool_path.c_str(), "--spirv",        list_path.c_str(),
+                        out_path.c_str(), header_path.c_str(), nullptr};
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  // Its per-shader progress lines would flood the game's terminal.
+  posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+  posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+  pid_t pid = 0;
+  int error = posix_spawnp(&pid, "nice", &actions, nullptr, const_cast<char **>(argv), environ);
+  if (error)  // no `nice` on this system: run the converter directly
+    error = posix_spawn(&pid, tool_path.c_str(), &actions, nullptr,
+                        const_cast<char **>(argv + 3), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (error) {
+    REXLOG_ERROR("shadow_shaders: cannot start {} ({})", tool_path, std::strerror(error));
+    return false;
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+  // 126/127: the converter could not be executed at all (e.g. its library is missing).
+  if (WIFEXITED(status) && (WEXITSTATUS(status) == 126 || WEXITSTATUS(status) == 127)) {
+    REXLOG_ERROR("shadow_shaders: {} did not run (exit code {})", tool_path,
+                 WEXITSTATUS(status));
+    return false;
+  }
+  return true;
 #endif
 }
 
@@ -226,7 +264,11 @@ void Start(const fs::path &root) {
   spirv_dir = root / "spirv";
   work_dir = root / "work";
   const fs::path tools = rex::filesystem::GetExecutableFolder() / "xenosrecomp";
+#ifdef _WIN32
   tool = tools / "XenosRecomp.exe";
+#else
+  tool = tools / "XenosRecomp";
+#endif
   header = tools / "shader_common.h";
   std::error_code ec;
   for (const fs::path &dir : {xenos_dir, spirv_dir, work_dir})

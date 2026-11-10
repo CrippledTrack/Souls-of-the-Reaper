@@ -207,6 +207,19 @@ async fn launch_game(
         .ok_or("No game build found. Build the game or place the launcher next to diablo3.")?
         .clone()
     };
+    // The Shadow renderer exists only in an experimental build, and is offered only
+    // while experimental options are on.
+    options.shadow = options.shadow && build.experimental && settings.experimental;
+    // Native resolution and Auto aspect ratio follow the display the launcher is on.
+    // The toolkit rounds fractional display scales up, so its size is checked against
+    // the displays' native modes.
+    options.monitor = window.current_monitor().ok().flatten().map(|m| {
+        launch::true_monitor_size(
+            (m.size().width, m.size().height),
+            m.scale_factor(),
+            &launch::native_display_modes(Path::new("/sys/class/drm")),
+        )
+    });
     let (game, user) = launch::folders_for(&build, &settings, &host.defaults);
     let game =
         fs::canonicalize(&game).map_err(|e| format!("Game folder {}: {e}", game.display()))?;
@@ -309,9 +322,12 @@ async fn start_build(
     let (game, game_update) = launch::game_folders(&settings, &host.defaults);
     let args = launch::build_client_arguments(host.platform, &repo, &request, &game, &game_update)?;
     // Checked before downloading anything, so a missing tool costs no download.
-    let report = tools::detect(host.platform, &repo, &request.cmake);
+    let profile = request.profile()?.unwrap_or_default().to_string();
+    let report = tools::detect_for(host.platform, &repo, &request.cmake, &profile);
     if !report.ready {
-        let missing: Vec<_> = report.tools.iter().filter(|t| !t.found).map(|t| t.label.as_str()).collect();
+        let missing: Vec<_> = report.tools.iter().filter(|t| !t.found).map(|t| t.label.as_str())
+            .chain(report.profile_tools.iter().filter(|t| !t.found).map(|t| t.label.as_str()))
+            .collect();
         return Err(format!("Missing build tools: {}.", missing.join(", ")));
     }
     let tool_path = |id: &str| report.tools.iter().find(|t| t.id == id).map(|t| PathBuf::from(&t.path));
@@ -343,7 +359,7 @@ async fn start_build(
     }
     // The SDK state comes from the sources' build script, which only now exists.
     let python = tool_path("python").unwrap_or_default();
-    let report = if fetch { tools::detect(host.platform, &repo, &request.cmake) } else { report };
+    let report = if fetch { tools::detect_for(host.platform, &repo, &request.cmake, &profile) } else { report };
     if !report.sdk.installed && !request.download_sdk {
         return Err("The ReXGlue SDK needs to be built. Approve the download to continue.".into());
     }
@@ -423,14 +439,18 @@ async fn start_build(
 async fn check_build_tools(
     host: tauri::State<'_, Host>,
     cmake: String,
+    profile: Option<String>,
 ) -> Result<tools::ToolReport, String> {
+    // The build profile the panel is set to; its own tools are checked as well.
+    let request = BuildRequest { profile: profile.unwrap_or_default(), ..BuildRequest::default() };
+    let profile = request.profile()?.unwrap_or_default().to_string();
     let repo = host
         .build_root()
         .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
     let platform = host.platform;
     let missing = host.repo.is_none() && !sources::is_complete(&repo);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut report = tools::detect(platform, &repo, &cmake);
+        let mut report = tools::detect_for(platform, &repo, &cmake, &profile);
         if missing {
             report.sources = Some(tools::Sources {
                 repository: build_info::BuildInfo::repository().into(),
@@ -509,7 +529,7 @@ async fn install_tools(
     if !failed.is_empty() {
         let _ = app.emit("build-output", format!("winget did not finish cleanly for: {}.", failed.join(", ")));
     }
-    check_build_tools(host, cmake_choice).await
+    check_build_tools(host, cmake_choice, None).await
 }
 
 #[tauri::command]

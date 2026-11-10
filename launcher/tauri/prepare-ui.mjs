@@ -46,6 +46,11 @@ const panelStyle = `<style>
   .panel fieldset[hidden]{display:none}
   .panel fieldset label{display:inline-flex;align-items:center;gap:5px;margin:3px 12px 3px 0;color:var(--bone)}
   .panel fieldset input{display:inline;width:auto;margin:0}
+  #experimentalOptions[hidden]{display:none}
+  #experimentalOptions p{margin:3px 0;color:var(--muted)}
+  #experimentalOptions strong{color:#e9dcbf;font-weight:400}
+  #experimentalNote{color:var(--bone)}
+  .panel fieldset label[hidden]{display:none}
   .panel button:disabled{opacity:.45;cursor:default}
   #buildStep{min-height:14px;margin:8px 0 4px;color:#e2d7bd}
   #buildLog{max-height:150px;overflow-y:auto;padding:6px;background:rgba(0,0,0,.35)}
@@ -74,6 +79,14 @@ inject('<div class="stage">', `${panelStyle}
     <label>Update save folder<input id="userDataRootUpdate" type="text" spellcheck="false"></label>
     <label id="deviceLabel">Vulkan device (blank = automatic)<input id="vulkanDevice" type="number" min="0" max="32"></label>
     <div id="videoLabel" class="field">Display server<input id="videoDriver" type="hidden"><span class="seg" role="radiogroup" aria-label="Display server"><button type="button" role="radio" data-video="">Auto</button><button type="button" role="radio" data-video="wayland">Wayland</button><button type="button" role="radio" data-video="x11">X11</button></span></div>
+    <fieldset id="experimentalBox"><legend>Experimental</legend>
+      <label><input id="experimental" type="checkbox">Enable experimental options</label>
+      <div id="experimentalOptions" hidden>
+        <p><strong>This needs a rebuild.</strong> Experimental features are left out of the normal game build. They are compiled into a separate experimental build that sits beside the normal one, and what they add only appears while an <em>(Experimental)</em> build is selected under Game Version.</p>
+        <p id="experimentalNote" role="status"></p>
+        <p>With an experimental build selected, the main screen offers the <strong>Shadow</strong> renderer (under Render Path; under Renderer on Windows): an unfinished Vulkan renderer that draws the game itself. Choosing it swaps Image Scaling and Internal Resolution for Render Resolution and Aspect Ratio. Its first launch converts the game's shaders.</p>
+      </div>
+    </fieldset>
     <label>Builds found<pre id="buildList"></pre></label>
     <p>Empty fields use the folder shown. The title update uses the same game folder as Base (its update/ folder holds the update) but keeps separate saves. Use the in-game F4 menu for key bindings.</p>
     <p id="launcherVersion"></p>
@@ -87,6 +100,7 @@ inject('<div class="stage">', `${panelStyle}
     <fieldset id="buildVariants"><legend>What to build</legend>
       <label><input id="optUpdate" type="checkbox">Title Update</label>
       <label><input id="optExtras" type="checkbox" checked>Optional PC features</label>
+      <label id="optExperimentalLabel" hidden><input id="optExperimental" type="checkbox">Experimental build</label>
       <p id="buildSummary"></p>
     </fieldset>
     <label id="cmakeLabel">CMake 3.25+ (blank = from PATH)<span class="pick"><input id="buildCmake" type="text" spellcheck="false"><button type="button" data-pick="cmake" aria-label="Browse for CMake">…</button></span></label>

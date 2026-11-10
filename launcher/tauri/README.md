@@ -41,6 +41,42 @@ sources, built the SDK and compiled the game through the Build panel (the same
 - **Linux** launch settings (⚙) have a Display server choice: `Auto` passes
   nothing and lets SDL choose, `Wayland` and `X11` pass
   `--video_driver=wayland|x11`. It is saved with the other launch settings.
+- **Experimental** (in ⚙): `Enable experimental options` is for unfinished
+  work, which is left out of the normal game build. It is compiled into a
+  separate **experimental build** beside the normal one
+  (`port/out/build/<platform>-amd64[-update][-plain]-experimental-<config>`),
+  so turning the switch on needs a rebuild: the panel says so, shows whether an
+  experimental build exists, and Save opens the Build panel when there is none.
+  While the switch is on, Game Version also lists the `(Experimental)` builds
+  and the Build panel offers an **Experimental build** checkbox (ticked by
+  default), which passes `--profile=experimental` to `build_client.py`. The
+  normal build is never replaced. With an experimental build selected (and the
+  switch on) the menu offers the **Shadow** renderer
+  ([`experiments/gpu-layer`](../../experiments/gpu-layer/README.md)) as a
+  Render Path choice on Linux and a Renderer choice on Windows; it passes
+  `--shadow_renderer_only=true`. Because it presents its own picture and draws
+  at any resolution directly, choosing it replaces Image Scaling and Internal
+  Resolution with **Render Resolution** (`--shadow_render_height`) and **Aspect
+  Ratio** (`--shadow_guest_width` / `--shadow_guest_height`), and on Windows
+  hides Render Path. Render Resolution offers `Native` (the default: the height
+  of the display the launcher is on), `720p` (the game's own), `1080p`, `1440p`,
+  `2160p` and `Custom`, which adds a Custom Height box for any value from 360 to
+  2880. Aspect Ratio offers `Auto` (the default: the display's shape), `16:9`,
+  `16:10` and `21:9`. The game's display keeps 720 lines and widens for wider
+  shapes, or keeps 1280 columns and grows taller for narrower ones, within the
+  renderer's 2048x1536 limit: shapes wider than about 2.84:1 (32:9) are clamped
+  and shown with bars. Native and Auto are worked out when the game starts and
+  do not follow the window afterwards. Frame Rate,
+  VSync and Display still apply. A finished experimental build is selected with
+  Shadow already chosen.
+  What a profile changes (compile options, extra tools, extra steps, optionally
+  its own SDK patches) is declared in
+  [`scripts/build_profiles.py`](../../scripts/build_profiles.py); the launcher
+  asks the script for the profile's tools and lists them in the Build panel as
+  "experimental build only", so they are never required for a normal build. The
+  experimental profile's extra step fetches, patches and builds the Shadow
+  renderer's shader converter after the game is compiled; if it fails, the game
+  build stands and the launcher shows a warning.
 - **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV and FSR/CAS.
   Vulkan (`--gpu_backend=vulkan`) shows the same render path, device and Image
   Scaling options as Linux.

@@ -93,7 +93,9 @@ def launch_command(args, extra):
         scale = saved_render_scale(state)
         if scale is not None:
             defaults["--resolution_scale"] = scale
-    name = "linux-amd64" + ("-update" if getattr(args, "title_update", None) else "") + ("-plain" if plain else "") + "-relwithdebinfo"
+    import build_profiles
+    name = build_profiles.get(getattr(args, "profile", None)).build_name(
+        "linux-amd64", bool(getattr(args, "title_update", None)), plain)
     if getattr(args, "title_update", None):
         # The title update reads patch assets through update:\ even with a prepatched XEX.
         game_root = pathlib.Path(option_value(extra, "--game_data_root", str(args.game_dir.resolve())))
@@ -112,6 +114,8 @@ def main():
     mode.add_argument("--plain", action="store_true",
                       help="Run the build compiled without the optional PC features")
     parser.add_argument("--title-update", choices=["usa"], help="Run the separate verified update build")
+    parser.add_argument("--profile", default="normal",
+                        help="Run the build of this profile (scripts/build_profiles.py), e.g. experimental")
     parser.add_argument("--username", help="In-game player name (max 15 characters)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,

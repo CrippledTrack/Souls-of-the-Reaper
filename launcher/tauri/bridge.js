@@ -13,8 +13,8 @@
 
   // Menu state worth restoring next time (not the remap view or bindings).
   const uiState = () => {
-    const { lang, path, fps, scale, vkscale, res, display, mouse, glyphs, vkpath, vsyncMode, backend } = state;
-    return { lang, path, fps, scale, vkscale, res, display, mouse, glyphs, vkpath, vsyncMode, backend, build: curBuild() ? curBuild().id : null };
+    const { lang, path, fps, scale, vkscale, res, display, mouse, glyphs, vkpath, vsyncMode, backend, shres, shaspect, shcustom } = state;
+    return { lang, path, fps, scale, vkscale, res, display, mouse, glyphs, vkpath, vsyncMode, backend, shres, shaspect, shcustom, build: curBuild() ? curBuild().id : null };
   };
   function showStatus(text) { status.textContent = text; }
 
@@ -50,7 +50,37 @@
     });
   }
   videoButtons.forEach(b => b.addEventListener('click', () => { videoField.value = b.dataset.video; showVideo(); }));
+  // Experimental features are compiled into separate experimental builds (the build
+  // scripts' "experimental" profile), offered under Game Version only while the master
+  // switch is on. An experimental option applies only to such a build, with the switch
+  // on (the host checks all three).
+  let allBuilds = caps.builds;
+  const experimentalBuilds = () => allBuilds.filter(b => b.experimental);
+  // What Game Version offers. An install whose only executable is experimental keeps it.
+  function showBuilds(builds) {
+    allBuilds = builds;
+    const normal = builds.filter(b => !b.experimental);
+    // The page reads CAPS.builds (its copy of LAUNCHER_CAPS) on each render.
+    caps.builds = CAPS.builds = settings.experimental === true || !normal.length ? builds : normal;
+    // The page offers the experimental rows (Shadow renderer) only while this is on.
+    CAPS.experimental = settings.experimental === true;
+    listBuilds(); render();
+  }
+  const experimentalField = document.getElementById('experimental');
+  const experimentalOptions = document.getElementById('experimentalOptions');
+  const toggles = ['experimental'];
+  function showExperimental() {
+    experimentalOptions.hidden = !experimentalField.checked;
+    const found = experimentalBuilds();
+    document.getElementById('experimentalNote').textContent = found.length
+      ? `Experimental build found: ${found.map(b => b.label).join(', ')}.`
+      : caps.canBuild ? 'No experimental build yet. Save, then build it with Build from disc image… (tick Experimental build); the Build panel opens for you.'
+        : 'No experimental build yet, and this launcher cannot build one.';
+  }
+  experimentalField.addEventListener('change', showExperimental);
   function fillSettings() {
+    toggles.forEach(key => { document.getElementById(key).checked = settings[key] === true; });
+    showExperimental();
     fields.forEach(key => {
       const field = document.getElementById(key);
       const value = settings[key] ?? '';
@@ -60,6 +90,7 @@
     showVideo();
   }
   function readSettings() {
+    toggles.forEach(key => { settings[key] = document.getElementById(key).checked; });
     fields.forEach(key => {
       const value = document.getElementById(key).value.trim();
       settings[key] = key === 'vulkanDevice' ? (value === '' ? -1 : Number(value)) : value;
@@ -79,13 +110,13 @@
   // The display server (X11/Wayland) only exists on Linux.
   document.getElementById('videoLabel').hidden = caps.platform !== 'linux';
   function listBuilds() {
-    document.getElementById('buildList').textContent = caps.builds.length
-      ? caps.builds.map(b => `${b.label}: ${b.executable}`).join('\n')
+    document.getElementById('buildList').textContent = allBuilds.length
+      ? allBuilds.map(b => `${b.label}: ${b.executable}`).join('\n')
       : 'No game build found next to the launcher or under port/out/build.';
   }
-  listBuilds();
+  showBuilds(allBuilds);
   if (caps.version) document.getElementById('launcherVersion').textContent = `Launcher build ${caps.version.label}`;
-  if (!caps.builds.length) {
+  if (!allBuilds.length) {
     showStatus(caps.canBuild ? 'No game build found. Build it from your disc image.'
       : 'No game build found. Open launch settings (⚙) for details.');
   }
@@ -93,7 +124,15 @@
     e.stopPropagation(); fillSettings(); panel.hidden = !panel.hidden;
   });
   document.getElementById('saveSetup').addEventListener('click', async () => {
-    try { readSettings(); settings.uiState = uiState(); await invoke('save_settings', { settings }); panel.hidden = true; showStatus('Launch settings saved.'); }
+    try {
+      readSettings(); settings.uiState = uiState(); await invoke('save_settings', { settings });
+      panel.hidden = true; showBuilds(allBuilds);
+      if (settings.experimental !== true || experimentalBuilds().length) { showStatus('Launch settings saved.'); return; }
+      // Experimental options do nothing until the experimental build exists: say so,
+      // and take the user straight to building it when this launcher can.
+      if (caps.canBuild) { openBuild(); buildStep.textContent = 'Experimental options need a rebuild: build the experimental build here (it is added beside the normal one).'; }
+      showStatus('Launch settings saved. Experimental options need the experimental build, which is not built yet.');
+    }
     catch (error) { showStatus(String(error)); }
   });
   document.getElementById('cancelSetup').addEventListener('click', () => { panel.hidden = true; });
@@ -108,6 +147,7 @@
   const buildLog = document.getElementById('buildLog');
   const startButton = document.getElementById('startBuild');
   const logLines = [];
+  const buildWarnings = [];
   // What the panel runs, from the click that starts it until it ends: 'build'
   // (its tool check and download prompt included) or 'install'. Set before the
   // first await so a second click is ignored; the host turns one away too.
@@ -125,13 +165,20 @@
   function selectedVariants() {
     return [`${optUpdate.checked ? 'update' : 'base'}${optExtras.checked ? '' : '-plain'}`];
   }
+  // Build profile (scripts/build_profiles.py): the normal build, or the separate
+  // experimental one, which is only offered while experimental options are enabled.
+  const optExperimental = document.getElementById('optExperimental');
+  const buildProfile = () => (settings.experimental === true && optExperimental.checked ? 'experimental' : 'normal');
   function updateSummary() {
     const [variant] = selectedVariants();
     document.getElementById('buildSummary').textContent =
       `Will compile: ${variant.startsWith('update') ? 'Update' : 'Base'}${variant.endsWith('-plain') ? ' (no extras)' : ''}.` +
-      (optUpdate.checked ? ' The update runs on top of the base game files, which are always extracted.' : '');
+      (optUpdate.checked ? ' The update runs on top of the base game files, which are always extracted.' : '') +
+      (buildProfile() === 'experimental' ? ' Experimental build: a separate build with the experimental features compiled in, added beside the normal build, which is left as it is. Afterwards it also downloads and builds the Shadow renderer\'s shader converter (XenosRecomp, from github.com/hedge-dev); if that fails the game build still stands.' : '');
   }
   [optUpdate, optExtras].forEach(box => box.addEventListener('change', updateSummary));
+  // Another profile can need other tools, so the tool list follows the choice.
+  optExperimental.addEventListener('change', () => { updateSummary(); checkTools(); });
   function titleUpdateAdded() { optUpdate.checked = true; updateSummary(); }
   document.getElementById('buildTitleUpdate').addEventListener('change', event => {
     if (event.target.value.trim()) titleUpdateAdded();
@@ -157,6 +204,8 @@
       toolList.append(item);
     };
     report.tools.forEach(t => add(t.found, t.label, t.note, t.url));
+    // Tools only the selected build profile needs (none for the normal build).
+    (report.profileTools ?? []).forEach(t => add(t.found, `${t.label} (experimental build only)`, t.note, t.url));
     // Warnings do not block Build; they explain failures that may come later.
     (report.warnings ?? []).forEach(text => {
       const item = document.createElement('li');
@@ -205,7 +254,7 @@
   });
   async function checkTools() {
     let report = null;
-    try { report = await invoke('check_build_tools', { cmake: document.getElementById('buildCmake').value.trim() }) || null; }
+    try { report = await invoke('check_build_tools', { cmake: document.getElementById('buildCmake').value.trim(), profile: buildProfile() }) || null; }
     catch (error) { buildStep.textContent = String(error); }
     renderTools(report);
     return report;
@@ -235,6 +284,10 @@
   function openBuild() {
     Object.keys(buildInputs).forEach(key => { document.getElementById(key).value = settings[key] ?? ''; });
     panel.hidden = true; buildPanel.hidden = false;
+    // The experimental build is offered, and preselected, while experimental options are on.
+    document.getElementById('optExperimentalLabel').hidden = settings.experimental !== true;
+    optExperimental.checked = settings.experimental === true;
+    updateSummary();
     checkTools();
   }
   function setBuilding(on) {
@@ -257,6 +310,8 @@
   window.__TAURI__.event.listen('build-output', ({ payload }) => {
     const step = /^::step::(\d+)\/(\d+)::(.*)$/.exec(payload);
     if (step) buildStep.textContent = `Step ${step[1]} of ${step[2]}: ${step[3]}…`;
+    // The game is built; one of the profile's extra steps was not.
+    else if (payload.startsWith('::warning::')) { buildWarnings.push(payload.slice(11)); log(`Warning: ${payload.slice(11)}`); }
     else if (payload !== '::done::') log(payload);
   });
   document.getElementById('openBuild').addEventListener('click', openBuild);
@@ -290,8 +345,9 @@
     const request = {
       iso: settings.buildIso, titleUpdate: settings.buildTitleUpdate, cmake: settings.buildCmake,
       variants: selectedVariants(), downloadSdk: false, downloadSources: false,
+      profile: buildProfile(),
     };
-    logLines.length = 0; buildLog.textContent = '';
+    logLines.length = 0; buildLog.textContent = ''; buildWarnings.length = 0;
     buildStep.textContent = 'Checking build tools…';
     // An unavailable check (null) is left to the host, which checks again before it runs anything.
     const report = await checkTools();
@@ -309,12 +365,24 @@
     setBuilding(true);
     try {
       const builds = await invoke('start_build', { settings, request });
-      // The page reads CAPS.builds (its copy of LAUNCHER_CAPS) on each render.
-      caps.builds = CAPS.builds = builds;
-      listBuilds(); render();
+      if (request.profile === 'experimental') {
+        // Select what was just built, so Play runs it: the experimental build of the
+        // chosen variant (with the extras when it has them).
+        const update = request.variants[0].startsWith('update');
+        const built = builds.filter(b => b.experimental && b.update === update);
+        const pick = built.find(b => b.extras) || built[0];
+        if (pick) {
+          state.build = pick.id;
+          // What the experimental build is for, so far: put its renderer on.
+          if (caps.platform === 'linux') state.vkpath = 2; else state.backend = 2;
+        }
+      }
+      showBuilds(builds);
       // Back to the main screen; failures and cancellations stay in the panel.
       buildPanel.hidden = true;
-      showStatus('Build complete. Choose it under Game Version.');
+      showStatus(buildWarnings.length ? `Build complete, with a warning: ${buildWarnings.join(' ')}`
+        : request.profile === 'experimental' ? 'Experimental build complete. It is selected under Game Version with the Shadow renderer; the normal build is still there.'
+          : 'Build complete. Choose it under Game Version.');
     } catch (error) {
       buildStep.textContent = String(error);
     } finally { setBuilding(false); }
@@ -324,5 +392,5 @@
   // does not make both. A saved package path counts too. Applied once, so a
   // deliberate Base tick later is left alone.
   if (caps.updateInstalled || (settings.buildTitleUpdate ?? '').trim()) titleUpdateAdded();
-  if (!caps.builds.length && caps.canBuild) openBuild();
+  if (!allBuilds.length && caps.canBuild) openBuild();
 })();

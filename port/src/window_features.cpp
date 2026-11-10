@@ -18,7 +18,9 @@
 #else
 #include "generated/base/diablo3_pch.h"
 #endif
+#ifdef SOULS_EXPERIMENTAL
 #include "experiments/shadow_renderer.h"
+#endif
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
@@ -39,9 +41,11 @@ std::atomic<uint64_t> dimensions{0};
 // the title never claims a backend that failed to start. Both renderers live in
 // one GPU plugin; gpu_backend picks one at launch and 'any' resolves to D3D12.
 std::string_view RendererName() {
+#ifdef SOULS_EXPERIMENTAL
   // The experimental Vulkan renderer draws the game window once it has taken over.
   if (d3::shadow::HasTakenOver())
     return "Vulkan Experimental";
+#endif
 #ifdef _WIN32
   if (rex::cvar::GetFlagByName("gpu_backend") == "vulkan")
     return GetModuleHandleW(L"vulkan-1.dll") ? "Vulkan" : "Renderer pending";

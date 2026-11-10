@@ -57,10 +57,23 @@ pub struct Sources {
     pub commit: String,
 }
 
+/// A tool only the selected build profile needs (scripts/build_profiles.py lists
+/// them; the build script reports whether each is installed).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileTool {
+    pub label: String,
+    pub found: bool,
+    pub note: String,
+    pub url: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolReport {
     pub tools: Vec<Tool>,
+    /// Extra tools of the build profile that was asked about; empty for the normal build.
+    pub profile_tools: Vec<ProfileTool>,
     pub sdk: Sdk,
     /// Set by the host when the sources are missing; detect() leaves it empty.
     pub sources: Option<Sources>,
@@ -300,6 +313,12 @@ fn package_hint(packages: &str) -> String {
 /// Status of every tool a build needs. `cmake_choice` is the Build panel's
 /// CMake field (blank = look it up).
 pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport {
+    detect_for(platform, repo, cmake_choice, "")
+}
+
+/// `detect` for a build profile ("" is the normal build): the profile's own tools are
+/// reported too, and all of them must be found for the report to be ready.
+pub fn detect_for(platform: Platform, repo: &Path, cmake_choice: &str, profile: &str) -> ToolReport {
     // The PATH the build script inherits, then the registry's (tools installed
     // since the launcher started).
     let inherited: Vec<PathBuf> = std::env::var_os("PATH")
@@ -446,16 +465,18 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         ));
     }
 
-    let ready = tools.iter().all(|t| t.found);
+    let (sdk, profile_tools) = python
+        .as_deref()
+        .and_then(|p| sdk_status_from_script(p, repo, profile))
+        .unwrap_or_else(|| (sdk_status(platform, repo), Vec::new()));
+    let ready = tools.iter().all(|t| t.found) && profile_tools.iter().all(|t| t.found);
     ToolReport {
         warnings,
         ready,
-        winget: platform == Platform::Windows && !ready && winget_available(),
+        winget: platform == Platform::Windows && tools.iter().any(|t| !t.found) && winget_available(),
         tools,
-        sdk: python
-            .as_deref()
-            .and_then(|p| sdk_status_from_script(p, repo))
-            .unwrap_or_else(|| sdk_status(platform, repo)),
+        profile_tools,
+        sdk,
         sources: None,
         path_dirs,
     }
@@ -549,7 +570,7 @@ fn free_bytes(path: &Path) -> Option<u64> {
 
 /// Asks scripts/build_client.py, which owns the install paths and the stamp of
 /// the commit and patches an SDK was built from. None when it cannot be run.
-pub fn sdk_status_from_script(python: &Path, repo: &Path) -> Option<Sdk> {
+pub fn sdk_status_from_script(python: &Path, repo: &Path, profile: &str) -> Option<(Sdk, Vec<ProfileTool>)> {
     let script = repo.join("scripts/build_client.py");
     if !script.is_file() {
         return None;
@@ -558,6 +579,7 @@ pub fn sdk_status_from_script(python: &Path, repo: &Path) -> Option<Sdk> {
     command
         .arg(script)
         .arg("--print-sdk-status")
+        .args((!profile.is_empty()).then(|| format!("--profile={profile}")))
         .current_dir(repo)
         .envs(PYTHON_UTF8)
         .stdin(Stdio::null())
@@ -568,7 +590,29 @@ pub fn sdk_status_from_script(python: &Path, repo: &Path) -> Option<Sdk> {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let output = command.output().ok().filter(|o| o.status.success())?;
-    parse_sdk_status(&String::from_utf8_lossy(&output.stdout))
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some((parse_sdk_status(&text)?, parse_profile_tools(&text)))
+}
+
+/// The profile's own tools from the same status line; none for the normal build
+/// or a script from before profiles existed.
+fn parse_profile_tools(text: &str) -> Vec<ProfileTool> {
+    let status: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or_default();
+    let text = |tool: &serde_json::Value, key: &str| tool[key].as_str().unwrap_or_default().to_string();
+    status["profile"]["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|t| ProfileTool {
+                    label: text(t, "label"),
+                    found: t["found"].as_bool().unwrap_or(false),
+                    note: text(t, "note"),
+                    url: text(t, "url"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_sdk_status(text: &str) -> Option<Sdk> {
@@ -684,6 +728,16 @@ mod tests {
         assert!(parse_sdk_status(r#"{"state": "current"}"#).unwrap().installed);
         assert!(!parse_sdk_status(r#"{"state": "missing"}"#).unwrap().stale);
         assert!(parse_sdk_status("not json").is_none());
+    }
+
+    #[test]
+    fn script_status_lists_the_profile_tools() {
+        let line = r#"{"state": "current", "profile": {"id": "experimental", "tools": [
+            {"program": "clang-cl", "label": "clang-cl (LLVM)", "found": false, "note": "n", "url": "https://x"}]}}"#;
+        let tools = parse_profile_tools(line);
+        assert_eq!(tools.len(), 1);
+        assert_eq!((tools[0].label.as_str(), tools[0].found, tools[0].url.as_str()), ("clang-cl (LLVM)", false, "https://x"));
+        assert!(parse_profile_tools(r#"{"state": "current"}"#).is_empty());
     }
 
     #[test]

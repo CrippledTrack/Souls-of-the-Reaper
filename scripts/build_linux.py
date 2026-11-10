@@ -7,7 +7,9 @@ import shutil
 import subprocess
 
 from codegen_title_update import generate
-from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk, clear_stamp, write_stamp
+import build_profiles
+from sdk_patches import (apply_common_patches, apply_linux_patches, apply_profile_patches, checkout_pinned_sdk,
+                         clear_stamp, write_stamp)
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,7 +24,10 @@ def build_sdk(args, cmake):
     lock = checkout_pinned_sdk(sdk, run)
     apply_common_patches(sdk)
     apply_linux_patches(sdk)
-    build = ROOT / "port/out/sdk-linux"
+    # A profile with SDK patches of its own has its own SDK checkout, build and install.
+    profile = build_profiles.get(getattr(args, "profile", None))
+    apply_profile_patches(sdk, profile)
+    build = ROOT / f"port/out/sdk-linux{profile.sdk_suffix()}"
     run(cmake, "-S", sdk, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
         f"-DCMAKE_C_FLAGS=-march={lock['architecture']}",
@@ -32,7 +37,7 @@ def build_sdk(args, cmake):
         f"-DCMAKE_INSTALL_PREFIX={args.sdk_prefix}")
     run(cmake, "--build", build, "--parallel", args.jobs)
     output = sdk / "out/linux-amd64"
-    regression = ROOT / "port/out/rexglue-registration-test"
+    regression = ROOT / f"port/out/rexglue-registration-test{profile.sdk_suffix()}"
     run("clang++", "-std=c++23", f"-march={lock['architecture']}",
         f"-I{sdk / 'include'}", f"-I{sdk / 'thirdparty/fmt/include'}",
         ROOT / "tests/rexglue_registration.cpp", output / "librexcodegen.a",
@@ -41,14 +46,17 @@ def build_sdk(args, cmake):
     run(regression)
     clear_stamp(args.sdk_prefix)
     run(cmake, "--install", build)
-    write_stamp(args.sdk_prefix, "linux")
+    write_stamp(args.sdk_prefix, "linux", profile.sdk_patch_dirs())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--build-sdk", action="store_true", help="Clone, patch, build and install the pinned SDK")
-    parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / "tools/rexglue-sdk-linux")
-    parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / "tools/rexglue-install-linux")
+    parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
+                        help="Build profile (scripts/build_profiles.py): 'experimental' compiles the "
+                             "experimental features into a separate -experimental build folder")
+    parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
+    parser.add_argument("--sdk-prefix", type=pathlib.Path, help="SDK install (default: the profile's, under tools/)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--title-update", choices=["usa"], help="Build the verified USA update executable separately")
     parser.add_argument("--probe", action="store_true", help="Build asset-free GPU and rendering diagnostics")
@@ -65,6 +73,11 @@ def main():
     if args.title_update and args.probe:
         parser.error("--title-update cannot be combined with --probe")
     args.extra_features = not args.plain and not args.probe
+    profile = build_profiles.get(args.profile)
+    if args.probe and profile.id != "normal":
+        parser.error("--profile cannot be combined with --probe")
+    source, prefix = profile.sdk_paths("linux")
+    args.sdk_source, args.sdk_prefix = args.sdk_source or source, args.sdk_prefix or prefix
     for name in ("sdk_source", "sdk_prefix", "game_dir"):
         setattr(args, name, getattr(args, name).resolve())
     cmake = shutil.which(args.cmake)
@@ -84,13 +97,17 @@ def main():
                 raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
             variant = "update" if args.title_update else "base"
             generate(variant, args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
-            name = "linux-amd64" + ("-update" if args.title_update else "") + ("" if args.extra_features else "-plain") + "-relwithdebinfo"
+            name = profile.build_name("linux-amd64", bool(args.title_update), not args.extra_features)
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [
             f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
             f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}"]
         if args.extra_features:
             feature_options.append(f"-DSOULS_BASE_XEX={xex}")
+        if not args.probe:
+            # Always passed, so a folder configured for another profile cannot keep its options.
+            feature_options.append("-DSOULS_EXPERIMENTAL=OFF")
+            feature_options.extend(profile.cmake_options)
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_CXX_COMPILER=clang++",
             "-DCMAKE_CXX_FLAGS=-march=x86-64-v2", f"-DCMAKE_PREFIX_PATH={args.sdk_prefix}",

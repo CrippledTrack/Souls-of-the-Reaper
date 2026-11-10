@@ -7,14 +7,22 @@ captures each frame's draws, and replays them through shaders converted by a for
 first milestone, when it only ran in the shadow of ReXGlue's renderer, drawing the same
 frames side by side.
 
-It is experimental. It has been tested on Windows only, with the verified USA title update
+It is experimental. It has been tested mostly on Windows (on Linux, under Wayland, only the
+title screen has been run so far, in both modes), with the verified USA title update
 (title screen through the main menu, the inventory and early Act I gameplay) and the base
 disc (title screen into early Act I gameplay). The hooks use each executable's own addresses
 (`port/src/experiments/guest_addresses.h`); other executables are not supported.
 
 ## Using it
 
-Both modes are off unless asked for on the command line:
+The Shadow renderer is only compiled into **experimental builds**: `--profile experimental`
+on `scripts/build_client.py`, `build_linux.py` or `build_windows.py` (in the launcher: enable
+experimental options, then build with "Experimental build" ticked). They go into their own
+`-experimental` build folders beside the normal builds, which contain none of this code
+(`SOULS_EXPERIMENTAL` in `port/CMakeLists.txt`; profiles are declared in
+`scripts/build_profiles.py`). `scripts/run_linux.py --profile experimental` runs one.
+
+In an experimental build both modes are off unless asked for on the command line:
 
 | Option | What it does |
 |---|---|
@@ -57,10 +65,18 @@ The XenosRecomp fork is not stored in this repository, only its changes
 (`xenosrecomp-diablo3.patch`). Without it the game still captures shaders but cannot convert
 them, and the Shadow renderer draws nothing.
 
-**This is a manual step for now.** Unlike the ReXGlue SDK patches, nothing applies the
-XenosRecomp patch for you: the build scripts and the launcher do not fetch, patch or build
-XenosRecomp, so it has to be done by hand once (and again whenever the patch changes). From
-the repository root, in a Visual Studio developer shell with LLVM's clang-cl on `PATH`:
+**The build does this for you.** `python scripts/build_client.py --profile experimental ...`
+(what the launcher runs for an experimental build)
+fetches the commit pinned in `xenosrecomp.lock.json`, applies the patch, builds the converter
+and copies it into `<build>/xenosrecomp/`. It runs after the game is built and is kept apart
+from it: if it fails, the game build still stands and a warning is printed. It is rebuilt
+when the pin or the patch changes. `build_linux.py` and `build_windows.py` on their own do
+not build it; they stage it into an experimental build when `tools/XenosRecomp/build` exists.
+
+To do it by hand instead (note that an automatic build resets `tools/XenosRecomp` to the
+pinned commit plus the patch, discarding local edits there): from
+the repository root, on Windows in a Visual Studio developer shell with LLVM's clang-cl on
+`PATH` (on Linux use `clang` and `clang++` for the two compiler options instead):
 
 ```
 git clone --recursive https://github.com/hedge-dev/XenosRecomp tools/XenosRecomp
@@ -72,9 +88,10 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILE
 cmake --build build --target XenosRecomp
 ```
 
-Then rebuild the executable (`python scripts/build_windows.py --skip-codegen` for the base
-disc, with `--title-update usa` for the title update). The build copies `XenosRecomp.exe`, its DXC libraries and `shader_common.h`
-into `<build>/xenosrecomp/` when `tools/XenosRecomp/build` exists.
+Then rebuild the executable (`python scripts/build_windows.py --profile experimental --skip-codegen` for the base
+disc, with `--title-update usa` for the title update; `scripts/build_linux.py` on Linux).
+The build copies `XenosRecomp.exe` (`XenosRecomp` on Linux), its DXC libraries and
+`shader_common.h` into `<build>/xenosrecomp/` when `tools/XenosRecomp/build` exists.
 
 ## Status
 
@@ -86,7 +103,7 @@ the performance work and the debug options. In short:
 - **60 FPS in gameplay** in both modes. Capturing a frame costs about 4.5 ms on the game
   thread; static meshes are converted once and kept on the GPU.
 - **Not done yet:** MSAA, stencil, a few alpha-test functions, stacked textures and 3D
-  mipmaps, window surfaces for Linux and macOS, dynamic resolution (a fixed render
+  mipmaps, a window surface for macOS, dynamic resolution (a fixed render
   resolution can already be set for testing) and ultrawide.
 - **Draw coverage:** the game has been seen drawing through two of its 14 Direct3D draw
   functions, both captured. The others log a warning the first time they are called.

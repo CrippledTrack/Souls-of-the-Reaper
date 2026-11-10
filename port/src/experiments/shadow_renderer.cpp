@@ -26,6 +26,10 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/presenter.h>
+#include <rex/ui/surface.h>
+#ifdef __linux__
+#include <rex/ui/surface_gnulinux.h>
+#endif
 #include <imgui.h>
 
 #include <algorithm>
@@ -96,6 +100,7 @@ std::atomic<bool> in_game_window{false};
 // Side-by-side captures: requested by F9; ReXGlue's presenter (null in Vulkan-only mode).
 std::atomic<bool> capture_requested{false};
 std::function<rex::ui::Presenter *()> rexglue_presenter;  // set once at Initialize
+rex::ui::Window *game_window = nullptr;                   // set once at Initialize
 std::filesystem::path compare_dir;
 }  // namespace
 namespace {
@@ -165,24 +170,8 @@ class Renderer {
   void OnGuestPresent(std::unique_ptr<FrameRecord> frame) {
     {
       std::lock_guard lock(mutex_);
-      // Keep the texture and sampler announcements of a frame that is replaced unseen.
-      if (pending_) {
-        // Older uploads first: the same id may be updated by both frames.
-        frame->new_textures.insert(frame->new_textures.begin(),
-                                   std::make_move_iterator(pending_->new_textures.begin()),
-                                   std::make_move_iterator(pending_->new_textures.end()));
-        for (auto &d : pending_->new_samplers)
-          frame->new_samplers.push_back(d);
-        for (auto &b : pending_->new_vertex_blocks)
-          frame->new_vertex_blocks.push_back(std::move(b));
-        frame->freed_vertex_blocks.insert(frame->freed_vertex_blocks.end(),
-                                          pending_->freed_vertex_blocks.begin(),
-                                          pending_->freed_vertex_blocks.end());
-        // Frees first: a dropped frame's freed ids may be reused by this frame's uploads.
-        frame->freed_textures.insert(frame->freed_textures.begin(),
-                                     pending_->freed_textures.begin(),
-                                     pending_->freed_textures.end());
-      }
+      if (pending_)
+        KeepAnnouncements(*frame, *pending_);
       std::swap(pending_, frame);
     }
     RecycleFrameRecord(std::move(frame));  // the replaced, never-started frame
@@ -190,6 +179,27 @@ class Renderer {
   }
 
  private:
+  // Moves the texture, sampler and vertex block announcements of `older`, a frame that is
+  // never drawn, into the frame after it: they are only sent once.
+  static void KeepAnnouncements(FrameRecord &frame, FrameRecord &older) {
+    // Older uploads first: the same id may be updated by both frames.
+    frame.new_textures.insert(frame.new_textures.begin(),
+                              std::make_move_iterator(older.new_textures.begin()),
+                              std::make_move_iterator(older.new_textures.end()));
+    older.new_textures.clear();
+    for (auto &d : older.new_samplers)
+      frame.new_samplers.push_back(d);
+    for (auto &b : older.new_vertex_blocks)
+      frame.new_vertex_blocks.push_back(std::move(b));
+    older.new_vertex_blocks.clear();
+    frame.freed_vertex_blocks.insert(frame.freed_vertex_blocks.end(),
+                                     older.freed_vertex_blocks.begin(),
+                                     older.freed_vertex_blocks.end());
+    // Frees first: a dropped frame's freed ids may be reused by this frame's uploads.
+    frame.freed_textures.insert(frame.freed_textures.begin(), older.freed_textures.begin(),
+                                older.freed_textures.end());
+  }
+
   void Run() {
     // Relative to the game's own height (720, or --shadow_guest_height in Vulkan-only mode).
     const int32_t guest_height = REXCVAR_GET(shadow_renderer_only) &&
@@ -219,7 +229,16 @@ class Renderer {
       }
       if (frame) {
         const auto start = std::chrono::steady_clock::now();
-        DrawFrame(*frame);
+        if (unseen_) {
+          KeepAnnouncements(*frame, *unseen_);
+          RecycleFrameRecord(std::move(unseen_));
+        }
+        // A frame that could not be drawn (no swapchain image: the window is being resized,
+        // is minimized or not shown yet) still hands its announcements to the next one.
+        if (!DrawFrame(*frame)) {
+          unseen_ = std::move(frame);
+          continue;
+        }
         stats_render_ns_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                          std::chrono::steady_clock::now() - start)
                                          .count());
@@ -264,6 +283,14 @@ class Renderer {
     if (hwnd_ && GetClientRect(hwnd_, &rect)) {
       *width = rect.right - rect.left;
       *height = rect.bottom - rect.top;
+      return;
+    }
+#else
+    // Wayland surfaces have no size of their own: the window's size in pixels decides.
+    uint32_t w = 0, h = 0;
+    if (native_surface_ && native_surface_->GetSize(w, h)) {
+      *width = int(w);
+      *height = int(h);
       return;
     }
 #endif
@@ -450,8 +477,16 @@ class Renderer {
         return false;
       }
     }
+    const bool own_window = !hwnd_;
+#else
+    if (REXCVAR_GET(shadow_renderer_only) && !in_game_window.load()) {
+      REXLOG_ERROR("shadow_renderer: drawing over ReXGlue's picture needs a child window, "
+                   "which only exists on Windows; use an SDK with the host_presentation switch");
+      return false;
+    }
+    const bool own_window = !in_game_window.load();
 #endif
-    if (!hwnd_) {
+    if (own_window) {
       // ReXGlue (a DLL with its own copy of SDL) creates and pumps the window on the UI
       // thread. It gets no presenter, so ReXGlue never draws into it; this renderer owns its
       // surface.
@@ -477,9 +512,57 @@ class Renderer {
       REXLOG_ERROR("shadow_renderer: cannot create a Win32 surface");
       return false;
     }
+#elif defined(__linux__)
+    // The window hands out its native surface (Wayland, else X11) when no presenter of
+    // ReXGlue's is attached. The game window may not be open yet when this thread starts:
+    // give it a few seconds.
+    rex::ui::Window *target = own_window ? window_.get() : game_window;
+    for (int attempt = 0; target && attempt < 50 && !native_surface_; ++attempt) {
+      context_.CallInUIThreadSynchronous([this, target] {
+        native_surface_ = target->CreateAppSurface(rex::ui::Surface::kTypeFlag_WaylandSurface |
+                                                   rex::ui::Surface::kTypeFlag_XcbWindow);
+      });
+      if (!native_surface_)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!native_surface_) {
+      REXLOG_ERROR("shadow_renderer: the window has no Wayland or X11 surface to draw into");
+      return false;
+    }
+    const auto &ifn = instance_->functions();
+    VkResult created = VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface) {
+      auto &wayland = static_cast<const rex::ui::WaylandSurface &>(*native_surface_);
+      VkWaylandSurfaceCreateInfoKHR surface_info{
+          VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
+      surface_info.display = wayland.display();
+      surface_info.surface = wayland.surface();
+      if (ifn.vkCreateWaylandSurfaceKHR)
+        created = ifn.vkCreateWaylandSurfaceKHR(instance_->instance(), &surface_info, nullptr,
+                                                &surface_);
+    } else {
+      auto &xcb = static_cast<const rex::ui::XcbWindowSurface &>(*native_surface_);
+      VkXcbSurfaceCreateInfoKHR surface_info{VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+      surface_info.connection = xcb.connection();
+      surface_info.window = xcb.window();
+      if (ifn.vkCreateXcbSurfaceKHR)
+        created = ifn.vkCreateXcbSurfaceKHR(instance_->instance(), &surface_info, nullptr,
+                                            &surface_);
+    }
+    if (created != VK_SUCCESS) {
+      REXLOG_ERROR("shadow_renderer: cannot create a {} surface ({})",
+                   native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface
+                       ? "Wayland"
+                       : "X11",
+                   int(created));
+      return false;
+    }
+    REXLOG_INFO("shadow_renderer: presenting to a {} surface",
+                native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface
+                    ? "Wayland"
+                    : "X11");
 #else
-    // TODO: Wayland/X11 surfaces (the window's native handle is not exposed by ReXGlue).
-    REXLOG_ERROR("shadow_renderer: only Windows surfaces are implemented so far");
+    REXLOG_ERROR("shadow_renderer: no window surface is implemented for this platform");
     return false;
 #endif
     VkBool32 supported = VK_FALSE;
@@ -597,7 +680,8 @@ class Renderer {
 
   // --- Per frame ---------------------------------------------------------------------------
 
-  void DrawFrame(FrameRecord &guest) {
+  // False when the frame was not processed at all (see Run).
+  bool DrawFrame(FrameRecord &guest) {
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     if (parent_) {
       RECT outer{}, inner{};
@@ -616,12 +700,12 @@ class Renderer {
     int width = 0, height = 0;
     ClientSize(&width, &height);
     if (width <= 0 || height <= 0)
-      return;
+      return false;
     if (swapchain_stale_ || uint32_t(width) != swapchain_extent_.width ||
         uint32_t(height) != swapchain_extent_.height) {
       dfn_.vkDeviceWaitIdle(device_);
       if (!CreateSwapchain())
-        return;
+        return false;
     }
 
     Frame &frame = frames_[frame_index_];
@@ -633,10 +717,10 @@ class Renderer {
                                                    frame.image_ready, VK_NULL_HANDLE, &image);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
       swapchain_stale_ = true;
-      return;
+      return false;
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
-      return;
+      return false;
     dfn_.vkResetFences(device_, 1, &frame.fence);
     ++submit_counter_;
 
@@ -728,6 +812,7 @@ class Renderer {
     const VkResult presented = dfn_.vkQueuePresentKHR(queue_, &present);
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
       swapchain_stale_ = true;
+    return true;
   }
 
   void Barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
@@ -747,7 +832,13 @@ class Renderer {
 
   // --- Resources ---------------------------------------------------------------------------
 
-  static constexpr VkDeviceSize kArenaSize = VkDeviceSize(64) << 20;
+  // One guest frame's vertices, indices and constants, plus the depth resolves, which are
+  // copied through it at the render resolution (4 bytes a pixel). The game's own 720p fits
+  // 64 MiB; the resolves grow with the square of the scale, and a full arena skips draws.
+  VkDeviceSize ArenaSize() const {
+    const double extra = std::max(double(scale_) * double(scale_) - 1.0, 0.0);
+    return (VkDeviceSize(64) << 20) + VkDeviceSize(extra * double(VkDeviceSize(32) << 20));
+  }
   // Bindless descriptor arrays XenosRecomp's shaders index into: Texture2D[], Texture3D[],
   // TextureCube[], SamplerState[]. Slot 0 of each holds the placeholder; 2D textures and
   // samplers decoded by TextureCache take the slot of their id.
@@ -852,7 +943,7 @@ class Renderer {
 
   bool CreateResources() {
     for (auto &frame : frames_)
-      if (!CreateHostBuffer(kArenaSize,
+      if (!CreateHostBuffer(ArenaSize(),
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             frame.arena))
@@ -2280,7 +2371,7 @@ class Renderer {
     const VkDeviceSize indices = reserve(guest.indices.size() * 4, 16);
     if (vertices == VK_WHOLE_SIZE || indices == VK_WHOLE_SIZE) {
       if (overflow_warnings_++ < 3)
-        REXLOG_WARN("shadow_renderer: frame does not fit the {} MiB arena", kArenaSize >> 20);
+        REXLOG_WARN("shadow_renderer: frame does not fit the {} MiB arena", ArenaSize() >> 20);
       return nullptr;
     }
     std::memcpy(arena.mapped + vertices, guest.vertices.data(), guest.vertices.size());
@@ -2384,6 +2475,7 @@ class Renderer {
         color = GetTarget(color_targets_, new_color_key, color_format, false);
         depth = GetTarget(depth_targets_, new_depth_key, VK_FORMAT_D32_SFLOAT, true);
         if (!color || !depth) {
+          NoteSkippedDraw(draw, "no render target");
           ++skipped;
           continue;
         }
@@ -2525,6 +2617,7 @@ class Renderer {
       if (draw.vertex_block) {
         auto block = vertex_blocks_.find(draw.vertex_block);
         if (block == vertex_blocks_.end()) {
+          NoteSkippedDraw(draw, "vertex block missing");
           ++skipped;
           continue;
         }
@@ -2676,6 +2769,7 @@ class Renderer {
     if (surface_)
       instance_->functions().vkDestroySurfaceKHR(instance_->instance(), surface_, nullptr);
     surface_ = VK_NULL_HANDLE;
+    native_surface_.reset();
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     if (parent_ && hwnd_) {
       // Destroyed by its owning (UI) thread; never wait for it from here.
@@ -2697,6 +2791,7 @@ class Renderer {
   std::condition_variable signal_;
   bool quit_ = false;
   std::unique_ptr<FrameRecord> pending_;
+  std::unique_ptr<FrameRecord> unseen_;  // render thread: a frame DrawFrame could not process
 
   std::unique_ptr<VulkanInstance> instance_;
   VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
@@ -2707,6 +2802,7 @@ class Renderer {
   VkQueue queue_ = VK_NULL_HANDLE;
 
   std::unique_ptr<rex::ui::Window> window_;
+  std::unique_ptr<rex::ui::Surface> native_surface_;  // non-Windows: the window's own surface
 #ifdef VK_USE_PLATFORM_WIN32_KHR
   HWND hwnd_ = nullptr;
   HWND parent_ = nullptr;  // the game window, in --shadow_renderer_only mode
@@ -2853,9 +2949,11 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
 
 void Initialize(rex::ui::WindowedAppContext &context, const std::filesystem::path &user_data_root,
                 rex::ui::ImGuiDrawer *imgui_drawer,
-                std::function<rex::ui::Presenter *()> game_presenter) {
+                std::function<rex::ui::Presenter *()> game_presenter,
+                rex::ui::Window *window) {
   if (!Enabled() || renderer)
     return;
+  game_window = window;
   rexglue_presenter = std::move(game_presenter);
   compare_dir = REXCVAR_GET(shadow_compare_dir).empty()
                     ? user_data_root / "shadow_compare"

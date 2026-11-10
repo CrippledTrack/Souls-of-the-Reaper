@@ -15,6 +15,7 @@ namespace rex::ui {
 class ImGuiDrawer;
 class ImmediateDrawer;
 class Presenter;
+class Window;
 class WindowedAppContext;
 }
 
@@ -44,9 +45,12 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
 // conversion (into <user data>/shader_cache) and the renderer thread when enabled.
 // game_presenter: returns ReXGlue's presenter of the game window (null in Vulkan-only mode),
 // for side-by-side captures; called when a capture is taken.
+// game_window: the game's window, whose surface the renderer takes in Vulkan-only mode
+// (Windows finds it by itself).
 void Initialize(rex::ui::WindowedAppContext &context, const std::filesystem::path &user_data_root,
                 rex::ui::ImGuiDrawer *imgui_drawer,
-                std::function<rex::ui::Presenter *()> game_presenter);
+                std::function<rex::ui::Presenter *()> game_presenter,
+                rex::ui::Window *game_window);
 void Shutdown();
 
 // Called from the game's draw hook (sub_82D621B0) before the draw runs.

@@ -16,11 +16,13 @@ import shutil
 import subprocess
 import sys
 
+import build_profiles
 import build_windows
 import codegen_title_update
 import extract_disc
 import extract_update
 import sdk_patches
+import shader_converter
 from stage_title_update import USA_UPDATE_PACKAGE_SHA256, stage, stage_overlay
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
@@ -110,6 +112,11 @@ def missing_tools(args, compile_needed, need_patcher):
 HOST = "win" if WINDOWS else "linux"
 
 
+def profile_of(args):
+    """The build profile (scripts/build_profiles.py); the normal one unless asked otherwise."""
+    return build_profiles.get(getattr(args, "profile", None))
+
+
 def sdk_state(args):
     """"missing", "stale" (built from another SDK commit or patch set) or "current".
 
@@ -123,9 +130,9 @@ def sdk_state(args):
         built = (args.sdk_prefix / "bin/rexglue").is_file()
     if not built:
         return "missing"
-    if args.sdk_prefix != (ROOT / f"tools/rexglue-install-{HOST}").resolve():
+    if args.sdk_prefix != profile_of(args).sdk_paths(HOST)[1].resolve():
         return "current"
-    return sdk_patches.stamp_state(args.sdk_prefix, HOST)
+    return sdk_patches.stamp_state(args.sdk_prefix, HOST, profile_of(args).sdk_patch_dirs())
 
 
 def sdk_installed(args):
@@ -209,6 +216,7 @@ def build_variant(args, variant):
     game = game_update_dir(args) if update else args.game_dir
     command = [sys.executable, SCRIPTS / ("build_windows.py" if WINDOWS else "build_linux.py"),
                "--game-dir", game, "--sdk-prefix", args.sdk_prefix, "--jobs", args.jobs]
+    command += ["--profile", profile_of(args).id]
     if WINDOWS:
         command += ["--sdk-source", args.sdk_source]  # CMake, Ninja and Clang come from PATH
     else:
@@ -223,6 +231,49 @@ def build_variant(args, variant):
     run(*command)
 
 
+def variant_build_dir(args, variant):
+    """Where build_linux.py / build_windows.py put a variant's executable for this profile."""
+    update, plain = VARIANTS[variant]
+    return ROOT / "port/out/build" / profile_of(args).build_name(f"{HOST}-amd64", update, plain)
+
+
+class ConverterStep:
+    """Profile step "shader_converter": build the Shadow renderer's shader converter
+    (scripts/shader_converter.py) and copy it beside each game built for the profile."""
+    title = "Build shader converter"
+    failure = ("The shader converter was not built ({error}). The game itself is built; the Shadow "
+               "renderer cannot draw until the converter builds.")
+
+    @staticmethod
+    def needed(args):
+        return shader_converter.state() != "current" or not all(
+            variant_build_dir(args, v).is_dir() and shader_converter.staged(variant_build_dir(args, v))
+            for v in args.variants)
+
+    @staticmethod
+    def run(args):
+        if shader_converter.state() != "current":
+            shader_converter.build(args.cmake, args.jobs, run)
+        for variant in args.variants:
+            build = variant_build_dir(args, variant)
+            if build.is_dir() and not shader_converter.staged(build):
+                shader_converter.stage(build)
+                print(f"Staged the shader converter in {build / 'xenosrecomp'}", flush=True)
+
+
+# Extra steps a build profile can ask for (Profile.steps), run after the game is compiled.
+STEPS = {"shader_converter": ConverterStep}
+
+
+def profile_step(args, step):
+    """Runs a profile's extra step. It never fails the build: the game itself is complete
+    by now, so a problem here is reported as a warning."""
+    try:
+        step.run(args)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print("::warning::" + step.failure.format(error=error), flush=True)
+
+
 def plan(args):
     """Return [(title, action)] for the work still to do, after checking inputs."""
     steps = []
@@ -232,6 +283,9 @@ def plan(args):
     need_update = wanted_update and not update_ready(game_update_dir(args))
     compile_needed = bool(args.variants) and not args.data_only
     need_sdk = compile_needed and not sdk_installed(args)
+    # The profile's own steps and tools: separate from the game build above and run after it.
+    profile = profile_of(args)
+    extra_steps = [STEPS[name] for name in profile.steps] if compile_needed else []
 
     if need_base and not args.iso:
         raise BuildError(f"No extracted disc in {args.game_dir}; choose your disc image (ISO).")
@@ -243,6 +297,9 @@ def plan(args):
         if not args.title_update:
             raise BuildError("update builds need the USA Title Update package.")
     problems = missing_tools(args, compile_needed, need_update and not args.patcher)
+    if compile_needed:
+        problems = problems + [f"{tool['label']} was not found; the {profile.label} build needs it. {tool['note']}".strip()
+                     for tool in profile.tool_status() if not tool["found"]]
     if problems:
         raise BuildError("\n".join(problems))
     if need_sdk and args.no_sdk_download:
@@ -272,7 +329,8 @@ def plan(args):
         else:
             steps.append(("Apply update", lambda: stage(args.game_dir, update_dir, args.game_dir_update, patcher[0])))
     if need_sdk:
-        sdk = argparse.Namespace(sdk_source=args.sdk_source, sdk_prefix=args.sdk_prefix, jobs=args.jobs)
+        sdk = argparse.Namespace(sdk_source=args.sdk_source, sdk_prefix=args.sdk_prefix, jobs=args.jobs,
+                                 profile=profile.id)
         if WINDOWS:
             steps.append(("Build ReXGlue SDK (one-time)", lambda: build_windows.build_sdk(sdk)))
         else:
@@ -280,7 +338,11 @@ def plan(args):
             steps.append(("Build ReXGlue SDK (one-time)", lambda: build_linux.build_sdk(sdk, args.cmake)))
     if compile_needed:
         for variant in args.variants:
-            steps.append((f"Build {LABELS[variant]} (codegen and compile)", lambda v=variant: build_variant(args, v)))
+            label = LABELS[variant] + (f", {profile.label}" if profile.id != "normal" else "")
+            steps.append((f"Build {label} (codegen and compile)", lambda v=variant: build_variant(args, v)))
+    for extra in extra_steps:
+        if extra.needed(args):
+            steps.append((f"{extra.title} ({profile.label})", lambda e=extra: profile_step(args, e)))
     return steps
 
 
@@ -299,9 +361,12 @@ def main(argv=None):
     parser.add_argument("--game-dir-update", type=pathlib.Path, default=None,
                         help="Stage the update as a complete separate folder here. By default the update is a small "
                              "update/ overlay inside --game-dir (an existing ./game-update is still used)")
-    host = "win" if WINDOWS else "linux"
-    parser.add_argument("--sdk-source", type=pathlib.Path, default=ROOT / f"tools/rexglue-sdk-{host}")
-    parser.add_argument("--sdk-prefix", type=pathlib.Path, default=ROOT / f"tools/rexglue-install-{host}")
+    parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
+                        help="Build profile (scripts/build_profiles.py). 'experimental' compiles the experimental "
+                             "features into separate -experimental builds beside the normal ones and runs its "
+                             "extra steps (the Shadow renderer's shader converter) after the game is built")
+    parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
+    parser.add_argument("--sdk-prefix", type=pathlib.Path, help="SDK install (default: the profile's, under tools/)")
     parser.add_argument("--patcher", type=pathlib.Path, help="Existing d3-patch executable")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
@@ -310,7 +375,8 @@ def main(argv=None):
                         help="Fail instead of cloning and building the pinned SDK when it is missing "
                              "(the launcher passes this until the user approves the download)")
     parser.add_argument("--print-sdk-status", action="store_true",
-                        help="Print the ReXGlue SDK state (pinned commit, missing/stale/current) as JSON and stop")
+                        help="Print the ReXGlue SDK state (pinned commit, missing/stale/current) and the "
+                             "profile's own tools as JSON and stop")
     parser.add_argument("--check", action="store_true", help="Validate inputs and tools, list the steps, and stop")
     args = parser.parse_args(argv)
     if args.jobs < 1:
@@ -325,13 +391,20 @@ def main(argv=None):
     for legacy in (ROOT / "game-update", ROOT / "game-tu2"):  # game-tu2 predates the rename
         if args.game_dir_update is None and legacy.exists() and update_ready(legacy):
             args.game_dir_update = legacy
+    source, prefix = profile_of(args).sdk_paths(HOST)
+    args.sdk_source, args.sdk_prefix = args.sdk_source or source, args.sdk_prefix or prefix
     for name in ("iso", "title_update", "game_dir", "game_dir_update", "sdk_source", "sdk_prefix", "patcher"):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, value.expanduser().resolve())
     if args.print_sdk_status:
         lock = sdk_patches.lock()
-        print(json.dumps({"state": sdk_state(args), "repository": lock["repository"], "commit": lock["commit"]}))
+        if WINDOWS:
+            build_windows.add_tool_paths()
+        profile = profile_of(args)
+        print(json.dumps({"state": sdk_state(args), "repository": lock["repository"], "commit": lock["commit"],
+                          "profile": {"id": profile.id, "label": profile.label, "summary": profile.summary,
+                                      "tools": profile.tool_status()}}))
         return
     try:
         if WINDOWS:
