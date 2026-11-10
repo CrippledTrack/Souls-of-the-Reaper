@@ -277,7 +277,7 @@ test('Shadow is a Render Path choice of experimental builds and swaps the scalin
   assert.deepEqual(labels(p).slice(0, 6), ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Image Scaling', 'Internal Resolution']);
   p.next('Render Path'); p.next('Render Path');
   assert.equal(p.row('Render Path').value, 'Shadow');
-  assert.deepEqual(labels(p).slice(0, 6), ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Render Resolution', 'Aspect Ratio']);
+  assert.deepEqual(labels(p).slice(0, 7), ['Game Version', 'Render Path', 'Frame Rate', 'VSync', 'Render Resolution', 'Dynamic Resolution', 'Aspect Ratio']);
   // Defaults follow the display: the host works both out from the monitor.
   assert.equal(p.row('Render Resolution').value, 'Native');
   assert.equal(p.row('Aspect Ratio').value, 'Auto');
@@ -285,6 +285,9 @@ test('Shadow is a Render Path choice of experimental builds and swaps the scalin
   await tick();
   const first = p.calls.find(c => c.command === 'launch_game').args.options;
   assert.deepEqual([first.shadow, first.shadowNative, first.shadowHeight, first.shadowAspect], [true, true, 0, 'auto']);
+  assert.equal(first.shadowDynamic, false);
+  p.next('Dynamic Resolution');
+  assert.equal(p.row('Dynamic Resolution').value, 'On');
   assert.equal(first.vkPath, 'fsi', 'the SDK path stays valid; its backend draws nothing');
 
   // Presets: Native, 720p, 1080p, 1440p ... and 16:9, 16:10, 21:9 after Auto.
@@ -295,6 +298,8 @@ test('Shadow is a Render Path choice of experimental builds and swaps the scalin
   await tick();
   const preset = p.calls.filter(c => c.command === 'launch_game').at(-1).args;
   assert.deepEqual([preset.options.shadowNative, preset.options.shadowHeight, preset.options.shadowAspect], [false, 1440, '21:9']);
+  assert.equal(preset.options.shadowDynamic, true);
+  assert.equal(preset.settings.uiState.shdyn, 1);
   assert.equal(preset.settings.uiState.vkpath, 2);
   assert.equal(preset.settings.uiState.shres, 2);
 

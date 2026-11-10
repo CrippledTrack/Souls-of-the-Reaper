@@ -595,6 +595,9 @@ pub struct GameOptions {
     /// Draw at the display's own resolution (`monitor`).
     #[serde(default)]
     pub shadow_native: bool,
+    /// Dynamic resolution: the height becomes the most the renderer draws at.
+    #[serde(default)]
+    pub shadow_dynamic: bool,
     /// Shape of the game's picture under the Shadow renderer: "" or "16:9", "16:10",
     /// "21:9", or "auto" for the display's own (`monitor`).
     #[serde(default)]
@@ -813,6 +816,11 @@ pub fn launch_arguments(
         // The game's own Vulkan renderer takes the window; the SDK's backend chosen
         // above keeps running the game's GPU commands without drawing.
         args.push("--shadow_renderer_only=true".into());
+        // It honours the Vulkan device setting itself; Windows only passed it above for
+        // the SDK's Vulkan backend.
+        if vulkan_device >= 0 && !args.iter().any(|a| a.starts_with("--vulkan_device=")) {
+            args.push(format!("--vulkan_device={vulkan_device}"));
+        }
         // The game's own display (1280x720) reshaped; the render height is the lines
         // actually drawn, whatever that display's height.
         let ((width, height), lines) = shadow.unwrap_or((SHADOW_GUEST, 0));
@@ -824,6 +832,10 @@ pub fn launch_arguments(
         }
         if lines > 0 && lines != height {
             args.push(format!("--shadow_render_height={lines}"));
+        }
+        // Nothing to give up at the game's own resolution, which is also its floor.
+        if options.shadow_dynamic && lines > height {
+            args.push("--shadow_dynamic_resolution=true".into());
         }
     }
     args.push("--mnk_mode=true".into());
@@ -894,6 +906,7 @@ mod tests {
             shadow: false,
             shadow_height: 0,
             shadow_native: false,
+            shadow_dynamic: false,
             shadow_aspect: String::new(),
             monitor: None,
         }
@@ -1058,6 +1071,22 @@ mod tests {
         assert!(wide.contains(&"--shadow_render_height=1440".to_string()));
         assert!(wide.contains(&"--shadow_guest_width=1680".to_string()));
         assert!(run(2160, "16:10").unwrap().contains(&"--shadow_guest_height=800".to_string()));
+        // The chosen Vulkan device reaches the renderer on both platforms, once.
+        for platform in [Platform::Linux, Platform::Windows] {
+            let mut o = options();
+            o.shadow = true;
+            let args = launch_arguments(platform, &build(false, false), Path::new("/g"), Path::new("/s"), &o, 1).unwrap();
+            assert_eq!(args.iter().filter(|a| *a == "--vulkan_device=1").count(), 1);
+        }
+        // Dynamic resolution is passed with a height above the game's own.
+        for (height, expected) in [(1440, true), (0, false)] {
+            let mut o = options();
+            o.shadow = true;
+            o.shadow_dynamic = true;
+            o.shadow_height = height;
+            let args = launch_arguments(Platform::Linux, &build(false, false), Path::new("/g"), Path::new("/s"), &o, -1).unwrap();
+            assert_eq!(args.contains(&"--shadow_dynamic_resolution=true".to_string()), expected);
+        }
         assert!(run(1000, "16:9").unwrap().contains(&"--shadow_render_height=1000".to_string()), "any typed height");
         assert!(run(200, "16:9").is_err());
         assert!(run(3000, "16:9").is_err());

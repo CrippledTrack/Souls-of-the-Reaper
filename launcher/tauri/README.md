@@ -66,7 +66,12 @@ sources, built the SDK and compiled the game through the Build panel (the same
   shapes, or keeps 1280 columns and grows taller for narrower ones, within the
   renderer's 2048x1536 limit: shapes wider than about 2.84:1 (32:9) are clamped
   and shown with bars. Native and Auto are worked out when the game starts and
-  do not follow the window afterwards. Frame Rate,
+  do not follow the window afterwards. **Dynamic Resolution** (`Off`/`On`,
+  `--shadow_dynamic_resolution=true`) lets the renderer drop the 3D resolution
+  below Render Resolution, down to the game's own, while the GPU falls behind;
+  text and menus stay at the full resolution. The window title shows the frames
+  the Shadow renderer actually presents (and the game's own rate beside it) and
+  the resolution it is drawing at. Frame Rate,
   VSync and Display still apply. A finished experimental build is selected with
   Shadow already chosen.
   What a profile changes (compile options, extra tools, extra steps, optionally

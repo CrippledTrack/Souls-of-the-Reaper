@@ -33,6 +33,12 @@ bool SkipGuestRendering();
 // takeover); the window title then names it instead of ReXGlue's backend.
 bool HasTakenOver();
 
+// For the window title once the renderer has taken over: the frames it has presented so
+// far (the game does not wait for it, so this can be fewer than the game's own frames) and
+// the size it draws at now, which dynamic resolution changes while playing.
+uint64_t PresentedFrames();
+void RenderSize(uint32_t *width, uint32_t *height);
+
 // Called from the app's OnPreSetup. With --shadow_renderer_only it turns the SDK's
 // host_presentation off, so the renderer presents into the game window itself (ReXGlue's
 // presenter is never attached) and draws ReXGlue's overlays.

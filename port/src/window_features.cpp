@@ -110,6 +110,9 @@ private:
     auto previous = steady_clock::now(), log_start = previous;
     auto previous_count = swaps.load(std::memory_order_relaxed);
     auto log_count = previous_count;
+#ifdef SOULS_EXPERIMENTAL
+    uint64_t previous_drawn = d3::shadow::PresentedFrames(), log_drawn = previous_drawn;
+#endif
     double log_low = -1;
     std::unique_lock lock(mutex_);
     while (!wake_.wait_for(lock, milliseconds(500), [this] { return stopping_; })) {
@@ -117,6 +120,15 @@ private:
       const auto count = swaps.load(std::memory_order_relaxed);
       const double fps =
           double(count - previous_count) / duration<double>(now - previous).count();
+      // The experimental renderer drops game frames it cannot draw in time: what reaches
+      // the screen is its own count.
+      double drawn_fps = -1;
+#ifdef SOULS_EXPERIMENTAL
+      const uint64_t drawn = d3::shadow::PresentedFrames();
+      if (d3::shadow::HasTakenOver())
+        drawn_fps = double(drawn - previous_drawn) / duration<double>(now - previous).count();
+      previous_drawn = drawn;
+#endif
       previous = now;
       previous_count = count;
       log_low = log_low < 0 ? fps : std::min(log_low, fps);
@@ -125,18 +137,25 @@ private:
             double(count - log_count) / duration<double>(now - log_start).count();
         REXLOG_INFO("Frame telemetry: guest {:.1f} FPS average, {:.1f} lowest 0.5 s",
                     average, log_low);
+#ifdef SOULS_EXPERIMENTAL
+        if (d3::shadow::HasTakenOver())
+          REXLOG_INFO("Frame telemetry: Shadow renderer presented {:.1f} FPS average",
+                      double(drawn - log_drawn) / duration<double>(now - log_start).count());
+        log_drawn = drawn;
+#endif
         log_start = now;
         log_count = count;
         log_low = -1;
       }
-      context_.CallInUIThread([alive = alive_, window = window_, fps] {
+      context_.CallInUIThread([alive = alive_, window = window_, fps, drawn_fps] {
         if (*alive)
-          Update(*window, fps);
+          Update(*window, fps, drawn_fps);
       });
     }
   }
 
-  static void Update(rex::ui::Window &window, double fps) {
+  // drawn_fps: frames the experimental renderer presented, or negative when ReXGlue draws.
+  static void Update(rex::ui::Window &window, double fps, double drawn_fps) {
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
     d3::features::UpdateWindowMode(window);
     d3::features::UpdateButtonGlyphs();
@@ -146,10 +165,24 @@ private:
     const auto [scale_x, scale_y] = d3::ConfiguredRenderScale();
     const auto size = dimensions.load(std::memory_order_relaxed);
     std::ostringstream title;
-    title << "Souls of the Reaper | " << std::fixed << std::setprecision(1) << fps << " FPS";
-    if (size)
-      title << " | Render " << (size >> 32) * scale_x << 'x'
-            << uint32_t(size) * scale_y;
+    title << "Souls of the Reaper | " << std::fixed << std::setprecision(1);
+    bool own_size = false;
+#ifdef SOULS_EXPERIMENTAL
+    if (drawn_fps >= 0) {
+      // Its own frame rate and resolution (which dynamic resolution moves), not ReXGlue's.
+      uint32_t width = 0, height = 0;
+      d3::shadow::RenderSize(&width, &height);
+      title << drawn_fps << " FPS (game " << fps << ")";
+      if (width && height)
+        title << " | Render " << width << 'x' << height;
+      own_size = true;
+    }
+#endif
+    if (!own_size) {
+      title << fps << " FPS";
+      if (size)
+        title << " | Render " << (size >> 32) * scale_x << 'x' << uint32_t(size) * scale_y;
+    }
     title << " | Window " << window.GetActualPhysicalWidth() << 'x'
           << window.GetActualPhysicalHeight() << " | " << RendererName();
     window.SetTitle(title.str());

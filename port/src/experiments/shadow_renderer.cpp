@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <array>
 #include <atomic>
@@ -66,7 +67,9 @@ REXCVAR_DEFINE_INT32(shadow_debug_after_draw, -1, "Experiments",
                      "(-1: off)");
 REXCVAR_DEFINE_INT32(shadow_debug_flags, 0, "Experiments",
                      "Experimental renderer debugging: 1 depth test off, 2 blending off, "
-                     "4 colour writes forced on, 8 no half-pixel offset, 16 culling off");
+                     "4 colour writes forced on, 8 no half-pixel offset, 16 culling off, "
+                     "32 dynamic resolution steps through its range instead of following the "
+                     "GPU time (to test resolution changes)");
 REXCVAR_DEFINE_BOOL(shadow_debug_layout, false, "Experiments",
                     "Every 600 frames, log each draw's render target, state and textures, the "
                     "resolves between them, and the vertex constants of draws 1 and 13");
@@ -76,6 +79,14 @@ REXCVAR_DEFINE_INT32(shadow_render_height, 0, "Experiments",
                      "scaled by height / the game's height (720 or --shadow_guest_height). "
                      "Read at startup");
 REXCVAR_DECLARE(int32_t, shadow_guest_height);  // shadow_aspect.cpp
+REXCVAR_DECLARE(int32_t, shadow_guest_width);
+REXCVAR_DEFINE_BOOL(shadow_dynamic_resolution, false, "Experiments",
+                    "Let the Shadow renderer lower its vertical resolution while the GPU cannot "
+                    "keep up with the game's frame rate, and raise it again when it can. "
+                    "--shadow_render_height is then the most it draws at. Read at startup");
+REXCVAR_DEFINE_INT32(shadow_dynamic_min_height, 0, "Experiments",
+                     "Fewest lines dynamic resolution may drop to, 720 at the least; 0: the "
+                     "game's own height (720 or --shadow_guest_height). Read at startup");
 REXCVAR_DEFINE_STRING(shadow_compare_dir, "", "Experiments",
                       "Folder for side-by-side captures (F9, --shadow_compare_every); empty: "
                       "<user data>/shadow_compare");
@@ -99,6 +110,10 @@ std::atomic<bool> skip_in_hooks{false};
 std::atomic<bool> in_game_window{false};
 // Side-by-side captures: requested by F9; ReXGlue's presenter (null in Vulkan-only mode).
 std::atomic<bool> capture_requested{false};
+// For the window title: frames the renderer has presented, and the size it draws at now
+// (width << 32 | height).
+std::atomic<uint64_t> presented_frames{0};
+std::atomic<uint64_t> render_size{0};
 std::function<rex::ui::Presenter *()> rexglue_presenter;  // set once at Initialize
 rex::ui::Window *game_window = nullptr;                   // set once at Initialize
 std::filesystem::path compare_dir;
@@ -111,7 +126,8 @@ using rex::ui::vulkan::VulkanInstance;
   X(vkDeviceWaitIdle) X(vkResetCommandBuffer) X(vkGetBufferDeviceAddress)       \
   X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
   X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdBlitImage) X(vkCmdCopyImage)  \
-  X(vkQueueWaitIdle) X(vkCmdClearDepthStencilImage) X(vkFreeDescriptorSets)
+  X(vkQueueWaitIdle) X(vkCmdClearDepthStencilImage) X(vkFreeDescriptorSets)    \
+  X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
 
 // Device functions, loaded with the same lists ReXGlue uses, plus a few it leaves out.
 struct DeviceFunctions {
@@ -146,6 +162,10 @@ class Renderer {
     VkFence fence = VK_NULL_HANDLE;
     VkSemaphore image_ready = VK_NULL_HANDLE;
     Buffer arena;  // vertices, indices and constants of one guest frame
+    // GPU time of the frame (dynamic resolution): timestamps at its start and end, read
+    // back when the slot comes round again.
+    VkQueryPool queries = VK_NULL_HANDLE;
+    bool timed = false;
   };
 
  public:
@@ -206,8 +226,22 @@ class Renderer {
                                          REXCVAR_GET(shadow_guest_height) > 0
                                      ? REXCVAR_GET(shadow_guest_height)
                                      : 720;
+    guest_height_ = uint32_t(guest_height);
+    guest_width_ = REXCVAR_GET(shadow_renderer_only) && REXCVAR_GET(shadow_guest_width) > 0
+                       ? uint32_t(REXCVAR_GET(shadow_guest_width))
+                       : 1280;
     if (REXCVAR_GET(shadow_render_height) > 0)
       scale_ = float(REXCVAR_GET(shadow_render_height)) / float(guest_height);
+    max_scale_ = min_scale_ = scale_;
+    if (REXCVAR_GET(shadow_dynamic_resolution)) {
+      const int32_t min_height = REXCVAR_GET(shadow_dynamic_min_height);
+      // Never below 720 lines, the game's own picture, to keep a level of quality (the
+      // resolution test mode, debug flag 32, may go lower to make the steps visible).
+      const float floor = (REXCVAR_GET(shadow_debug_flags) & 32) ? 0.25f
+                                                                 : 720.0f / float(guest_height);
+      min_scale_ = std::clamp(min_height > 0 ? float(min_height) / float(guest_height) : 1.0f,
+                              std::min(floor, max_scale_), max_scale_);
+    }
     if (!CreateDevice() || !CreateWindowAndSurface() || !CreateSwapchain() || !CreateFrames() ||
         !CreateResources()) {
       REXLOG_ERROR("shadow_renderer: setup failed; the second window stays off");
@@ -215,8 +249,18 @@ class Renderer {
       return;
     }
     REXLOG_INFO("shadow_renderer: running on {}", device_name_);
-    REXLOG_INFO("shadow_renderer: drawing at {}x{} (scale {:.3f})", Scaled(1280), Scaled(720),
-                scale_);
+    REXLOG_INFO("shadow_renderer: drawing at {}x{} (scale {:.3f})", Scaled(guest_width_),
+                Scaled(guest_height_), scale_);
+    dynamic_ = min_scale_ < max_scale_ && timestamp_period_ns_ > 0;
+    if (dynamic_) {
+      REXLOG_INFO("shadow_renderer: dynamic resolution on, {} to {} lines",
+                  uint32_t(std::lround(guest_height_ * min_scale_)), Scaled(guest_height_));
+    } else if (REXCVAR_GET(shadow_dynamic_resolution)) {
+      REXLOG_WARN("shadow_renderer: dynamic resolution stays off ({})",
+                  min_scale_ < max_scale_ ? "this GPU has no timestamp queries"
+                                          : "the render height is already the lowest allowed");
+    }
+    render_size.store(uint64_t(Scaled(guest_width_)) << 32 | Scaled(guest_height_));
     running_.store(true, std::memory_order_release);
     while (true) {
       std::unique_ptr<FrameRecord> frame;
@@ -235,10 +279,21 @@ class Renderer {
         }
         // A frame that could not be drawn (no swapchain image: the window is being resized,
         // is minimized or not shown yet) still hands its announcements to the next one.
+        // How fast the game produces frames (it never waits for this renderer): what
+        // dynamic resolution has to keep up with.
+        if (last_guest_frame_ && frame->guest_frame > last_guest_frame_) {
+          const double ms = std::chrono::duration<double, std::milli>(start - last_guest_time_).count() /
+                            double(frame->guest_frame - last_guest_frame_);
+          // Slowly: one late frame (a resolution change stalls a moment) is not a new pace.
+          guest_interval_ms_ = std::clamp(guest_interval_ms_ * 0.97 + ms * 0.03, 4.0, 100.0);
+        }
+        last_guest_frame_ = frame->guest_frame;
+        last_guest_time_ = start;
         if (!DrawFrame(*frame)) {
           unseen_ = std::move(frame);
           continue;
         }
+        presented_frames.fetch_add(1, std::memory_order_relaxed);
         stats_render_ns_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                          std::chrono::steady_clock::now() - start)
                                          .count());
@@ -308,11 +363,11 @@ class Renderer {
     const auto &ifn = instance_->functions();
     std::vector<VkPhysicalDevice> devices;
     instance_->EnumeratePhysicalDevices(devices);
-    for (VkPhysicalDevice candidate : devices) {
-      VkPhysicalDeviceProperties properties;
-      ifn.vkGetPhysicalDeviceProperties(candidate, &properties);
-      if (properties.apiVersion < VK_API_VERSION_1_3)
-        continue;
+    // Whether a GPU can run the renderer; fills in its graphics queue family and name.
+    auto suitable = [&](VkPhysicalDevice candidate, uint32_t *family, VkPhysicalDeviceProperties *properties) {
+      ifn.vkGetPhysicalDeviceProperties(candidate, properties);
+      if (properties->apiVersion < VK_API_VERSION_1_3)
+        return false;
       VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
       VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
       VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
@@ -320,26 +375,74 @@ class Renderer {
       if (!f12.bufferDeviceAddress || !f12.descriptorIndexing || !f12.runtimeDescriptorArray ||
           !f12.descriptorBindingPartiallyBound || !f12.descriptorBindingUpdateUnusedWhilePending ||
           !f2.features.shaderInt64 || !f13.dynamicRendering)
-        continue;
+        return false;
       uint32_t family_count = 0;
       ifn.vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, nullptr);
       std::vector<VkQueueFamilyProperties> families(family_count);
       ifn.vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, families.data());
       for (uint32_t i = 0; i < family_count; ++i) {
         if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-          // Prefer a discrete GPU; otherwise keep the first suitable one.
-          const bool discrete = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-          if (!physical_device_ || discrete) {
-            physical_device_ = candidate;
-            queue_family_ = i;
-            std::snprintf(device_name_, sizeof(device_name_), "%s", properties.deviceName);
-          }
-          break;
+          *family = i;
+          return true;
         }
       }
-      if (physical_device_ &&
+      return false;
+    };
+    auto choose = [&](VkPhysicalDevice candidate, uint32_t family,
+                      const VkPhysicalDeviceProperties &properties) {
+      physical_device_ = candidate;
+      queue_family_ = family;
+      std::snprintf(device_name_, sizeof(device_name_), "%s", properties.deviceName);
+    };
+    // The SDK's --vulkan_device (an index into the same list ReXGlue's own Vulkan backend
+    // uses, and logs at startup) picks the GPU here too; -1 or absent chooses one.
+    int wanted = -1;
+    if (const std::string flag = rex::cvar::GetFlagByName("vulkan_device"); !flag.empty())
+      wanted = std::atoi(flag.c_str());
+    if (wanted >= 0) {
+      uint32_t family = 0;
+      VkPhysicalDeviceProperties properties;
+      if (size_t(wanted) >= devices.size()) {
+        REXLOG_WARN("shadow_renderer: --vulkan_device={} but there are only {} GPUs; choosing "
+                    "one automatically",
+                    wanted, devices.size());
+      } else if (suitable(devices[size_t(wanted)], &family, &properties)) {
+        choose(devices[size_t(wanted)], family, properties);
+      } else {
+        REXLOG_WARN("shadow_renderer: --vulkan_device={} ({}) lacks what the renderer needs; "
+                    "choosing another GPU",
+                    wanted, properties.deviceName);
+      }
+    }
+    // Otherwise prefer a discrete GPU, else the first suitable one.
+    for (size_t i = 0; i < devices.size() && !physical_device_; ++i) {
+      uint32_t family = 0;
+      VkPhysicalDeviceProperties properties;
+      if (suitable(devices[i], &family, &properties) &&
           properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-        break;
+        choose(devices[i], family, properties);
+    }
+    for (size_t i = 0; i < devices.size() && !physical_device_; ++i) {
+      uint32_t family = 0;
+      VkPhysicalDeviceProperties properties;
+      if (suitable(devices[i], &family, &properties))
+        choose(devices[i], family, properties);
+    }
+    if (physical_device_) {
+      // Timestamp queries measure a frame's GPU time for dynamic resolution.
+      VkPhysicalDeviceProperties properties;
+      ifn.vkGetPhysicalDeviceProperties(physical_device_, &properties);
+      uint32_t family_count = 0;
+      ifn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &family_count, nullptr);
+      std::vector<VkQueueFamilyProperties> families(family_count);
+      ifn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &family_count,
+                                                   families.data());
+      // Counters narrower than 64 bits (36 on Intel) wrap; differences are taken within them.
+      if (queue_family_ < family_count && families[queue_family_].timestampValidBits >= 32) {
+        const uint32_t bits = families[queue_family_].timestampValidBits;
+        timestamp_mask_ = bits >= 64 ? ~uint64_t(0) : (uint64_t(1) << bits) - 1;
+        timestamp_period_ns_ = double(properties.limits.timestampPeriod);
+      }
     }
     if (!physical_device_) {
       REXLOG_ERROR("shadow_renderer: no Vulkan 1.3 GPU with buffer device address, "
@@ -674,6 +777,13 @@ class Renderer {
       dfn_.vkCreateFence(device_, &fence, nullptr, &frame.fence);
       VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
       dfn_.vkCreateSemaphore(device_, &semaphore, nullptr, &frame.image_ready);
+      if (timestamp_period_ns_ > 0) {
+        VkQueryPoolCreateInfo queries{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        queries.queryCount = 2;
+        if (dfn_.vkCreateQueryPool(device_, &queries, nullptr, &frame.queries) != VK_SUCCESS)
+          timestamp_period_ns_ = 0;
+      }
     }
     return true;
   }
@@ -711,6 +821,14 @@ class Renderer {
     Frame &frame = frames_[frame_index_];
     frame_index_ = (frame_index_ + 1) % kFramesInFlight;
     dfn_.vkWaitForFences(device_, 1, &frame.fence, VK_TRUE, UINT64_MAX);
+    // The frame this slot held has finished: its GPU time steers the resolution of this one.
+    if (frame.timed) {
+      frame.timed = false;
+      uint64_t stamps[2] = {};
+      if (dfn_.vkGetQueryPoolResults(device_, frame.queries, 0, 2, sizeof(stamps), stamps,
+                                     sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+        OnGpuTime(double((stamps[1] - stamps[0]) & timestamp_mask_) * timestamp_period_ns_ / 1e6);
+    }
 
     uint32_t image = 0;
     VkResult acquired = dfn_.vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
@@ -729,6 +847,10 @@ class Renderer {
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     dfn_.vkBeginCommandBuffer(cmd, &begin);
+    if (frame.queries && timestamp_period_ns_ > 0) {
+      dfn_.vkCmdResetQueryPool(cmd, frame.queries, 0, 2);
+      dfn_.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.queries, 0);
+    }
     arena_used_ = 0;
     ProcessUploads(cmd, frame, guest);
 
@@ -788,6 +910,10 @@ class Renderer {
               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
               VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     }
+    if (frame.queries && timestamp_period_ns_ > 0) {
+      dfn_.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queries, 1);
+      frame.timed = true;
+    }
     dfn_.vkEndCommandBuffer(cmd);
 
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -836,7 +962,7 @@ class Renderer {
   // copied through it at the render resolution (4 bytes a pixel). The game's own 720p fits
   // 64 MiB; the resolves grow with the square of the scale, and a full arena skips draws.
   VkDeviceSize ArenaSize() const {
-    const double extra = std::max(double(scale_) * double(scale_) - 1.0, 0.0);
+    const double extra = std::max(double(max_scale_) * double(max_scale_) - 1.0, 0.0);
     return (VkDeviceSize(64) << 20) + VkDeviceSize(extra * double(VkDeviceSize(32) << 20));
   }
   // Bindless descriptor arrays XenosRecomp's shaders index into: Texture2D[], Texture3D[],
@@ -944,8 +1070,9 @@ class Renderer {
   bool CreateResources() {
     for (auto &frame : frames_)
       if (!CreateHostBuffer(ArenaSize(),
+                            // Transfer both ways: depth resolves are copied through it.
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                             frame.arena))
         return false;
     // Unused vertex inputs read zeros from this buffer (binding 1, stride 0).
@@ -1695,12 +1822,93 @@ class Renderer {
 
   static constexpr uint32_t kTargetWidth = 2048;   // guest pixels
   static constexpr uint32_t kTargetHeight = 1536;
-  // Host pixels per guest pixel (--shadow_render_height / 720), fixed for the session. Every
-  // guest pixel quantity (target sizes, viewports, scissors, resolve rectangles) is scaled by
-  // it; shaders get its inverse for vPos (XenosRecomp's g_ResolutionScaleInv).
+  // Host pixels per guest pixel (--shadow_render_height / the game's height). Every guest
+  // pixel quantity (viewports, scissors, resolve rectangles) is scaled by it; shaders get its
+  // inverse for vPos (XenosRecomp's g_ResolutionScaleInv). It is constant within a frame.
+  // Dynamic resolution moves it between min_scale_ and max_scale_ from one frame to the
+  // next: the render targets are allocated once for max_scale_ and a smaller scale draws
+  // into their top left part, while each resolve image is exactly the size of what it
+  // holds, so shaders sample it with the same coordinates at any scale.
   float scale_ = 1.0f;
-  uint32_t TargetWidth() const { return uint32_t(std::ceil(kTargetWidth * scale_)); }
-  uint32_t TargetHeight() const { return uint32_t(std::ceil(kTargetHeight * scale_)); }
+  float max_scale_ = 1.0f, min_scale_ = 1.0f;
+  uint32_t guest_width_ = 1280, guest_height_ = 720;  // the game's own display
+  uint32_t TargetWidth() const { return uint32_t(std::ceil(kTargetWidth * max_scale_)); }
+  uint32_t TargetHeight() const { return uint32_t(std::ceil(kTargetHeight * max_scale_)); }
+
+  // --- Dynamic resolution --------------------------------------------------------------------
+  //
+  // The game runs at its own pace and frames this renderer cannot draw in time are dropped,
+  // so the aim is a GPU time per frame just under the game's frame interval. The scale moves
+  // in kDynamicLevels steps between min_scale_ and max_scale_: down by as much as the
+  // overshoot calls for (GPU time grows roughly with the pixel count), up one step at a time
+  // and only when the next step is predicted to fit, with a pause after every change so the
+  // measurements are of the new scale. Changing scale recreates the resolve images, which
+  // is why it does not follow every frame.
+  static constexpr int kDynamicLevels = 16;
+  bool dynamic_ = false;
+  int dynamic_level_ = kDynamicLevels;
+  int dynamic_samples_ = 0;      // negative: measurements still of the previous scale
+  double dynamic_gpu_ms_ = 0;    // smoothed GPU time per frame at the current scale
+  double last_gpu_ms_ = 0;
+  double guest_interval_ms_ = 1000.0 / 60.0;  // smoothed time between the game's frames
+  uint64_t last_guest_frame_ = 0;
+  std::chrono::steady_clock::time_point last_guest_time_{};
+  double timestamp_period_ns_ = 0;  // 0: no timestamp queries on this GPU
+  uint64_t timestamp_mask_ = ~uint64_t(0);
+  uint32_t dynamic_changes_ = 0;
+
+  float LevelScale(int level) const {
+    return min_scale_ + (max_scale_ - min_scale_) * float(level) / float(kDynamicLevels);
+  }
+
+  void OnGpuTime(double ms) {
+    last_gpu_ms_ = ms;
+    if (!dynamic_)
+      return;
+    if (REXCVAR_GET(shadow_debug_flags) & 32) {
+      // Test mode: down a step every 20 frames, wrapping to the top.
+      if (++dynamic_samples_ < 20)
+        return;
+      dynamic_samples_ = 0;
+      dynamic_level_ = dynamic_level_ > 0 ? dynamic_level_ - 1 : kDynamicLevels;
+      scale_ = LevelScale(dynamic_level_);
+      ++dynamic_changes_;
+      render_size.store(uint64_t(Scaled(guest_width_)) << 32 | Scaled(guest_height_));
+      return;
+    }
+    if (dynamic_samples_++ < 0)
+      return;
+    dynamic_gpu_ms_ = dynamic_samples_ == 1 ? ms : dynamic_gpu_ms_ * 0.8 + ms * 0.2;
+    if (dynamic_samples_ < 10)
+      return;
+    const double budget = guest_interval_ms_;
+    int level = dynamic_level_;
+    if (dynamic_gpu_ms_ > budget * 0.92 && level > 0) {
+      // The scale at which the frame should take 85% of the budget, rounded down a step.
+      const float wanted = scale_ * float(std::sqrt(budget * 0.85 / dynamic_gpu_ms_));
+      level = int(std::floor((wanted - min_scale_) / (max_scale_ - min_scale_) *
+                             float(kDynamicLevels)));
+      level = std::clamp(level, std::max(dynamic_level_ - 4, 0), dynamic_level_ - 1);
+    } else if (dynamic_gpu_ms_ < budget * 0.70 && level < kDynamicLevels &&
+               dynamic_samples_ >= 45) {
+      // Up only after most of a second with room to spare, and only if the next step is
+      // predicted to leave some: quick to drop, slow to climb, so it does not flap.
+      const double ratio = double(LevelScale(level + 1)) / double(scale_);
+      if (dynamic_gpu_ms_ * ratio * ratio < budget * 0.80)
+        ++level;
+    }
+    if (level == dynamic_level_)
+      return;
+    dynamic_level_ = level;
+    scale_ = LevelScale(level);
+    // The next frames in flight were still drawn at the old scale.
+    dynamic_samples_ = -int(kFramesInFlight) - 1;
+    ++dynamic_changes_;
+    REXLOG_DEBUG("shadow_renderer: GPU {:.2f} ms against {:.2f} ms: now {} lines (scale {:.3f})",
+                 dynamic_gpu_ms_, budget, Scaled(guest_height_), scale_);
+    render_size.store(uint64_t(Scaled(guest_width_)) << 32 | Scaled(guest_height_));
+  }
+
   uint32_t Scaled(uint32_t guest_pixels) const {
     return uint32_t(std::lround(double(guest_pixels) * scale_));
   }
@@ -1766,7 +1974,11 @@ class Renderer {
   // Copies a render target into the host image standing in for the resolved texture.
   // Depth resolves become R32_SFLOAT images (the depth value in red), copied through the
   // frame's arena because Vulkan cannot copy a depth image straight into a colour image.
-  Target *Resolve(VkCommandBuffer cmd, Frame &frame, const ResolveRecord &r) {
+  // `scale`: the scale its source was drawn at this frame.
+  Target *Resolve(VkCommandBuffer cmd, Frame &frame, const ResolveRecord &r, float scale) {
+    const auto scaled = [scale](uint32_t guest_pixels) {
+      return uint32_t(std::lround(double(guest_pixels) * scale));
+    };
     if (r.slot >= kResolveSlots)
       return nullptr;
     Target *source_target = nullptr;
@@ -1785,11 +1997,15 @@ class Renderer {
       return nullptr;
     Target &source = *source_target;
     const VkFormat dest_format = r.depth ? VK_FORMAT_R32_SFLOAT : source.format;
-    const uint32_t width = std::min(Scaled(r.width), source.width);
-    const uint32_t height = std::min(Scaled(r.height), source.height);
+    const uint32_t width = std::min(scaled(r.width), source.width);
+    const uint32_t height = std::min(scaled(r.height), source.height);
     Target &dest = resolved_[r.slot];
     if (!dest.image.image || dest.format != dest_format || dest.width != width ||
         dest.height != height) {
+      // A slot recreated with another size (every slot, when dynamic resolution moves) may
+      // still be read by the frames in flight: let them finish before the image goes.
+      if (dest.image.image)
+        dfn_.vkQueueWaitIdle(queue_);
       DestroyImage(dest.image);
       dest = {};
       dest.format = dest_format;
@@ -1808,10 +2024,8 @@ class Renderer {
       write.descriptorCount = 1;
       write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
       write.pImageInfo = &descriptor;
-      // A new slot: no frame in flight reads it yet (UPDATE_UNUSED_WHILE_PENDING). A slot
-      // that is recreated with another size may still be read by the previous frame, so wait.
-      if (resolved_ready_.count(r.slot))
-        dfn_.vkQueueWaitIdle(queue_);
+      // A new slot: no frame in flight reads it yet (UPDATE_UNUSED_WHILE_PENDING); a
+      // recreated one was waited for above.
       dfn_.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
       resolved_ready_.insert(r.slot);
     }
@@ -2433,6 +2647,25 @@ class Renderer {
     size_t next_resolve = 0, next_clear = 0;
     std::vector<std::pair<Target *, size_t>> resolved_this_frame;
     bool debug_shown = false;
+    // The frame's last stretch, after every resolve but the one that is shown, is where the
+    // game puts its finished 3D picture on the screen-sized surface and draws the interface
+    // over it (it renders 3D smaller than the screen itself, 1120x584 against 1280x720).
+    // Dynamic resolution leaves that stretch at the full scale: text and interface stay
+    // sharp, and the 3D picture, drawn smaller, is stretched by the game's own composite
+    // draw. draws[ui_first] is the first draw of the stretch (draws.size(): there is none).
+    size_t ui_first = guest.draws.size();
+    if (scale_ < max_scale_) {
+      const ResolveRecord *last = nullptr;
+      for (const ResolveRecord &r : guest.resolves)
+        if (!r.depth && (!last || r.sequence > last->sequence))
+          last = &r;
+      if (last) {
+        ui_first = 0;
+        for (const ResolveRecord &r : guest.resolves)
+          if (r.sequence < last->sequence)
+            ui_first = std::max<size_t>(ui_first, r.before_draw);
+      }
+    }
     // Clears and resolves recorded before draws[up_to_draw], in the order the game made them.
     auto run_resolves = [&](size_t up_to_draw) {
       for (;;) {
@@ -2448,7 +2681,9 @@ class Renderer {
           Clear(cmd, guest.clears[next_clear++]);
           continue;
         }
-        if (Target *resolved = Resolve(cmd, frame, guest.resolves[next_resolve])) {
+        const ResolveRecord &record = guest.resolves[next_resolve];
+        if (Target *resolved =
+                Resolve(cmd, frame, record, record.before_draw > ui_first ? max_scale_ : scale_)) {
           present = resolved;
           resolved_this_frame.push_back({resolved, next_resolve});
         }
@@ -2560,7 +2795,8 @@ class Renderer {
       AlphaClip(s, &alpha_threshold, &alpha_direction);
       std::memcpy(shared + 272, &alpha_threshold, 4);  // g_AlphaThreshold
       std::memcpy(shared + 280, &alpha_direction, 4);  // g_AlphaTestDirection
-      const float scale_inv = 1.0f / scale_;
+      const float draw_scale = i >= ui_first ? max_scale_ : scale_;
+      const float scale_inv = 1.0f / draw_scale;
       std::memcpy(shared + 276, &scale_inv, 4);  // g_ResolutionScaleInv
       // g_HalfPixelOffset: D3D9 puts pixel centres at integer coordinates, Vulkan at +0.5. The
       // shaders add this times w to the clip position: half a pixel right and down, in clip
@@ -2582,14 +2818,14 @@ class Renderer {
       VkViewport viewport{};
       const float xs = std::abs(v[0]), ys = std::abs(v[2]);
       if (xs > 0 && ys > 0) {
-        viewport.x = (v[1] - xs) * scale_;
-        viewport.y = (v[3] - ys) * scale_;
-        viewport.width = 2 * xs * scale_;
-        viewport.height = 2 * ys * scale_;
+        viewport.x = (v[1] - xs) * draw_scale;
+        viewport.y = (v[3] - ys) * draw_scale;
+        viewport.width = 2 * xs * draw_scale;
+        viewport.height = 2 * ys * draw_scale;
         viewport.minDepth = std::clamp(v[5], 0.0f, 1.0f);
         viewport.maxDepth = std::clamp(v[5] + v[4], 0.0f, 1.0f);
       } else {
-        viewport = {0, 0, 1280 * scale_, 720 * scale_, 0, 1};
+        viewport = {0, 0, float(guest_width_) * draw_scale, float(guest_height_) * draw_scale, 0, 1};
       }
       dfn_.vkCmdSetViewport(cmd, 0, 1, &viewport);
       // RB_BLEND_RGBA: the constant colour of the CONSTANT_COLOR/ALPHA blend factors (fades).
@@ -2690,6 +2926,15 @@ class Renderer {
                   textures_ready_.size(), stats_capture_ns_ / n / 1e6,
                   stats_render_ns_ / n / 1e6, stats_frames_);
       stats_frames_ = stats_capture_ns_ = stats_render_ns_ = 0;
+      if (timestamp_period_ns_ > 0) {
+        REXLOG_INFO("shadow_renderer: resolution {}x{} (scale {:.3f}{}), GPU {:.2f} ms a frame, "
+                    "game frame every {:.2f} ms, {} resolution changes so far",
+                    Scaled(guest_width_), Scaled(guest_height_), scale_,
+                    dynamic_ ? fmt::format(", dynamic {:.3f} to {:.3f}", min_scale_, max_scale_)
+                             : std::string(),
+                    dynamic_ ? dynamic_gpu_ms_ : last_gpu_ms_, guest_interval_ms_,
+                    dynamic_changes_);
+      }
     }
     return present;
   }
@@ -2717,6 +2962,8 @@ class Renderer {
           dfn_.vkDestroyFence(device_, frame.fence, nullptr);
         if (frame.image_ready)
           dfn_.vkDestroySemaphore(device_, frame.image_ready, nullptr);
+        if (frame.queries)
+          dfn_.vkDestroyQueryPool(device_, frame.queries, nullptr);
       }
       for (VkSemaphore s : render_done_)
         dfn_.vkDestroySemaphore(device_, s, nullptr);
@@ -2900,6 +3147,14 @@ bool Enabled() { return REXCVAR_GET(shadow_renderer) || REXCVAR_GET(shadow_rende
 bool SkipGuestRendering() { return skip_in_hooks.load(std::memory_order_relaxed); }
 
 bool HasTakenOver() { return taken_over.load(std::memory_order_relaxed); }
+
+uint64_t PresentedFrames() { return presented_frames.load(std::memory_order_relaxed); }
+
+void RenderSize(uint32_t *width, uint32_t *height) {
+  const uint64_t size = render_size.load(std::memory_order_relaxed);
+  *width = uint32_t(size >> 32);
+  *height = uint32_t(size);
+}
 
 namespace {
 // First run in the game window: the shaders convert while the game loads, and the window

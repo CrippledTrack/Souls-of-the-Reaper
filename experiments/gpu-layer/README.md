@@ -29,6 +29,7 @@ In an experimental build both modes are off unless asked for on the command line
 | `--shadow_renderer=true` | Opens a second window drawn by the Shadow renderer, beside ReXGlue's normal one. Useful for comparing the two. |
 | `--shadow_renderer_only=true` | Draws the game window with the Shadow renderer alone. ReXGlue keeps running the game's GPU command stream on a null backend (no D3D12 or other host graphics API) and its overlays (settings, console, debug, toasts) are drawn by the Shadow renderer. The window title ends in "Vulkan Experimental". |
 | `--shadow_render_height=<n>` | Test option: draws the game at another vertical resolution, e.g. `1080` or `1440` (0, the default, is the game's own 720). Any value works: everything is scaled by n / 720. Read at startup. |
+| `--shadow_dynamic_resolution=true` | Lowers the vertical resolution of the 3D picture while the GPU cannot keep up with the game's frame rate and raises it again when it can; `--shadow_render_height` is then the most it draws at. The last stretch of each frame, where the game composites its 3D picture and draws the interface, stays at the full resolution, so text and menus do not change. `--shadow_dynamic_min_height=<n>` sets the floor (default: the game's own height; never below 720 lines). Needs GPU timestamp queries. Read at startup. |
 | `--shadow_guest_width=<n>` | Vulkan-only test option: sets the width of the game's own display (default 1280), e.g. `1680` for 21:9 at 720 lines; wider than 16:9 shows more at the sides and the HUD moves to the window edges. At most 2048. Read at startup. |
 | `--shadow_guest_height=<n>` | Vulkan-only test option: sets the height of the game's own display (default 720), e.g. `800` for 16:10 at 1280 wide. Like the PC version, a taller shape trims the sides rather than showing more above and below. `--shadow_render_height` scales from this height. At most 1536. Read at startup. |
 | **F9** / `--shadow_compare_every=<s>` | Side-by-side capture (with `--shadow_renderer=true`): saves ReXGlue's frame, the Shadow renderer's, and a combined ReXGlue \| Vulkan \| difference image (difference brightened 4x) to `<user data>/shadow_compare` (`--shadow_compare_dir`), and logs how much they differ. The two renderers run independently, so pause the game for exact comparisons, and give both the same resolution. |
@@ -103,8 +104,10 @@ the performance work and the debug options. In short:
 - **60 FPS in gameplay** in both modes. Capturing a frame costs about 4.5 ms on the game
   thread; static meshes are converted once and kept on the GPU.
 - **Not done yet:** MSAA, stencil, a few alpha-test functions, stacked textures and 3D
-  mipmaps, a window surface for macOS, dynamic resolution (a fixed render
-  resolution can already be set for testing) and ultrawide.
+  mipmaps, a window surface for macOS and ultrawide beyond about 2.84:1. Dynamic
+  resolution is a first version: it is driven by GPU time only, has been tried on the title
+  screen and menus (not yet through gameplay), and a resolution change recreates the
+  resolve images, which costs a moment each time.
 - **Draw coverage:** the game has been seen drawing through two of its 14 Direct3D draw
   functions, both captured. The others log a warning the first time they are called.
 
