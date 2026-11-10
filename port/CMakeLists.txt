@@ -10,8 +10,8 @@ option(SOULS_ENABLE_EXTRA_FEATURES "Enable optional PC game features" OFF)
 option(SOULS_TITLE_UPDATE "Build the verified USA update" OFF)
 option(SOULS_EXPERIMENTAL "Compile the experimental features (the Shadow renderer)" OFF)
 
-if(SOULS_ENABLE_EXTRA_FEATURES AND NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    message(FATAL_ERROR "Extra features support Windows and Linux base-disc/update builds")
+if(SOULS_ENABLE_EXTRA_FEATURES AND NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
+    message(FATAL_ERROR "Extra features support Windows, Linux and macOS base-disc/update builds")
 endif()
 if(SOULS_ENABLE_EXTRA_FEATURES)
     set(SOULS_BASE_XEX "${CMAKE_CURRENT_SOURCE_DIR}/../game/Default.xex" CACHE FILEPATH
@@ -106,6 +106,21 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${SOULS_XENOSRECOMP_DIR}/b
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp"
             "${_xr_dxc}/libdxcompiler.so" "${_xr_dxc}/libdxil.so"
+            "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
+            "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
+        COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")
+elseif(APPLE AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp")
+    # The converter's run path is @loader_path, so its DXC library sits beside it.
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(_xr_dxc "${SOULS_XENOSRECOMP_DIR}/thirdparty/dxc-bin/lib/x64")
+    else()
+        set(_xr_dxc "${SOULS_XENOSRECOMP_DIR}/thirdparty/dxc-bin/lib/arm64")
+    endif()
+    add_custom_command(TARGET diablo3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp"
+            "${_xr_dxc}/libdxcompiler.dylib"
             "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
             "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
         COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")

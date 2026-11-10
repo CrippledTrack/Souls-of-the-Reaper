@@ -6,6 +6,14 @@ if(NOT EXISTS "${_generated}/sources.cmake")
 endif()
 include("${_generated}/sources.cmake")
 
+if(APPLE)
+    # The generated registration table is one ~136k-line function. -O2 takes
+    # over 30 minutes, and arm64 -O0 GlobalISel is quadratic on it; it only runs
+    # once at startup, so use FastISel.
+    set_source_files_properties("${_generated}/diablo3_register.cpp" PROPERTIES COMPILE_OPTIONS "-O0;-fno-global-isel"
+        SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
 function(rexglue_setup_target target)
     add_library(${target}_recomp OBJECT ${GENERATED_SOURCES})
     target_include_directories(${target}_recomp PRIVATE

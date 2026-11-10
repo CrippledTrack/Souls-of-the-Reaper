@@ -42,7 +42,10 @@ def files(source=SOURCE):
         libraries = [built / "dxcompiler.dll", built / "dxil.dll"]
     else:
         dxc = source / "thirdparty/dxc-bin/lib" / ("arm64" if platform.machine() in ("aarch64", "arm64") else "x64")
-        libraries = [dxc / "libdxcompiler.so", dxc / "libdxil.so"]
+        if platform.system() == "Darwin":  # SPIR-V only: there is no DXIL library for macOS
+            libraries = [dxc / "libdxcompiler.dylib"]
+        else:
+            libraries = [dxc / "libdxcompiler.so", dxc / "libdxil.so"]
     return [built / EXECUTABLE, *libraries, source / "XenosRecomp/shader_common.h"]
 
 

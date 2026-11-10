@@ -20,7 +20,8 @@ COMMON_PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch"
 LINUX_PATCHES = ("rexglue-present-effects.patch",)
 STAMP = ".sotr-sdk.json"
 # Folders under patches/ that go into the SDK, per host.
-PATCH_DIRS = {"linux": ("common", "systemlink", "linux"), "win": ("common", "systemlink", "windows")}
+PATCH_DIRS = {"linux": ("common", "systemlink", "linux"), "win": ("common", "systemlink", "windows"),
+              "macos": ("common", "systemlink", "linux")}
 
 
 def lock():
@@ -28,7 +29,7 @@ def lock():
 
 
 def patch_hash(host, extra=()):
-    """Digest of everything this port adds to the SDK for `host` ("linux" or "win"), plus
+    """Digest of everything this port adds to the SDK for `host` ("linux", "win" or "macos"), plus
     the patch folders in `extra` (a build profile's own, see build_profiles.py)."""
     digest = hashlib.sha256()
     for name in (*PATCH_DIRS[host], *extra):

@@ -8,7 +8,9 @@ first milestone, when it only ran in the shadow of ReXGlue's renderer, drawing t
 frames side by side.
 
 It is experimental. It has been tested mostly on Windows (on Linux, under Wayland, only the
-title screen has been run so far, in both modes), with the verified USA title update
+title screen has been run so far, in both modes; on macOS, through MoltenVK on Apple
+silicon, only `--shadow_renderer_only=true` has been run, from the intro into early Act I
+gameplay, built with `scripts/build_macos.py --profile experimental`), with the verified USA title update
 (title screen through the main menu, the inventory and early Act I gameplay) and the base
 disc (title screen into early Act I gameplay). The hooks use each executable's own addresses
 (`port/src/experiments/guest_addresses.h`); other executables are not supported.
@@ -104,7 +106,7 @@ the performance work and the debug options. In short:
 - **60 FPS in gameplay** in both modes. Capturing a frame costs about 4.5 ms on the game
   thread; static meshes are converted once and kept on the GPU.
 - **Not done yet:** MSAA, stencil, a few alpha-test functions, stacked textures and 3D
-  mipmaps, a window surface for macOS and ultrawide beyond about 2.84:1. Dynamic
+  mipmaps and ultrawide beyond about 2.84:1. Dynamic
   resolution is a first version: it is driven by GPU time only, has been tried on the title
   screen and menus (not yet through gameplay), and a resolution change recreates the
   resolve images, which costs a moment each time.

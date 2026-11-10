@@ -2,7 +2,7 @@ diff --git a/XenosRecomp/CMakeLists.txt b/XenosRecomp/CMakeLists.txt
 index e505a5e..645e59a 100644
 --- a/XenosRecomp/CMakeLists.txt
 +++ b/XenosRecomp/CMakeLists.txt
-@@ -51,3 +51,11 @@ if (XENOS_RECOMP_DXIL)
+@@ -51,3 +51,13 @@ if (XENOS_RECOMP_DXIL)
      target_compile_definitions(XenosRecomp PRIVATE XENOS_RECOMP_DXIL)
      target_link_libraries(XenosRecomp PRIVATE Microsoft::DXIL)
  endif()
@@ -10,8 +10,10 @@ index e505a5e..645e59a 100644
 +# Feasibility harness: keep asserts in optimized builds.
 +target_compile_options(XenosRecomp PRIVATE -UNDEBUG)
 +
-+# Staged next to the game with libdxcompiler.so beside it (Linux).
-+if (UNIX AND NOT APPLE)
++# Staged next to the game with its DXC library beside it (Linux, macOS).
++if (APPLE)
++    set_target_properties(XenosRecomp PROPERTIES BUILD_RPATH "@loader_path")
++elseif (UNIX)
 +    set_target_properties(XenosRecomp PROPERTIES BUILD_RPATH "\$ORIGIN")
 +endif()
 diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp

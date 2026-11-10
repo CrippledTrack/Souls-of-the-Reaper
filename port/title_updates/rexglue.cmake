@@ -23,6 +23,13 @@ if(NOT _update_source_hash STREQUAL "447652ffa8abe4c7b8bed590a3887efc23e1181fd83
 endif()
 include("${_generated}/sources.cmake")
 
+if(APPLE)
+    # One ~136k-line generated function: -O2 and arm64 -O0 GlobalISel are
+    # impractically slow on it. It only runs once at startup, so use FastISel.
+    set_source_files_properties("${_generated}/diablo3_register.cpp" PROPERTIES
+        COMPILE_OPTIONS "-O0;-fno-global-isel" SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
 function(rexglue_setup_target target)
     add_library(${target}_recomp OBJECT ${GENERATED_SOURCES})
     target_include_directories(${target}_recomp PRIVATE

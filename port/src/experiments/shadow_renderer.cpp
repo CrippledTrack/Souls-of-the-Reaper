@@ -29,6 +29,8 @@
 #include <rex/ui/surface.h>
 #ifdef __linux__
 #include <rex/ui/surface_gnulinux.h>
+#elif defined(__APPLE__)
+#include <rex/ui/surface_mac.h>
 #endif
 #include <imgui.h>
 
@@ -341,7 +343,8 @@ class Renderer {
       return;
     }
 #else
-    // Wayland surfaces have no size of their own: the window's size in pixels decides.
+    // Wayland surfaces and Metal layers have no size of their own: the window's size in
+    // pixels decides.
     uint32_t w = 0, h = 0;
     if (native_surface_ && native_surface_->GetSize(w, h)) {
       *width = int(w);
@@ -467,12 +470,31 @@ class Renderer {
     queue_info.queueFamilyIndex = queue_family_;
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
-    const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // A device that is not fully conformant (MoltenVK on macOS) says so with this extension,
+    // which must then be enabled; its features tell what is missing.
+    VkPhysicalDevicePortabilitySubsetFeaturesKHR subset{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR};
+    uint32_t extension_count = 0;
+    ifn.vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> available(extension_count);
+    ifn.vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count,
+                                             available.data());
+    for (const VkExtensionProperties &extension : available) {
+      if (std::strcmp(extension.extensionName, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) != 0)
+        continue;
+      VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &subset};
+      ifn.vkGetPhysicalDeviceFeatures2(physical_device_, &query);
+      triangle_fans_ = subset.triangleFans;
+      extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+      f13.pNext = &subset;
+      break;
+    }
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f2};
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
-    device_info.enabledExtensionCount = 1;
-    device_info.ppEnabledExtensionNames = extensions;
+    device_info.enabledExtensionCount = uint32_t(extensions.size());
+    device_info.ppEnabledExtensionNames = extensions.data();
     if (ifn.vkCreateDevice(physical_device_, &device_info, nullptr, &device_) != VK_SUCCESS) {
       REXLOG_ERROR("shadow_renderer: vkCreateDevice failed");
       return false;
@@ -615,25 +637,43 @@ class Renderer {
       REXLOG_ERROR("shadow_renderer: cannot create a Win32 surface");
       return false;
     }
-#elif defined(__linux__)
-    // The window hands out its native surface (Wayland, else X11) when no presenter of
-    // ReXGlue's is attached. The game window may not be open yet when this thread starts:
-    // give it a few seconds.
+#elif defined(__linux__) || defined(__APPLE__)
+    // The window hands out its native surface (Wayland, else X11; a Metal layer on macOS)
+    // when no presenter of ReXGlue's is attached. The game window may not be open yet when
+    // this thread starts: give it a few seconds.
+#ifdef __APPLE__
+    const rex::ui::Surface::TypeFlags surface_types = rex::ui::Surface::kTypeFlag_CAMetalLayer;
+#else
+    const rex::ui::Surface::TypeFlags surface_types =
+        rex::ui::Surface::kTypeFlag_WaylandSurface | rex::ui::Surface::kTypeFlag_XcbWindow;
+#endif
     rex::ui::Window *target = own_window ? window_.get() : game_window;
     for (int attempt = 0; target && attempt < 50 && !native_surface_; ++attempt) {
-      context_.CallInUIThreadSynchronous([this, target] {
-        native_surface_ = target->CreateAppSurface(rex::ui::Surface::kTypeFlag_WaylandSurface |
-                                                   rex::ui::Surface::kTypeFlag_XcbWindow);
+      context_.CallInUIThreadSynchronous([this, target, surface_types] {
+        native_surface_ = target->CreateAppSurface(surface_types);
       });
       if (!native_surface_)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (!native_surface_) {
-      REXLOG_ERROR("shadow_renderer: the window has no Wayland or X11 surface to draw into");
+      REXLOG_ERROR("shadow_renderer: the window has no native surface to draw into");
       return false;
     }
     const auto &ifn = instance_->functions();
     VkResult created = VK_ERROR_EXTENSION_NOT_PRESENT;
+#ifdef __APPLE__
+    // MoltenVK presents through the window's CAMetalLayer.
+    const char *surface_name = "Metal";
+    VkMetalSurfaceCreateInfoEXT surface_info{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
+    surface_info.pLayer = static_cast<const CAMetalLayer *>(
+        static_cast<const rex::ui::CAMetalLayerSurface &>(*native_surface_).layer());
+    if (ifn.vkCreateMetalSurfaceEXT)
+      created = ifn.vkCreateMetalSurfaceEXT(instance_->instance(), &surface_info, nullptr,
+                                            &surface_);
+#else
+    const char *surface_name =
+        native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface ? "Wayland"
+                                                                                  : "X11";
     if (native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface) {
       auto &wayland = static_cast<const rex::ui::WaylandSurface &>(*native_surface_);
       VkWaylandSurfaceCreateInfoKHR surface_info{
@@ -652,18 +692,13 @@ class Renderer {
         created = ifn.vkCreateXcbSurfaceKHR(instance_->instance(), &surface_info, nullptr,
                                             &surface_);
     }
+#endif
     if (created != VK_SUCCESS) {
-      REXLOG_ERROR("shadow_renderer: cannot create a {} surface ({})",
-                   native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface
-                       ? "Wayland"
-                       : "X11",
+      REXLOG_ERROR("shadow_renderer: cannot create a {} surface ({})", surface_name,
                    int(created));
       return false;
     }
-    REXLOG_INFO("shadow_renderer: presenting to a {} surface",
-                native_surface_->GetType() == rex::ui::Surface::kTypeIndex_WaylandSurface
-                    ? "Wayland"
-                    : "X11");
+    REXLOG_INFO("shadow_renderer: presenting to a {} surface", surface_name);
 #else
     REXLOG_ERROR("shadow_renderer: no window surface is implemented for this platform");
     return false;
@@ -1309,8 +1344,8 @@ class Renderer {
 
   // --- Pipelines ---------------------------------------------------------------------------
 
-  static VkPrimitiveTopology Topology(uint32_t primitive, bool *supported) {
-    *supported = true;
+  VkPrimitiveTopology Topology(uint32_t primitive, bool *supported) const {
+    *supported = primitive != 5 || triangle_fans_;  // Metal has no triangle fans
     switch (primitive) {
       case 1: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
       case 2: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
@@ -1909,9 +1944,18 @@ class Renderer {
     render_size.store(uint64_t(Scaled(guest_width_)) << 32 | Scaled(guest_height_));
   }
 
-  uint32_t Scaled(uint32_t guest_pixels) const {
-    return uint32_t(std::lround(double(guest_pixels) * scale_));
+  // Host pixels a viewport of `guest_pixels` covers at `scale`: those whose centre lies
+  // inside it. A size ending in exactly .5 (180 lines at 1506 / 720) must round down: the
+  // last row's centre is on the edge and is not drawn, and a resolve that copied it would
+  // carry whatever an earlier pass left in the target (seen as a glow along the bottom of
+  // the screen, from the bloom passes). The margin is the rasterizer's sub-pixel step.
+  static uint32_t ScaledPixels(uint32_t guest_pixels, double scale) {
+    if (!guest_pixels)
+      return 0;
+    return uint32_t(std::max(1.0, std::ceil(double(guest_pixels) * scale - 0.5 - 1.0 / 256)));
   }
+
+  uint32_t Scaled(uint32_t guest_pixels) const { return ScaledPixels(guest_pixels, scale_); }
 
   struct Target {
     Image image;
@@ -1976,9 +2020,7 @@ class Renderer {
   // frame's arena because Vulkan cannot copy a depth image straight into a colour image.
   // `scale`: the scale its source was drawn at this frame.
   Target *Resolve(VkCommandBuffer cmd, Frame &frame, const ResolveRecord &r, float scale) {
-    const auto scaled = [scale](uint32_t guest_pixels) {
-      return uint32_t(std::lround(double(guest_pixels) * scale));
-    };
+    const auto scaled = [scale](uint32_t guest_pixels) { return ScaledPixels(guest_pixels, scale); };
     if (r.slot >= kResolveSlots)
       return nullptr;
     Target *source_target = nullptr;
@@ -3044,6 +3086,7 @@ class Renderer {
   VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
   uint32_t queue_family_ = 0;
   char device_name_[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {};
+  bool triangle_fans_ = true;  // false on a portability-subset device without them (Metal)
   VkDevice device_ = VK_NULL_HANDLE;
   DeviceFunctions dfn_;
   VkQueue queue_ = VK_NULL_HANDLE;

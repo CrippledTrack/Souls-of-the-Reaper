@@ -117,7 +117,8 @@ std::string Fingerprint() {
   for (const fs::path &p : {tool, header}) {
     std::error_code ec;
     const auto size = fs::file_size(p, ec);
-    const auto time = fs::last_write_time(p, ec).time_since_epoch().count();
+    // long long: libc++'s file clock counts in 128-bit integers, which to_string lacks.
+    const auto time = static_cast<long long>(fs::last_write_time(p, ec).time_since_epoch().count());
     text += p.filename().string() + " " + std::to_string(size) + " " + std::to_string(time) + "\n";
   }
   return text;
