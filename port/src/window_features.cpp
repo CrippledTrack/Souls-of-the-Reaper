@@ -18,7 +18,7 @@
 #else
 #include "generated/base/diablo3_pch.h"
 #endif
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
 #include "experiments/shadow_renderer.h"
 #endif
 #ifndef _WIN32
@@ -41,10 +41,10 @@ std::atomic<uint64_t> dimensions{0};
 // the title never claims a backend that failed to start. Both renderers live in
 // one GPU plugin; gpu_backend picks one at launch and 'any' resolves to D3D12.
 std::string_view RendererName() {
-#ifdef SOULS_EXPERIMENTAL
-  // The experimental Vulkan renderer draws the game window once it has taken over.
+#ifdef SOULS_SHADOW_RENDERER
+  // The Shadow renderer (Vulkan) draws the game window once it has taken over.
   if (d3::shadow::HasTakenOver())
-    return "Vulkan Experimental";
+    return "Vulkan Shadow";
 #endif
 #ifdef _WIN32
   if (rex::cvar::GetFlagByName("gpu_backend") == "vulkan")
@@ -110,7 +110,7 @@ private:
     auto previous = steady_clock::now(), log_start = previous;
     auto previous_count = swaps.load(std::memory_order_relaxed);
     auto log_count = previous_count;
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
     uint64_t previous_drawn = d3::shadow::PresentedFrames(), log_drawn = previous_drawn;
 #endif
     double log_low = -1;
@@ -120,10 +120,10 @@ private:
       const auto count = swaps.load(std::memory_order_relaxed);
       const double fps =
           double(count - previous_count) / duration<double>(now - previous).count();
-      // The experimental renderer drops game frames it cannot draw in time: what reaches
+      // The Shadow renderer drops game frames it cannot draw in time: what reaches
       // the screen is its own count.
       double drawn_fps = -1;
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
       const uint64_t drawn = d3::shadow::PresentedFrames();
       if (d3::shadow::HasTakenOver())
         drawn_fps = double(drawn - previous_drawn) / duration<double>(now - previous).count();
@@ -137,7 +137,7 @@ private:
             double(count - log_count) / duration<double>(now - log_start).count();
         REXLOG_INFO("Frame telemetry: guest {:.1f} FPS average, {:.1f} lowest 0.5 s",
                     average, log_low);
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
         if (d3::shadow::HasTakenOver())
           REXLOG_INFO("Frame telemetry: Shadow renderer presented {:.1f} FPS average",
                       double(drawn - log_drawn) / duration<double>(now - log_start).count());
@@ -154,7 +154,7 @@ private:
     }
   }
 
-  // drawn_fps: frames the experimental renderer presented, or negative when ReXGlue draws.
+  // drawn_fps: frames the Shadow renderer presented, or negative when ReXGlue draws.
   static void Update(rex::ui::Window &window, double fps, double drawn_fps) {
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
     d3::features::UpdateWindowMode(window);
@@ -167,7 +167,7 @@ private:
     std::ostringstream title;
     title << "Souls of the Reaper | " << std::fixed << std::setprecision(1);
     bool own_size = false;
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
     if (drawn_fps >= 0) {
       // Its own frame rate and resolution (which dynamic resolution moves), not ReXGlue's.
       uint32_t width = 0, height = 0;

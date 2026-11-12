@@ -1,19 +1,10 @@
 diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
-index 1cb3faa..316d089 100644
+index 0c27eed..c64ecd8 100644
 --- a/include/rex/input/input_system.h
 +++ b/include/rex/input/input_system.h
-@@ -10,6 +10,8 @@
-  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
-  */
- 
-+#include <array>
-+#include <atomic>
- #include <memory>
- #include <vector>
- 
-@@ -47,12 +49,19 @@ class InputSystem : public system::IInputSystem {
-   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
-   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+@@ -66,6 +66,12 @@ class InputSystem : public system::IInputSystem {
+   /// Guest user whose device most recently produced a button press.
+   uint32_t GetLastUsedUser() const { return last_used_user_; }
  
 +  /// Which button labels the pad a user last used carries, so titles can show
 +  /// matching prompts. kNone until that user has a device. Safe to call from any
@@ -22,41 +13,43 @@ index 1cb3faa..316d089 100644
 +  PadFamily ActivePadFamily(uint32_t user_index) const;
 +
   private:
+   using JoystickValue = std::pair<uint16_t, uint16_t>;
    /// Re-enumerates every driver and notifies the assignment when the set
-   /// changed.
-   void RefreshDevices();
-   InputDriver* DriverForDevice(DeviceId id);
-   const DeviceInfo* DeviceInfoFor(DeviceId id) const;
+@@ -76,6 +82,7 @@ class InputSystem : public system::IInputSystem {
+   /// The device that speaks for a user, preferring the one most recently in
+   /// the player's hands.
+   DeviceId ChooseDeviceForUser(uint32_t user_index) const;
 +  void UpdatePadFamily(uint32_t user_index, const std::vector<DeviceId>& ids);
  
-   rex::ui::Window* window_ = nullptr;
- 
-@@ -65,6 +74,10 @@ class InputSystem : public system::IInputSystem {
-   // does not renumber pad two.
-   std::vector<DeviceInfo> devices_;
-   std::vector<InputDriver*> device_owners_;
+   void UpdateConnectedUser(uint32_t user_index, bool connected);
+   void AdjustDeadzoneLevels(uint32_t user_index, X_INPUT_GAMEPAD* gamepad) const;
+@@ -101,6 +108,10 @@ class InputSystem : public system::IInputSystem {
+   std::atomic<int> ui_input_blockers_{0};
+   // Masked out per user until the guest sees them released.
+   std::array<uint16_t, kMaxGuestUsers> consumed_buttons_ = {};
 +
 +  // ActivePadFamily, and the device each was worked out for.
 +  std::array<std::atomic<uint32_t>, kMaxGuestUsers> pad_family_{};
 +  std::array<DeviceId, kMaxGuestUsers> pad_family_device_{};
  };
  
- /// Create a default InputSystem with SDL + NOP drivers.
+ /// Create a default InputSystem with SDL + MnK + NOP drivers.
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 813bb1c..2cc62fc 100644
+index 40740ee..9203033 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
-@@ -10,7 +10,9 @@
+@@ -10,8 +10,10 @@
   */
  
  #include <algorithm>
 +#include <cctype>
  #include <cmath>
+ #include <cstring>
 +#include <string>
  
  #include <rex/dbg.h>
  #include <rex/input/device_assignment.h>
-@@ -175,6 +177,59 @@ InputDriver* InputSystem::DriverForDevice(DeviceId id) {
+@@ -189,6 +191,59 @@ InputDriver* InputSystem::DriverForDevice(DeviceId id) {
    return nullptr;
  }
  
@@ -116,11 +109,11 @@ index 813bb1c..2cc62fc 100644
  const DeviceInfo* InputSystem::DeviceInfoFor(DeviceId id) const {
    for (const auto& device : devices_) {
      if (device.id == id) {
-@@ -242,6 +297,7 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+@@ -323,6 +378,7 @@ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, X_INPUT_STATE* out_stat
      }
    }
  
 +  UpdatePadFamily(user_index, ids);
    if (!any) {
+     UpdateConnectedUser(user_index, false);
      return X_ERROR_DEVICE_NOT_CONNECTED;
-   }

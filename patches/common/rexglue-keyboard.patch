@@ -1,17 +1,5 @@
-diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
-index c8751b7..84a5e29 100644
---- a/include/rex/input/mnk/mnk_input_driver.h
-+++ b/include/rex/input/mnk/mnk_input_driver.h
-@@ -101,6 +101,7 @@ class MnkInputDriver final : public InputDriver,
- 
-   // Keystroke queue
-   std::queue<X_INPUT_KEYSTROKE> keystroke_queue_;
-+  uint32_t keystroke_buttons_ = 0;
- 
-   // Packet number incremented on state change
-   uint32_t packet_number_ = 0;
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..eebf9b4 100644
+index 3d2c378..bfeac00 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
 @@ -23,39 +23,39 @@
@@ -74,10 +62,10 @@ index 3f9422d..eebf9b4 100644
 +REXCVAR_DEFINE_STRING(keybind_start, "Escape", "Input/Keybinds/Controller", "Start button");
  REXCVAR_DEFINE_STRING(keybind_guide, "", "Input/Keybinds/Controller", "Guide button");
  
- namespace rex::input::mnk {
-@@ -65,12 +65,9 @@ namespace {
- // A single device, so its handle is a constant.
- constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+ REXCVAR_DEFINE_BOOL(mnk_passthrough, false, "Input",
+@@ -74,12 +74,9 @@ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x
+ // Bounds the queue for titles that never call XamInputGetKeystroke.
+ constexpr size_t kMaxQueuedKeystrokes = 256;
  
 -// Bind values are a comma-separated list of alternatives, each optionally
 -// carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
@@ -91,7 +79,7 @@ index 3f9422d..eebf9b4 100644
  constexpr uint8_t kModShift = 1u << 0;
  constexpr uint8_t kModCtrl = 1u << 1;
  constexpr uint8_t kModAlt = 1u << 2;
-@@ -124,7 +121,7 @@ std::string_view TrimSpaces(std::string_view s) {
+@@ -133,7 +130,7 @@ std::string_view TrimSpaces(std::string_view s) {
  
  bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
    uint8_t want = TakeModifiers(token);
@@ -100,44 +88,28 @@ index 3f9422d..eebf9b4 100644
      return false;
    }
    rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
-@@ -375,6 +372,36 @@ X_RESULT MnkInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,
+@@ -551,6 +548,9 @@ X_RESULT MnkInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
    std::lock_guard lock(state_mutex_);
-+  // The game may poll only keystrokes in menus. Generate controller edges here
-+  // independently of GetDeviceState, including releases when input is inactive.
-+  const bool active = is_active() && has_focus_;
-+  const std::pair<VirtualKey, bool> bindings[] = {
-+      {VirtualKey::kXInputPadA, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_a))},
-+      {VirtualKey::kXInputPadB, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_b))},
-+      {VirtualKey::kXInputPadX, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_x))},
-+      {VirtualKey::kXInputPadY, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_y))},
-+      {VirtualKey::kXInputPadLShoulder, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder))},
-+      {VirtualKey::kXInputPadRShoulder, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder))},
-+      {VirtualKey::kXInputPadLTrigger, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger))},
-+      {VirtualKey::kXInputPadRTrigger, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger))},
-+      {VirtualKey::kXInputPadLThumbPress, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press))},
-+      {VirtualKey::kXInputPadRThumbPress, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press))},
-+      {VirtualKey::kXInputPadDpadUp, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up))},
-+      {VirtualKey::kXInputPadDpadDown, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down))},
-+      {VirtualKey::kXInputPadDpadLeft, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left))},
-+      {VirtualKey::kXInputPadDpadRight, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right))},
-+      {VirtualKey::kXInputPadBack, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_back))},
-+      {VirtualKey::kXInputPadStart, active && IsBindPressed(key_down_, REXCVAR_GET(keybind_start))},
-+  };
-+  uint32_t current = 0;
-+  for (size_t index = 0; index < std::size(bindings); ++index) {
-+    const uint32_t bit = uint32_t{1} << index;
-+    if (bindings[index].second) current |= bit;
-+    if (bindings[index].second != ((keystroke_buttons_ & bit) != 0)) {
-+      EnqueueKeystroke(static_cast<uint16_t>(bindings[index].first), bindings[index].second);
-+    }
-+  }
-+  keystroke_buttons_ = current;
++  // Overlays turn input off without a key event: release the bound keys here,
++  // where the title polls, and press them again once input is back.
++  RefreshBoundKeystrokesLocked();
    if (keystroke_queue_.empty()) {
      return X_ERROR_EMPTY;
    }
-@@ -497,7 +524,7 @@ void MnkInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {
+@@ -607,7 +607,9 @@ void MnkInputDriver::EnqueueRawKeystroke(const rex::ui::KeyEvent& e, bool down)
+ void MnkInputDriver::RefreshBoundKeystrokesLocked() {
+   const auto binds = PadBinds();
+   uint32_t pressed = 0;
+-  for (size_t i = 0; i < binds.size(); i++) {
++  // Nothing counts as pressed while an overlay or another window has the input.
++  const bool active = is_active() && has_focus_;
++  for (size_t i = 0; active && i < binds.size(); i++) {
+     if (IsBindPressed(key_down_, binds[i].keys)) {
+       pressed |= uint32_t(1) << i;
+     }
+@@ -757,7 +759,7 @@ void MnkInputDriver::OnKeyChar(rex::ui::KeyEvent& e) {
  }
  
  void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
@@ -147,19 +119,20 @@ index 3f9422d..eebf9b4 100644
    std::lock_guard lock(state_mutex_);
    switch (e.button()) {
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index b94fe9e..5ddf741 100644
+index 9ff54e8..e9ba65b 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
-@@ -252,9 +252,10 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
-     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
-     if (input_sys) {
-       input_sys->SetActiveCallback([this]() {
--        if (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_)
-+        if (!imgui_drawer_->HasDialogs())
-           return true;
--        return !imgui_drawer_->GetIO().WantCaptureMouse;
-+        return !imgui_drawer_->GetIO().WantTextInput &&
-+               !imgui_drawer_->GetIO().WantCaptureMouse;
-       });
-     }
+@@ -250,10 +250,10 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     input_sys->SetActiveCallback([this]() {
+       if (window_ && !window_->HasFocus())
+         return false;
+-      if (!imgui_drawer_ ||
+-          (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_))
++      if (!imgui_drawer_ || !imgui_drawer_->HasDialogs())
+         return true;
+-      return !imgui_drawer_->GetIO().WantCaptureMouse;
++      return !imgui_drawer_->GetIO().WantTextInput &&
++             !imgui_drawer_->GetIO().WantCaptureMouse;
+     });
    }
+ 

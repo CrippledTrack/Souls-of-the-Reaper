@@ -1,6 +1,7 @@
-"""Build and stage the experimental Shadow renderer's shader converter (XenosRecomp).
+"""Build and stage the Shadow renderer's shader converter (XenosRecomp).
 
-A separate track from the game build: nothing here touches the ReXGlue SDK, the
+A pinned component like the ReXGlue SDK: scripts/build_client.py fetches and builds
+it once, before the game is compiled, and nothing here touches the SDK, the
 generated sources or the game executable. The converter is a pinned XenosRecomp
 checkout with experiments/gpu-layer/xenosrecomp-diablo3.patch applied, built under
 tools/XenosRecomp and copied into `<game build>/xenosrecomp`, where the game looks

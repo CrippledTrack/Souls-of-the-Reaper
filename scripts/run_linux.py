@@ -115,8 +115,11 @@ def main():
                       help="Run the build compiled without the optional PC features")
     parser.add_argument("--title-update", choices=["usa"], help="Run the separate verified update build")
     parser.add_argument("--profile", default="normal",
-                        help="Run the build of this profile (scripts/build_profiles.py), e.g. experimental")
-    parser.add_argument("--username", help="In-game player name (max 15 characters)")
+                        help="Run the build of this profile (scripts/build_profiles.py)")
+    parser.add_argument("--player-profile", metavar="XUID",
+                        help="Player 1's local profile (its 16-digit XUID). Without it (and without "
+                             "--username) the game asks player 1 to choose one")
+    parser.add_argument("--username", help="Play the local profile with this name (from before profiles)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
     parser.add_argument("--state-dir", type=pathlib.Path,
                         help="Override the user data directory (the update build uses a separate default)")
@@ -170,7 +173,11 @@ def main():
         except OSError as error:
             parser.exit(1, f"Cannot create user data directory: {error}\n")
     try:
-        env = {**os.environ, "SOTR_USERNAME": args.username} if args.username else None
+        env = dict(os.environ)
+        if args.player_profile:
+            env["SOTR_PROFILE"] = args.player_profile
+        if args.username:
+            env["SOTR_USERNAME"] = args.username
         raise SystemExit(subprocess.run(command, cwd=ROOT, env=env).returncode)
     except KeyboardInterrupt:
         raise SystemExit(130) from None

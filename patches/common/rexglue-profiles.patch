@@ -1,0 +1,1090 @@
+diff --git a/include/rex/kernel/xam/private.h b/include/rex/kernel/xam/private.h
+index 3df4776..a9d0212 100644
+--- a/include/rex/kernel/xam/private.h
++++ b/include/rex/kernel/xam/private.h
+@@ -19,6 +19,19 @@ namespace xam {
+ 
+ bool xeXamIsUIActive();
+ 
++// Local profiles (xam_user.cpp). The XUID whose saves a content call made for
++// `user_index` uses: that player's profile, else player 1's (system callers
++// pass 0xFE/0xFF), else 0 when nobody is signed in.
++uint64_t ContentXuidForUser(uint32_t user_index);
++// Diablo III sometimes passes only the low 32 bits of an XUID (the aggregate
++// save enumerator): the full XUID of the signed-in profile they match.
++uint64_t ResolveContentXuid(uint64_t requested_xuid);
++// Shows the profile picker for local player `user_index` unless one is up
++// already (xam_ui.cpp). Choosing signs that player in.
++// kJoiningPlayer: the player whose controller asked to join.
++constexpr uint32_t kJoiningPlayer = 0xFF;
++void ShowProfilePicker(uint32_t user_index);
++
+ rex::runtime::Export* RegisterExport_xam(rex::runtime::Export* export_entry);
+ 
+ // Registration functions, one per file.
+diff --git a/include/rex/system/kernel_state.h b/include/rex/system/kernel_state.h
+index 9b9cf9e..a609dde 100644
+--- a/include/rex/system/kernel_state.h
++++ b/include/rex/system/kernel_state.h
+@@ -10,6 +10,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <array>
+ #include <atomic>
+ #include <condition_variable>
+ #include <filesystem>
+@@ -34,6 +35,7 @@
+ #include <rex/system/util/xdbf_utils.h>
+ #include <rex/system/xam/app_manager.h>
+ #include <rex/system/xam/content_manager.h>
++#include <rex/system/xam/profile_store.h>
+ #include <rex/system/xam/user_profile.h>
+ #include <rex/platform/dynlib.h>
+ #include <rex/system/function_dispatcher.h>
+@@ -199,7 +201,22 @@ class KernelState {
+ 
+   xam::AppManager* app_manager() const { return app_manager_.get(); }
+   xam::ContentManager* content_manager() const { return content_manager_.get(); }
+-  xam::UserProfile* user_profile() const { return user_profile_.get(); }
++  // The profile signed in as local player `user_index` (0-3), or null while
++  // that player is signed out. Profiles are only ever added during a session,
++  // so a returned pointer stays valid.
++  xam::UserProfile* user_profile(uint32_t user_index = 0) const {
++    return user_index < kMaxLocalUsers ? signed_in_[user_index].load(std::memory_order_acquire)
++                                       : nullptr;
++  }
++  // The signed-in profile with this XUID, or null.
++  xam::UserProfile* user_profile_by_xuid(uint64_t xuid) const;
++  // Bit n set while player n is signed in.
++  uint32_t signed_in_mask() const;
++  // Signs a stored profile in as player `user_index`. False when that player
++  // is already signed in or the profile is signed in as another player.
++  bool SignInUser(uint32_t user_index, const xam::ProfileEntry& profile);
++  xam::ProfileStore* profile_store() const { return profile_store_.get(); }
++  static constexpr uint32_t kMaxLocalUsers = 4;
+ 
+   // Access must be guarded by the global critical region.
+   util::ObjectTable* object_table() { return &object_table_; }
+@@ -353,7 +370,11 @@ class KernelState {
+ 
+   std::unique_ptr<xam::AppManager> app_manager_;
+   std::unique_ptr<xam::ContentManager> content_manager_;
+-  std::unique_ptr<xam::UserProfile> user_profile_;
++  std::unique_ptr<xam::ProfileStore> profile_store_;
++  std::mutex profiles_mutex_;
++  std::vector<std::unique_ptr<xam::UserProfile>> profiles_;  // owns the signed-in profiles
++  std::array<std::atomic<xam::UserProfile*>, kMaxLocalUsers> signed_in_{};
++  void SignInAtStart();
+ 
+   rex::thread::global_critical_region global_critical_region_;
+ 
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+index 949d185..ed62662 100644
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -170,7 +170,9 @@ class ContentManager {
+   X_RESULT ReadContentHeaderFile(const std::string_view file_name, uint64_t xuid, uint32_t title_id,
+                                  XContentType content_type, XCONTENT_AGGREGATE_DATA& data) const;
+ 
+-  std::filesystem::path ResolveGameUserContentPath();
++  // Title settings of one profile, by XUID so a rename keeps them. The first
++  // time, settings kept under the profile's name (before profiles) are copied in.
++  std::filesystem::path ResolveGameUserContentPath(uint64_t xuid, const std::string& name);
+   bool IsContentOpen(const XCONTENT_AGGREGATE_DATA& data) const;
+   void CloseOpenedFilesFromContent(const std::string_view root_name);
+ 
+diff --git a/include/rex/system/xam/user_profile.h b/include/rex/system/xam/user_profile.h
+index ec37017..39b3551 100644
+--- a/include/rex/system/xam/user_profile.h
++++ b/include/rex/system/xam/user_profile.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <mutex>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -214,10 +215,20 @@ class UserProfile {
+     }
+   };
+ 
+-  UserProfile();
++  // A signed-in local profile (profile_store.h): its XUID names its save
++  // folder and its title settings folder; the name is only shown.
++  UserProfile(uint64_t xuid, std::string name);
+ 
+   uint64_t xuid() const { return xuid_; }
+-  std::string name() const { return name_; }
++  std::string name() const {
++    std::lock_guard lock(name_mutex_);
++    return name_;
++  }
++  // Renamed in the picker while signed in.
++  void set_name(std::string name) {
++    std::lock_guard lock(name_mutex_);
++    name_ = std::move(name);
++  }
+   uint32_t signin_state() const { return 1; }
+   uint32_t type() const { return 1 | 2; /* local | online profile? */ }
+ 
+@@ -229,6 +240,7 @@ class UserProfile {
+  private:
+   uint64_t xuid_;
+   std::string name_;
++  mutable std::mutex name_mutex_;
+   std::vector<std::unique_ptr<Setting>> setting_list_;
+   std::unordered_map<uint32_t, Setting*> settings_;
+   KernelState* kernel_state_ = nullptr;
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+index 86c4353..42b3b1d 100644
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -75,7 +75,7 @@ u32 XamContentCreateEnumerator_entry(u32 user_index, u32 device_id, u32 content_
+     *buffer_size_ptr = sizeof(XCONTENT_DATA) * items_per_enumerate;
+   }
+ 
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+ 
+   auto e = make_object<XStaticEnumerator<XCONTENT_DATA>>(REX_KERNEL_STATE(), items_per_enumerate);
+   auto result = e->Initialize(0xFF, 0xFE, 0x20005, 0x20007, 0);
+@@ -119,7 +119,7 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+                        u32 content_data_size, u32 flags, mapped_u32 disposition_ptr,
+                        mapped_u32 license_mask_ptr, u32 cache_size, u64 content_size,
+                        mapped_void overlapped_ptr) {
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+ 
+   XCONTENT_AGGREGATE_DATA content_data;
+   if (content_data_size == sizeof(XCONTENT_DATA)) {
+@@ -290,7 +290,7 @@ u32 XamContentGetCreator_entry(u32 user_index, mapped_void content_data_ptr,
+                                mapped_void overlapped_ptr) {
+   auto result = X_ERROR_SUCCESS;
+ 
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_DATA*>();
+ 
+   bool content_exists = REX_KERNEL_STATE()->content_manager()->ContentExists(xuid, content_data);
+@@ -325,7 +325,7 @@ u32 XamContentGetThumbnail_entry(u32 user_index, mapped_void content_data_ptr,
+                                  mapped_void overlapped_ptr) {
+   assert_not_null(buffer_size_ptr);
+   uint32_t buffer_size = *buffer_size_ptr;
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_DATA*>();
+ 
+   // Get thumbnail (if it exists).
+@@ -360,7 +360,7 @@ u32 XamContentGetThumbnail_entry(u32 user_index, mapped_void content_data_ptr,
+ u32 XamContentSetThumbnail_entry(u32 user_index, mapped_void content_data_ptr,
+                                  mapped_void buffer_ptr, u32 buffer_size,
+                                  mapped_void overlapped_ptr) {
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_DATA*>();
+ 
+   // Buffer is PNG data.
+@@ -378,7 +378,7 @@ u32 XamContentSetThumbnail_entry(u32 user_index, mapped_void content_data_ptr,
+ 
+ u32 XamContentDelete_entry(u32 user_index, mapped_void content_data_ptr,
+                            mapped_void overlapped_ptr) {
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(user_index);  // each player's own saves
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_DATA*>();
+ 
+   auto result = REX_KERNEL_STATE()->content_manager()->DeleteContent(xuid, content_data);
+@@ -394,7 +394,7 @@ u32 XamContentDelete_entry(u32 user_index, mapped_void content_data_ptr,
+ u32 XamContentDeleteInternal_entry(mapped_void content_data_ptr, mapped_void overlapped_ptr) {
+   // INFO: Analysis of xam.xex shows that "internal" functions are wrappers with
+   // 0xFE as user_index
+-  uint64_t xuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  uint64_t xuid = ContentXuidForUser(0xFE);
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_AGGREGATE_DATA*>();
+ 
+   auto result = REX_KERNEL_STATE()->content_manager()->DeleteContent(xuid, content_data);
+diff --git a/src/kernel/xam/xam_content_aggregate.cpp b/src/kernel/xam/xam_content_aggregate.cpp
+index de4a527..d815464 100644
+--- a/src/kernel/xam/xam_content_aggregate.cpp
++++ b/src/kernel/xam/xam_content_aggregate.cpp
+@@ -100,7 +100,9 @@ u32 XamContentAggregateCreateEnumerator_entry(u64 xuid, u32 device_id, u32 conte
+ 
+   auto content_type_enum = XContentType(uint32_t(content_type));
+ 
+-  uint64_t userxuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  // The local player enumerating. Diablo III passes only the low 32 bits of
++  // the XUID here, so match those against the signed-in profiles.
++  uint64_t userxuid = ResolveContentXuid(xuid);
+ 
+   if (!device_info || device_info->device_type == DeviceType::HDD) {
+     // Fetch any alternate title IDs defined in the XEX header
+@@ -136,6 +138,20 @@ u32 XamContentAggregateCreateEnumerator_entry(u64 xuid, u32 device_id, u32 conte
+           }
+         }
+       }
++
++      // Saves are stored under the full XUID: list them when the title passed
++      // a truncated one.
++      if (userxuid != 0 && userxuid != uint64_t(xuid)) {
++        auto profile_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
++            static_cast<uint32_t>(DummyDeviceId::HDD), userxuid, content_type_enum, title_id);
++        for (const auto& content_data : profile_datas) {
++          auto item = e->AppendItem();
++          assert_not_null(item);
++          if (item) {
++            *item = content_data;
++          }
++        }
++      }
+     }
+   }
+ 
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index 98f3e02..500f4a6 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -9,14 +9,19 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++#include <chrono>
+ #include <cstdio>
+ #include <cstring>
++#include <thread>
++#include <vector>
+ 
+ #include <rex/logging.h>
+ #include <rex/runtime.h>
+ #include <rex/string.h>
+ #include <rex/system/flags.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/xam/profile_store.h>
+ 
+ #include <imgui.h>
+ #include <imgui_internal.h>
+@@ -659,6 +664,336 @@ class KeyboardInputDialog : public XamDialog {
+   int column_ = 0;
+ };
+ 
++// Local profiles: the picker a player signs in with (Diablo III opens the
++// sign-in UI when a controller presses A to join, and player 1 sees it when no
++// profile was given at launch). It lists the profiles not playing yet; a new
++// profile or a new name is typed on the on-screen keyboard.
++class ProfilePickerDialog : public XamDialog {
++ public:
++  enum class Choice { kCancel, kPick, kNew, kRename };
++
++  ProfilePickerDialog(rex::ui::ImGuiDrawer* imgui_drawer, uint32_t user_index,
++                      std::vector<rex::system::xam::ProfileEntry> profiles, std::string error,
++                      size_t selected)
++      : XamDialog(imgui_drawer),
++        title_(fmt::format("Choose a profile: Player {}###profile_picker", user_index + 1)),
++        profiles_(std::move(profiles)),
++        error_(std::move(error)),
++        selected_(std::min(selected, profiles_.size())) {
++    input_ = static_cast<rex::input::InputSystem*>(REX_KERNEL_STATE()->emulator()->input_system());
++    if (input_) {
++      input_->CaptureGamepads(true);
++    }
++  }
++
++  ~ProfilePickerDialog() override {
++    if (input_) {
++      input_->CaptureGamepads(false);
++    }
++  }
++
++  Choice choice() const { return choice_; }
++  // The profile picked or to rename (an index into the list given).
++  size_t index() const { return selected_; }
++
++  void OnDraw(ImGuiIO& io) override {
++    if (!has_opened_) {
++      ImGui::OpenPopup(title_.c_str());
++      has_opened_ = true;
++    }
++    if (!ImGui::BeginPopupModal(title_.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
++      Close();
++      return;
++    }
++    if (!error_.empty()) {
++      ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", error_.c_str());
++      ImGui::Spacing();
++    }
++    if (PollGamepad() || PollKeyboard()) {
++      ImGui::EndPopup();
++      return;
++    }
++    // The profiles, then "New profile". A click chooses.
++    const float width = 320.0f;
++    for (size_t i = 0; i <= profiles_.size(); ++i) {
++      const bool is_new = i == profiles_.size();
++      const std::string label =
++          is_new ? std::string("+ New profile##new") : profiles_[i].name + "##p" + std::to_string(i);
++      if (ImGui::Selectable(label.c_str(), i == selected_, 0, ImVec2(width, 0))) {
++        selected_ = i;
++        Finish(is_new ? Choice::kNew : Choice::kPick);
++        ImGui::EndPopup();
++        return;
++      }
++    }
++    ImGui::Spacing();
++    const bool can_rename = selected_ < profiles_.size();
++    if (!can_rename) ImGui::BeginDisabled();
++    if (ImGui::Button("Rename")) {
++      Finish(Choice::kRename);
++      ImGui::EndPopup();
++      return;
++    }
++    if (!can_rename) ImGui::EndDisabled();
++    ImGui::SameLine();
++    if (ImGui::Button("Cancel")) {
++      Finish(Choice::kCancel);
++      ImGui::EndPopup();
++      return;
++    }
++    ImGui::Spacing();
++    ImGui::TextDisabled("A choose   Y rename   B cancel");
++    ImGui::EndPopup();
++  }
++
++ private:
++  void Finish(Choice choice) {
++    choice_ = choice;
++    ImGui::CloseCurrentPopup();
++    Close();
++  }
++
++  void Move(int step) {
++    const size_t count = profiles_.size() + 1;
++    selected_ = (selected_ + count + step) % count;
++  }
++
++  // Acts on the choice for the selected row. True when that closed the dialog.
++  bool Accept() {
++    Finish(selected_ < profiles_.size() ? Choice::kPick : Choice::kNew);
++    return true;
++  }
++
++  bool Rename() {
++    if (selected_ >= profiles_.size()) return false;
++    Finish(Choice::kRename);
++    return true;
++  }
++
++  // Up/Down and Enter/Escape for a player on the keyboard. True when closed.
++  bool PollKeyboard() {
++    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) Move(-1);
++    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) Move(1);
++    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
++      return Accept();
++    }
++    if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) return Rename();
++    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
++      Finish(Choice::kCancel);
++      return true;
++    }
++    return false;
++  }
++
++  // Reads the pads and acts on new presses. True when that closed the dialog.
++  bool PollGamepad() {
++    rex::input::X_INPUT_GAMEPAD pad = {};
++    if (!input_ || !input_->DialogGamepad(&pad)) {
++      held_ = 0;
++      return false;
++    }
++    uint16_t buttons = static_cast<uint16_t>(pad.buttons);
++    constexpr int16_t kStickThreshold = 16000;
++    const auto ly = static_cast<int16_t>(pad.thumb_ly);
++    if (ly > kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_UP;
++    if (ly < -kStickThreshold) buttons |= rex::input::X_INPUT_GAMEPAD_DPAD_DOWN;
++    // The press that opened the picker (the join) is still down at first: wait
++    // for every button to be released before taking any.
++    if (!armed_) {
++      armed_ = buttons == 0;
++      held_ = buttons;
++      return false;
++    }
++    const uint16_t pressed = buttons & ~held_;
++    held_ = buttons;
++    constexpr uint16_t kUpDown = rex::input::X_INPUT_GAMEPAD_DPAD_UP | rex::input::X_INPUT_GAMEPAD_DPAD_DOWN;
++    const double now = ImGui::GetTime();
++    uint16_t steps = pressed & kUpDown;
++    if (steps) {
++      repeat_at_ = now + 0.40;
++    } else if ((buttons & kUpDown) && now >= repeat_at_) {
++      steps = buttons & kUpDown;
++      repeat_at_ = now + 0.12;
++    }
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_UP) Move(-1);
++    if (steps & rex::input::X_INPUT_GAMEPAD_DPAD_DOWN) Move(1);
++    if (pressed & (rex::input::X_INPUT_GAMEPAD_A | rex::input::X_INPUT_GAMEPAD_START)) return Accept();
++    if (pressed & rex::input::X_INPUT_GAMEPAD_Y) return Rename();
++    if (pressed & (rex::input::X_INPUT_GAMEPAD_B | rex::input::X_INPUT_GAMEPAD_BACK)) {
++      Finish(Choice::kCancel);
++      return true;
++    }
++    return false;
++  }
++
++  bool has_opened_ = false;
++  std::string title_;
++  std::vector<rex::system::xam::ProfileEntry> profiles_;
++  std::string error_;
++  size_t selected_ = 0;
++  Choice choice_ = Choice::kCancel;
++  rex::input::InputSystem* input_ = nullptr;
++  bool armed_ = false;
++  uint16_t held_ = 0;
++  double repeat_at_ = 0;
++};
++
++namespace {
++
++std::atomic<bool> profile_picker_up{false};
++
++// Shows a dialog on the UI thread and waits for it to close. False when the UI
++// is gone (the dialog is deleted unseen).
++bool ShowAndWait(rex::ui::ImGuiDialog* dialog) {
++  rex::thread::Fence fence;
++  rex::ui::WindowedAppContext* app_context = REX_KERNEL_STATE()->emulator()->app_context();
++  if (app_context &&
++      app_context->CallInUIThreadSynchronous([&dialog, &fence]() { dialog->Then(&fence); })) {
++    ++xam_dialogs_shown_;
++    fence.Wait();
++    --xam_dialogs_shown_;
++    return true;
++  }
++  delete dialog;
++  return false;
++}
++
++// The player the picker is for: player 1 until signed in, then the player whose
++// controller pressed join, else the first player still signed out.
++uint32_t JoiningPlayer() {
++  auto* kernel_state = REX_KERNEL_STATE();
++  const uint32_t signed_in = kernel_state->signed_in_mask();
++  if (!(signed_in & 1)) {
++    return 0;
++  }
++  auto* input =
++      static_cast<rex::input::InputSystem*>(kernel_state->emulator()->input_system());
++  if (input) {
++    const uint32_t last = input->GetLastUsedUser();
++    if (last < KernelState::kMaxLocalUsers && !(signed_in & (1u << last))) {
++      return last;
++    }
++    const auto connected = input->GetConnectedUsers();
++    for (uint32_t i = 1; i < KernelState::kMaxLocalUsers; ++i) {
++      if (connected[i] && !(signed_in & (1u << i))) {
++        return i;
++      }
++    }
++  }
++  for (uint32_t i = 1; i < KernelState::kMaxLocalUsers; ++i) {
++    if (!(signed_in & (1u << i))) {
++      return i;
++    }
++  }
++  return KernelState::kMaxLocalUsers;
++}
++
++// Asks for a name on the on-screen keyboard. Empty when cancelled.
++std::string AskName(rex::ui::ImGuiDrawer* drawer, const std::string& title,
++                    const std::string& current) {
++  std::string name;
++  auto* keyboard = new KeyboardInputDialog(drawer, title, "", current,
++                                           rex::system::xam::ProfileStore::kMaxNameBytes + 1);
++  keyboard->set_close_callback([&name, keyboard]() {
++    if (!keyboard->cancelled()) {
++      name = std::string(keyboard->text().c_str());  // the text keeps the buffer's padding
++    }
++  });
++  ShowAndWait(keyboard);
++  return name;
++}
++
++// The picker loop for one player: choose a profile, or make or rename one
++// first. Returns once the player is signed in or cancelled.
++void RunProfilePicker(uint32_t user_index) {
++  auto* kernel_state = REX_KERNEL_STATE();
++  auto* store = kernel_state->profile_store();
++  auto* drawer = kernel_state->emulator()->imgui_drawer();
++  if (!store || !drawer) {
++    return;
++  }
++  ScopedGuestInputBlock input_block;
++  std::string error;
++  size_t selected = 0;
++  while (!kernel_state->user_profile(user_index)) {
++    // Profiles another player is using are left out.
++    std::vector<rex::system::xam::ProfileEntry> free;
++    for (auto& profile : store->List()) {
++      if (!kernel_state->user_profile_by_xuid(profile.xuid)) {
++        free.push_back(std::move(profile));
++      }
++    }
++    auto* picker = new ProfilePickerDialog(drawer, user_index, free, error, selected);
++    ProfilePickerDialog::Choice choice = ProfilePickerDialog::Choice::kCancel;
++    size_t index = 0;
++    picker->set_close_callback([&choice, &index, picker]() {
++      choice = picker->choice();
++      index = picker->index();
++    });
++    if (!ShowAndWait(picker)) {
++      return;
++    }
++    error.clear();
++    selected = index;
++    switch (choice) {
++      case ProfilePickerDialog::Choice::kCancel:
++        return;
++      case ProfilePickerDialog::Choice::kPick:
++        if (!kernel_state->SignInUser(user_index, free[index])) {
++          error = "That profile is already playing.";
++        }
++        break;
++      case ProfilePickerDialog::Choice::kNew: {
++        const auto name = AskName(drawer, "New profile name", "");
++        if (name.empty()) {
++          break;
++        }
++        rex::system::xam::ProfileEntry created;
++        error = store->Create(name, &created);
++        if (error.empty()) {
++          kernel_state->SignInUser(user_index, created);
++        }
++        break;
++      }
++      case ProfilePickerDialog::Choice::kRename: {
++        const auto& profile = free[index];
++        const auto name = AskName(drawer, "Rename " + profile.name, profile.name);
++        if (!name.empty()) {
++          error = store->Rename(profile.xuid, name);
++        }
++        break;
++      }
++    }
++  }
++}
++
++}  // namespace
++
++void ShowProfilePicker(uint32_t user_index) {
++  auto* kernel_state = REX_KERNEL_STATE();
++  if (REXCVAR_GET(headless) || profile_picker_up.exchange(true)) {
++    return;
++  }
++  if (user_index == kJoiningPlayer) {
++    user_index = JoiningPlayer();
++  }
++  if (user_index >= KernelState::kMaxLocalUsers || kernel_state->user_profile(user_index)) {
++    profile_picker_up = false;
++    return;
++  }
++  // XN_SYS_UI on now; the sign-in change and XN_SYS_UI off once the player has
++  // chosen, as a balanced pair (the title counts these).
++  kernel_state->BroadcastNotification(0x00000009, 1);
++  std::thread([user_index]() {
++    RunProfilePicker(user_index);
++    auto* kernel_state = REX_KERNEL_STATE();
++    kernel_state->BroadcastNotification(0x0000000A, kernel_state->signed_in_mask());
++    rex::thread::Sleep(std::chrono::milliseconds(100));
++    kernel_state->BroadcastNotification(0x00000009, 0);
++    profile_picker_up = false;
++  }).detach();
++}
++
+ // https://www.se7ensins.com/forums/threads/release-how-to-use-xshowkeyboardui-release.906568/
+ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_text,
+                             mapped_wstring title, mapped_wstring description, mapped_wstring buffer,
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+index 8778066..66fa5b2 100644
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -29,6 +29,8 @@
+ #include <rex/system/xtypes.h>
+ 
+ REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
++REXCVAR_DEFINE_BOOL(coop_local_guest, true, "Kernel",
++                    "Let more local players join (each picks a profile with its own saves)");
+ 
+ namespace rex {
+ namespace kernel {
+@@ -36,6 +38,28 @@ namespace xam {
+ using namespace rex::system;
+ using namespace rex::system::xam;
+ 
++uint64_t ContentXuidForUser(uint32_t user_index) {
++  auto* kernel_state = REX_KERNEL_STATE();
++  if (const auto* profile = kernel_state->user_profile(user_index)) {
++    return profile->xuid();
++  }
++  if (const auto* profile = kernel_state->user_profile(0)) {
++    return profile->xuid();
++  }
++  return 0;
++}
++
++uint64_t ResolveContentXuid(uint64_t requested_xuid) {
++  const auto low = static_cast<uint32_t>(requested_xuid);
++  for (uint32_t i = 0; i < KernelState::kMaxLocalUsers; ++i) {
++    const auto* profile = REX_KERNEL_STATE()->user_profile(i);
++    if (profile && static_cast<uint32_t>(profile->xuid()) == low) {
++      return profile->xuid();
++    }
++  }
++  return ContentXuidForUser(0);
++}
++
+ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+   assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 || type_mask == 4 ||
+               type_mask == 7);
+@@ -45,8 +69,7 @@ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+   uint32_t result = X_E_NO_SUCH_USER;
+   uint64_t xuid = 0;
+   if (user_index < 4) {
+-    if (user_index == 0) {
+-      const auto& user_profile = REX_KERNEL_STATE()->user_profile();
++    if (const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index)) {
+       auto type = user_profile->type() & type_mask;
+       if (type & (2 | 4)) {
+         // maybe online profile?
+@@ -68,9 +91,12 @@ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+ u32 XamUserGetSigninState_entry(u32 user_index) {
+   uint32_t signin_state = 0;
+   if (user_index < 4) {
+-    if (user_index == 0) {
+-      const auto& user_profile = REX_KERNEL_STATE()->user_profile();
++    if (const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index)) {
+       signin_state = user_profile->signin_state();
++    } else if (user_index == 0) {
++      // Nobody chose a profile at launch: ask player 1 for one, as a console
++      // does at boot.
++      ShowProfilePicker(0);
+     }
+   }
+   return signin_state;
+@@ -92,11 +118,11 @@ i32 XamUserGetSigninInfo_entry(u32 user_index, u32 flags, ppc_ptr_t<X_USER_SIGNI
+   }
+ 
+   std::memset(info, 0, sizeof(X_USER_SIGNIN_INFO));
+-  if (user_index) {
++  const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index);
++  if (!user_profile) {
+     return X_E_NO_SUCH_USER;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+   info->xuid = user_profile->xuid();
+   info->signin_state = user_profile->signin_state();
+   rex::string::copy_truncating(info->name, user_profile->name(), rex::countof(info->name));
+@@ -108,12 +134,12 @@ u32 XamUserGetName_entry(u32 user_index, mapped_string buffer, u32 buffer_len) {
+     return X_E_INVALIDARG;
+   }
+ 
+-  if (user_index) {
++  const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index);
++  if (!user_profile) {
+     return X_E_NO_SUCH_USER;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+-  const auto& user_name = user_profile->name();
++  const auto user_name = user_profile->name();
+   rex::string::copy_truncating(buffer, user_name, std::min(buffer_len, uint32_t(16)));
+   return X_E_SUCCESS;
+ }
+@@ -123,7 +149,8 @@ u32 XamUserGetGamerTag_entry(u32 user_index, mapped_wstring buffer, u32 buffer_l
+     return X_E_INVALIDARG;
+   }
+ 
+-  if (user_index) {
++  const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index);
++  if (!user_profile) {
+     return X_E_NO_SUCH_USER;
+   }
+ 
+@@ -131,7 +158,6 @@ u32 XamUserGetGamerTag_entry(u32 user_index, mapped_wstring buffer, u32 buffer_l
+     return X_E_INVALIDARG;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+   auto user_name = rex::string::to_utf16(user_profile->name());
+   rex::string::copy_and_swap_truncating(buffer, user_name, std::min(buffer_len, uint32_t(16)));
+   return X_E_SUCCESS;
+@@ -154,9 +180,8 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
+   } else {
+     assert_true(xuid_count == 1);
+     assert_not_null(xuids);
+-    // TODO(gibbed): allow proper lookup of arbitrary XUIDs
+-    const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+-    assert_true(static_cast<uint64_t>(xuids[0]) == user_profile->xuid());
++    // Only local profiles can be looked up; others get the not-found path below.
++    assert_not_null(REX_KERNEL_STATE()->user_profile_by_xuid(static_cast<uint64_t>(xuids[0])));
+     // TODO(gibbed): we assert here, but in case a title passes xuid_count > 1
+     // until it's implemented for release builds...
+     xuid_count = 1;
+@@ -211,8 +236,11 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
+   // Title ID = 0 means us.
+   // 0xfffe07d1 = profile?
+ 
+-  if (!xuids && user_index) {
+-    // Only support user 0.
++  auto* user_profile = xuids ? REX_KERNEL_STATE()->user_profile_by_xuid(
++                                   static_cast<uint64_t>(xuids[0]))
++                             : REX_KERNEL_STATE()->user_profile(user_index);
++  if (!user_profile) {
++    // Only signed-in local profiles.
+     if (overlapped) {
+       REX_KERNEL_STATE()->CompleteOverlappedImmediate(
+           REX_KERNEL_MEMORY()->HostToGuestVirtual(overlapped), X_ERROR_NO_SUCH_USER);
+@@ -221,8 +249,6 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
+     return X_ERROR_NO_SUCH_USER;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+-
+   // First call asks for size (fill buffer_size_ptr).
+   // Second call asks for buffer contents with that size.
+ 
+@@ -308,8 +334,9 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
+     return X_ERROR_INVALID_PARAMETER;
+   }
+ 
+-  if (user_index) {
+-    // Only support user 0.
++  auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index);
++  if (!user_profile) {
++    // Only signed-in local players.
+     if (overlapped) {
+       REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(),
+                                                       X_ERROR_NO_SUCH_USER);
+@@ -318,8 +345,7 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
+     return X_ERROR_NO_SUCH_USER;
+   }
+ 
+-  // Update and save settings.
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
++  // Update and save settings (each profile its own).
+ 
+   for (uint32_t n = 0; n < setting_count; ++n) {
+     const X_USER_PROFILE_SETTING& setting = settings[n];
+@@ -377,7 +403,7 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+       return X_ERROR_INVALID_PARAMETER;
+     }
+ 
+-    if (user_index) {
++    if (!REX_KERNEL_STATE()->user_profile(user_index)) {
+       return X_ERROR_NO_SUCH_USER;
+     }
+   }
+@@ -388,7 +414,7 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+ }
+ 
+ u32 XamUserContentRestrictionGetFlags_entry(u32 user_index, mapped_u32 out_flags) {
+-  if (user_index) {
++  if (!REX_KERNEL_STATE()->user_profile(user_index)) {
+     return X_ERROR_NO_SUCH_USER;
+   }
+ 
+@@ -399,7 +425,7 @@ u32 XamUserContentRestrictionGetFlags_entry(u32 user_index, mapped_u32 out_flags
+ 
+ u32 XamUserContentRestrictionGetRating_entry(u32 user_index, u32 unk1, mapped_u32 out_unk2,
+                                              mapped_u32 out_unk3) {
+-  if (user_index) {
++  if (!REX_KERNEL_STATE()->user_profile(user_index)) {
+     return X_ERROR_NO_SUCH_USER;
+   }
+ 
+@@ -430,7 +456,7 @@ u32 XamUserGetMembershipTier_entry(u32 user_index) {
+   if (user_index >= 4) {
+     return X_ERROR_INVALID_PARAMETER;
+   }
+-  if (user_index) {
++  if (!REX_KERNEL_STATE()->user_profile(user_index)) {
+     return X_ERROR_NO_SUCH_USER;
+   }
+   return 6 /* 6 appears to be Gold */;
+@@ -444,8 +470,7 @@ u32 XamUserAreUsersFriends_entry(u32 user_index, u32 unk1, u32 unk2, mapped_u32
+   if (user_index >= 4) {
+     result = X_ERROR_INVALID_PARAMETER;
+   } else {
+-    if (user_index == 0) {
+-      const auto& user_profile = REX_KERNEL_STATE()->user_profile();
++    if (const auto* user_profile = REX_KERNEL_STATE()->user_profile(user_index)) {
+       if (user_profile->signin_state() == 0) {
+         result = X_ERROR_NOT_LOGGED_ON;
+       } else {
+@@ -477,13 +502,24 @@ u32 XamUserAreUsersFriends_entry(u32 user_index, u32 unk1, u32 unk2, mapped_u32
+ 
+ u32 XamShowSigninUI_entry(u32 unk, u32 unk_mask) {
+   // Mask values vary. Probably matching user types? Local/remote?
++  REXKRNL_INFO("XamShowSigninUI(panes={}, mask={:08X})", uint32_t(unk), uint32_t(unk_mask));
++
++  // Diablo III opens this when another controller presses A to join (and for
++  // player 1 when nobody is signed in), then polls XamUserGetSigninState until
++  // that player is signed in. The picker signs them in with the profile they
++  // choose and sends the notifications itself.
++  const uint32_t signed_in = REX_KERNEL_STATE()->signed_in_mask();
++  const bool someone_waiting = signed_in != 0xF;
++  if (someone_waiting && (signed_in == 0 || REXCVAR_GET(coop_local_guest))) {
++    ShowProfilePicker(kJoiningPlayer);
++    return X_ERROR_SUCCESS;
++  }
+ 
+-  // To fix game modes that display a 4 profile signin UI (even if playing
+-  // alone):
+-  // XN_SYS_SIGNINCHANGED
+-  REX_KERNEL_STATE()->BroadcastNotification(0x0000000A, 1);
+-  // Games seem to sit and loop until we trigger this notification:
+-  // XN_SYS_UI (off)
++  // Nobody left to sign in. Games loop until they see the sign-in UI open and
++  // close, so report that it did. XN_SYS_UI on, XN_SYS_SIGNINCHANGED (the
++  // signed-in players), XN_SYS_UI off, as a balanced pair.
++  REX_KERNEL_STATE()->BroadcastNotification(0x00000009, 1);
++  REX_KERNEL_STATE()->BroadcastNotification(0x0000000A, signed_in);
+   REX_KERNEL_STATE()->BroadcastNotification(0x00000009, 0);
+   return X_ERROR_SUCCESS;
+ }
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index 05979a3..17dd91e 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -31,6 +31,7 @@ set(REXSYSTEM_SOURCES
+     # XAM services
+     xam/app_manager.cpp
+     xam/content_manager.cpp
++    xam/profile_store.cpp
+     xam/user_profile.cpp
+ 
+     ppc_types.cpp
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 697399c..6bd0006 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -11,7 +11,9 @@
+ 
+ #include <chrono>
+ #include <cstring>
++#include <cstdlib>
+ #include <filesystem>
++#include <optional>
+ #include <string>
+ 
+ #include <fmt/format.h>
+@@ -41,6 +43,9 @@
+ #include <rex/system/xobject.h>
+ #include <rex/system/xsemaphore.h>
+ #include <rex/system/xthread.h>
++#include <rex/cvar.h>
++
++REXCVAR_DECLARE(bool, headless);
+ #include <rex/system/xtimer.h>
+ 
+ namespace rex::system {
+@@ -56,6 +61,66 @@ KernelState* kernel_state() {
+   return shared_kernel_state_;
+ }
+ 
++void KernelState::SignInAtStart() {
++  std::optional<xam::ProfileEntry> chosen;
++  if (const char* wanted = std::getenv("SOTR_PROFILE"); wanted && *wanted) {
++    // The launcher names the profile by XUID.
++    chosen = profile_store_->Find(std::strtoull(wanted, nullptr, 16));
++    if (!chosen) {
++      REXSYS_WARN("profiles: SOTR_PROFILE={} is not a profile in this save folder", wanted);
++    }
++  } else if (std::getenv("SOTR_USERNAME") || REXCVAR_GET(headless)) {
++    // Launchers and scripts from before profiles name the player instead, and
++    // headless runs cannot show the picker.
++    chosen = profile_store_->FindByName(xam::ProfileStore::DefaultName());
++    if (!chosen) {
++      chosen = profile_store_->EnsureDefault();
++    }
++  }
++  if (chosen) {
++    SignInUser(0, *chosen);
++  } else {
++    REXSYS_INFO("profiles: no profile given; player 1 chooses one in game");
++  }
++}
++
++bool KernelState::SignInUser(uint32_t user_index, const xam::ProfileEntry& entry) {
++  if (user_index >= kMaxLocalUsers) {
++    return false;
++  }
++  std::lock_guard lock(profiles_mutex_);
++  if (signed_in_[user_index].load(std::memory_order_acquire) || user_profile_by_xuid(entry.xuid)) {
++    return false;
++  }
++  auto profile = std::make_unique<xam::UserProfile>(entry.xuid, entry.name);
++  profile->set_kernel_state(this);
++  signed_in_[user_index].store(profile.get(), std::memory_order_release);
++  profiles_.push_back(std::move(profile));
++  REXSYS_INFO("profiles: {} ({}) signed in as player {}", entry.name,
++              xam::ProfileStore::XuidText(entry.xuid), user_index + 1);
++  return true;
++}
++
++xam::UserProfile* KernelState::user_profile_by_xuid(uint64_t xuid) const {
++  for (const auto& slot : signed_in_) {
++    auto* profile = slot.load(std::memory_order_acquire);
++    if (profile && profile->xuid() == xuid) {
++      return profile;
++    }
++  }
++  return nullptr;
++}
++
++uint32_t KernelState::signed_in_mask() const {
++  uint32_t mask = 0;
++  for (uint32_t i = 0; i < kMaxLocalUsers; ++i) {
++    if (signed_in_[i].load(std::memory_order_acquire)) {
++      mask |= 1u << i;
++    }
++  }
++  return mask;
++}
++
+ KernelState::KernelState(Runtime* emulator)
+     : emulator_(emulator),
+       memory_(emulator->memory()),
+@@ -65,14 +130,14 @@ KernelState::KernelState(Runtime* emulator)
+   file_system_ = emulator->file_system();
+ 
+   app_manager_ = std::make_unique<xam::AppManager>();
+-  user_profile_ = std::make_unique<xam::UserProfile>();
+-  user_profile_->set_kernel_state(this);
+ 
+   auto user_data_root = emulator_->user_data_root();
+   if (!user_data_root.empty()) {
+     user_data_root = std::filesystem::absolute(user_data_root);
+   }
+   content_manager_ = std::make_unique<xam::ContentManager>(this, user_data_root);
++  profile_store_ = std::make_unique<xam::ProfileStore>(user_data_root);
++  SignInAtStart();
+ 
+   if (shared_kernel_state_ != nullptr) {
+     REXSYS_ERROR("KernelState constructed but shared_kernel_state_ already set");
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index d0c7bfd..f06b0f2 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -17,6 +17,7 @@
+ #include <fmt/format.h>
+ 
+ #include <rex/filesystem.h>
++#include <rex/logging.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
+@@ -442,13 +443,27 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+   return X_ERROR_FILE_NOT_FOUND;
+ }
+ 
+-std::filesystem::path ContentManager::ResolveGameUserContentPath() {
++std::filesystem::path ContentManager::ResolveGameUserContentPath(uint64_t xuid,
++                                                                 const std::string& name) {
+   auto title_id = fmt::format("{:08X}", kernel_state_->title_id());
+-  auto user_name = rex::to_path(kernel_state_->user_profile()->name());
+ 
+   // Per-game per-profile data location:
+-  // content_root/title_id/profile/user_name
+-  return root_path_ / title_id / kGameUserContentDirName / user_name;
++  // content_root/title_id/profile/XUID
++  auto base = root_path_ / title_id / kGameUserContentDirName;
++  auto path = base / fmt::format("{:016X}", xuid);
++  std::error_code ec;
++  if (!name.empty() && !std::filesystem::exists(path, ec)) {
++    // Before profiles this folder was named after the player.
++    auto legacy = base / rex::to_path(name);
++    if (std::filesystem::is_directory(legacy, ec)) {
++      std::filesystem::copy(legacy, path, std::filesystem::copy_options::recursive, ec);
++      if (ec) {
++        REXSYS_WARN("profiles: cannot copy settings from {}: {}", rex::path_to_utf8(legacy),
++                    ec.message());
++      }
++    }
++  }
++  return path;
+ }
+ 
+ std::unordered_map<string::string_key_case, ContentPackage*,
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index 58c6da8..e9fe6a5 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -22,50 +22,11 @@
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/user_profile.h>
+ 
+-REXCVAR_DECLARE(int32_t, systemlink_instance);
+-
+ namespace rex {
+ namespace system {
+ namespace xam {
+ 
+-UserProfile::UserProfile() {
+-  // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
+-  // if non-zero, it prevents the user from playing the game.
+-  // "You do not have permissions to perform this operation."
+-  // System Link: copies of the game that play together must not be the same player, so each
+-  // instance (--systemlink_instance) gets its own block of four XUIDs from the classic one: this
+-  // player and up to three local co-op guests (on Windows, xam_user.cpp gives guests the next
+-  // three), so no two players on the LAN share an XUID or a save folder. Instance 0 is
+-  // unchanged, so existing saves keep working.
+-  const int32_t sl_instance = REXCVAR_GET(systemlink_instance) & 0xFFFF;
+-  xuid_ = 0xB13EBABEBABEBABE + (static_cast<uint64_t>(sl_instance) << 2);
+-  name_ = sl_instance ? fmt::format("User{}", sl_instance) : std::string("User");
+-  // The launcher passes the player's chosen name here. XAM name buffers hold
+-  // 16 bytes including the terminator, so keep at most 15 characters.
+-  if (const char* custom = std::getenv("SOTR_USERNAME")) {
+-    try {
+-      std::string custom_name(custom);
+-#ifdef _WIN32
+-      // The narrow environment uses the ANSI code page; the name is needed as UTF-8.
+-      if (const wchar_t* wide = _wgetenv(L"SOTR_USERNAME")) {
+-        custom_name = rex::string::to_utf8(std::u16string_view(reinterpret_cast<const char16_t*>(wide)));
+-      }
+-#endif
+-      // Cut at a character boundary: half a UTF-8 sequence would make every later
+-      // conversion of the name to UTF-16 throw.
+-      size_t length = custom_name.size() > 15 ? 15 : custom_name.size();
+-      while (length > 0 && length < custom_name.size() &&
+-             (static_cast<unsigned char>(custom_name[length]) & 0xC0) == 0x80) {
+-        --length;
+-      }
+-      custom_name.resize(length);
+-      static_cast<void>(rex::string::to_utf16(custom_name));  // throws unless valid UTF-8
+-      if (!custom_name.empty()) name_ = custom_name;
+-    } catch (const std::exception&) {
+-      REXSYS_WARN("SOTR_USERNAME is not valid UTF-8; using the default name");
+-    }
+-  }
+-
++UserProfile::UserProfile(uint64_t xuid, std::string name) : xuid_(xuid), name_(std::move(name)) {
+   // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195
+   // https://github.com/arkem/py360/blob/master/py360/constants.py
+   // XPROFILE_GAMER_YAXIS_INVERSION
+@@ -171,7 +132,7 @@ UserProfile::Setting* UserProfile::GetSetting(uint32_t setting_id) {
+ 
+ void UserProfile::LoadSetting(UserProfile::Setting* setting) {
+   if (setting->is_title_specific()) {
+-    auto content_dir = kernel_state_->content_manager()->ResolveGameUserContentPath();
++    auto content_dir = kernel_state_->content_manager()->ResolveGameUserContentPath(xuid_, name());
+     auto setting_id = fmt::format("{:08X}", setting->setting_id);
+     auto file_path = content_dir / setting_id;
+     auto file = rex::filesystem::OpenFile(file_path, "rb");
+@@ -196,7 +157,7 @@ void UserProfile::LoadSetting(UserProfile::Setting* setting) {
+ void UserProfile::SaveSetting(UserProfile::Setting* setting) {
+   if (setting->is_title_specific()) {
+     auto serialized_setting = setting->Serialize();
+-    auto content_dir = kernel_state_->content_manager()->ResolveGameUserContentPath();
++    auto content_dir = kernel_state_->content_manager()->ResolveGameUserContentPath(xuid_, name());
+     std::filesystem::create_directories(content_dir);
+     auto setting_id = fmt::format("{:08X}", setting->setting_id);
+     auto file_path = content_dir / setting_id;

@@ -15,6 +15,18 @@ pub struct BuildInfo {
     pub label: String,
 }
 
+/// The stable release a standalone launcher builds by default (launcher/stable.json).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Release {
+    pub tag: String,
+    pub commit: String,
+}
+
+pub fn stable() -> Release {
+    Release { tag: env!("SOTR_STABLE_TAG").into(), commit: env!("SOTR_STABLE_COMMIT").into() }
+}
+
 pub fn label(commit: &str, dirty: bool) -> String {
     let short: String = commit.chars().take(8).collect();
     if dirty {

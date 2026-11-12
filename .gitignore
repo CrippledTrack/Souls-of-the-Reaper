@@ -18,19 +18,16 @@ tools/
 
 # Installer build output (installer/SoulsOfTheReaper.iss is the only part of
 # installer/ meant to be versioned; ISCC.exe compiles it straight from
-# port/out/build, launcher/dist and tools/)
+# port/out/build, launcher/tauri/src-tauri/target/release and tools/)
 installer/dist/
 installer/payload/
 installer/Imagenes/
 
-# Launcher build output/binaries - only source (Launcher.ps1, build_launcher.ps1,
-# v6_borderless_final.html) is versioned. The compiled exe, icon, and the
-# WebView2 SDK redistributable DLLs are binaries, not code - get them locally
-# (see README) and build_launcher.ps1 embeds them into the exe.
-launcher/dist/
-launcher/lib/
-launcher/*.ico
+# Launcher executables copied beside the game (launcher/tauri builds into its
+# own ignored src-tauri/target/ folder).
 SoulsOfTheReaper.exe
+/sotr-launcher
+/sotr-launcher.exe
 
 # Game/build icon (binary asset patched into diablo3.exe post-build by
 # tools/set_game_icon.ps1 - see README)
@@ -96,7 +93,10 @@ validation.json
 
 # Tauri launcher build outputs
 launcher/tauri/node_modules/
-launcher/tauri/dist/
 launcher/tauri/src-tauri/target/
 launcher/tauri/src-tauri/icons/
 launcher/tauri/src-tauri/gen/
+# Launcher source modules that share a name with the game/ and tools/ folders
+# ignored above.
+!launcher/tauri/src-tauri/src/game/
+!launcher/tauri/src-tauri/src/tools/

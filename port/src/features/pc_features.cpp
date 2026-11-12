@@ -206,6 +206,25 @@ bool VersionFormatValid(uint8_t *base) {
   return valid;
 }
 
+// " + Extras", then the source this build was compiled from: its release tag when
+// the commit has one, and the short commit id (port/CMakeLists.txt reads both from
+// git when configuring; either is empty when unknown).
+std::string ExtrasLabel() {
+#ifndef SOULS_BUILD_TAG
+#define SOULS_BUILD_TAG ""
+#endif
+#ifndef SOULS_BUILD_COMMIT
+#define SOULS_BUILD_COMMIT ""
+#endif
+  const std::string tag = SOULS_BUILD_TAG, commit = SOULS_BUILD_COMMIT;
+  std::string label = " + Extras";
+  if (!tag.empty() && !commit.empty())
+    label += " " + tag + " (" + commit + ")";
+  else if (!tag.empty() || !commit.empty())
+    label += " (" + (tag.empty() ? commit : tag) + ")";
+  return label;
+}
+
 uint32_t CurrentDescriptor(uint8_t *base) {
   const auto owner = REX_LOAD_U32(kOptionsOwner);
   if (!owner)
@@ -235,7 +254,7 @@ extern "C" void D3_FN_version_format_call(PPCContext &ctx, uint8_t *base) {
   D3_IMP_version_format_call(ctx, base);
   if (!start_version)
     return;
-  constexpr std::string_view suffix = " + Extras";
+  const std::string suffix = ExtrasLabel();
   const auto text = ReadText(base, destination, 1024);
   if (text.empty() || text.ends_with(suffix) ||
       text.size() + suffix.size() >= 1024)
@@ -243,6 +262,12 @@ extern "C" void D3_FN_version_format_call(PPCContext &ctx, uint8_t *base) {
   for (uint32_t i = 0; i < suffix.size(); ++i)
     REX_STORE_U8(destination + static_cast<uint32_t>(text.size()) + i, suffix[i]);
   REX_STORE_U8(destination + static_cast<uint32_t>(text.size() + suffix.size()), 0);
+}
+
+// The Shadow renderer draws at its own resolution (--shadow_render_height), so the
+// render-scale option would do nothing there: it is left out of the menu.
+bool ShadowRendererActive() {
+  return rex::cvar::GetFlagByName("shadow_renderer_only") == "true";
 }
 
 // Strong definitions override only these weak generated aliases when linked.
@@ -259,7 +284,10 @@ extern "C" void D3_FN_video_options_build(PPCContext &ctx, uint8_t *base) {
   const auto frame = ctx.r1.u32 - 512;
   REX_STORE_U32(frame, ctx.r1.u32);
   ctx.r1.u64 = frame;
+  const bool render_option = !ShadowRendererActive();
   for (const auto option : {kRenderOption, kWindowOption}) {
+    if (option == kRenderOption && !render_option)
+      continue;
     ctx.r3.u64 = frame + 96;
     D3_FN_option_descriptor_init(ctx, base);
     ConstructText(ctx, base, frame + 160,
@@ -279,7 +307,9 @@ extern "C" void D3_FN_video_options_build(PPCContext &ctx, uint8_t *base) {
   // The constructor consumes both key strings, and insertion consumes the
   // temporary descriptor. Do not destroy those temporaries a second time.
   ctx = saved;
-  REXLOG_INFO("PC settings: render resolution and window mode added to Video options");
+  REXLOG_INFO("PC settings: {} added to Video options",
+              render_option ? "render resolution and window mode"
+                            : "window mode (render resolution left out: Shadow renderer)");
 }
 
 // Selector model: option ID at +4, count in vtable slot 0.

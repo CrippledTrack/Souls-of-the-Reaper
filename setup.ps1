@@ -56,9 +56,9 @@ function Get-InstalledLocale {
       (verified against a US and a Spain UEE disc - same base data, single
       <locale>_*.cpk set each), so the language is decided by which disc you
       installed from, not a separate menu. Scans the just-copied CPKs for the
-      one <locale>_Common.cpk actually present. Table duplicated from
-      launcher\Launcher.ps1's $LangTable and installer\Setup.ps1's copy -
-      touch all three if a locale is added.
+      one <locale>_Common.cpk actually present. Table duplicated in
+      installer\SoulsOfTheReaper.iss (LocaleTable) and installer\Setup.ps1's
+      copy - touch all three if a locale is added.
     #>
     param([string]$CpkDir)
     # Names are plain ASCII on purpose - see the matching table in
@@ -303,9 +303,14 @@ Write-Host ""
 Write-Host "  Press any key to continue to the launcher..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
-$launcherExe = Join-Path $ROOT "SoulsOfTheReaper.exe"
-if (Test-Path -LiteralPath $launcherExe) {
+# The Tauri launcher: SoulsOfTheReaper.exe as the installer names it, or the
+# release download's sotr-launcher.exe.
+$launcherExe = @("SoulsOfTheReaper.exe", "sotr-launcher.exe", "sotr-launcher-windows-x64.exe") |
+    ForEach-Object { Join-Path $ROOT $_ } |
+    Where-Object { Test-Path -LiteralPath $_ } |
+    Select-Object -First 1
+if ($launcherExe) {
     & $launcherExe
 } else {
-    Write-Host "  WARNING: SoulsOfTheReaper.exe not found next to setup.ps1 - launch it manually." -ForegroundColor Yellow
+    Write-Host "  WARNING: the launcher (SoulsOfTheReaper.exe) was not found next to setup.ps1 - launch it manually." -ForegroundColor Yellow
 }

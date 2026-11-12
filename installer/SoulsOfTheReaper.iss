@@ -44,7 +44,7 @@ DisableProgramGroupPage=auto
 PrivilegesRequired=lowest
 OutputDir=dist
 OutputBaseFilename=SoulsOfTheReaper_Setup
-SetupIconFile={#RepoRoot}launcher\ico_launcher.ico
+SetupIconFile={#RepoRoot}launcher\tauri\src-tauri\icons\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/fast
 SolidCompression=no
@@ -278,14 +278,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"
 [Files]
 Source: "{#GameExeDir}\diablo3.exe";              DestDir: "{app}";       Flags: ignoreversion
 Source: "{#GameExeDir}\rexruntimerd.dll";         DestDir: "{app}";       Flags: ignoreversion
-Source: "{#RepoRoot}launcher\dist\SoulsOfTheReaper.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#RepoRoot}apply_config.ps1";            DestDir: "{app}";       Flags: ignoreversion
+; The Tauri launcher (launcher\tauri, `npm run build`), installed under the
+; product name. Beside diablo3.exe it runs as a release install.
+Source: "{#RepoRoot}launcher\tauri\src-tauri\target\release\sotr-launcher.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "{#RepoRoot}tools\extract-xiso.exe";      DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "{#RepoRoot}tools\extract-xiso.exe";      DestDir: "{tmp}";       Flags: dontcopy
 
 [Icons]
 ; IconFilename points at the launcher exe itself (which always carries
-; ico_launcher.ico, embedded fresh by ps2exe on every build), not diablo3.exe
+; the launcher icon, embedded by the Tauri build), not diablo3.exe
 ; - that exe's icon is a separate post-build resource patch (tools\set_game_icon.ps1)
 ; that gets lost on every rebuild/relink, so shortcuts pointing at it can end
 ; up with the generic Windows exe icon instead of the intended artwork.
@@ -367,8 +368,8 @@ var
   Inno's native startup "Select Setup Language" dialog / the standard
   /LANG=<name> silent switch - see [Languages] above), not a separate custom
   page: ActiveLanguage returns the internal Name of whichever [Languages]
-  entry is active. Keep in sync by hand with launcher\Launcher.ps1's
-  $LangTable if a language is added/removed. }
+  entry is active. Keep in sync by hand with the launcher's game language
+  list (launcher\tauri\src\js\languages.js) if a language is added/removed. }
 procedure GetLangIdCountryForActiveLanguage(var LangId, CountryId: Integer);
 begin
   case ActiveLanguage of
@@ -408,7 +409,7 @@ end;
 
 procedure InitLocaleTable;
 begin
-  { Kept in sync by hand with launcher\Launcher.ps1's $LangTable and the old
+  { Kept in sync by hand with setup.ps1's Get-InstalledLocale table and the old
     installer\Setup.ps1's Get-LocaleFromCpkNames - not shared code, three
     independent copies, touch all three if a locale is added. }
   LocaleTable[0].Prefix  := 'enUS'; LocaleTable[0].LangId  := 1;  LocaleTable[0].CountryId  := 103; LocaleTable[0].LocaleName  := 'English';

@@ -16,12 +16,16 @@ COMMON_PATCHES = ("rexglue-registration.patch", "rexglue-texture-exponent.patch"
                   "rexglue-wait-precision.patch", "rexglue-idle-toast.patch",
                   "rexglue-username.patch", "rexglue-systemlink-net.patch",
                   "rexglue-frame-limit.patch", "rexglue-pad-family.patch",
-                  "rexglue-gamepad-keyboard.patch", "rexglue-host-rendering.patch")
+                  "rexglue-gamepad-keyboard.patch", "rexglue-host-rendering.patch",
+                  "rexglue-profiles.patch", "rexglue-player-one.patch")
 LINUX_PATCHES = ("rexglue-present-effects.patch",)
 STAMP = ".sotr-sdk.json"
 # Folders under patches/ that go into the SDK, per host.
-PATCH_DIRS = {"linux": ("common", "systemlink", "linux"), "win": ("common", "systemlink", "windows"),
-              "macos": ("common", "systemlink", "linux")}
+PATCH_DIRS = {"linux": ("common", "systemlink", "profiles", "linux"),
+              "win": ("common", "systemlink", "profiles", "windows"),
+              "macos": ("common", "systemlink", "profiles", "linux")}
+# Folders that mirror the SDK tree and hold whole files the port adds.
+SOURCE_DIRS = ("systemlink", "profiles")
 
 
 def lock():
@@ -91,7 +95,7 @@ def remove_tree(path):
         shutil.rmtree(path, onerror=retry)
 
 
-def checkout_pinned(source, repository, commit, run, config=(), clean=False):
+def checkout_pinned(source, repository, commit, run, config=(), clean=False, tags=False):
     """Make `source` a checkout of `commit`, whatever state an earlier run left it in.
 
     - No checkout yet: clone into `<source>.partial` and rename it when complete, so
@@ -99,6 +103,8 @@ def checkout_pinned(source, repository, commit, run, config=(), clean=False):
     - Checkout at another commit (the pin moved): fetch the commit and switch to it.
     - `clean`: discard local changes and untracked files first (ignored build
       folders such as `out/` are kept), so patches always meet pristine sources.
+    - `tags`: fetch the repository's tags along with a new commit. The SDK names its
+      version after the nearest tag, so a pin moved onto a release needs that tag.
 
     `run` is the caller's command runner; `config` holds git settings (e.g.
     core.autocrlf=false) applied to the clone before checkout. Submodules do not
@@ -124,11 +130,12 @@ def checkout_pinned(source, repository, commit, run, config=(), clean=False):
         return subprocess.run(["git", "-C", str(source), "cat-file", "-e", f"{commit}^{{commit}}"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if not present():
+        tag_option = "--tags" if tags else "--no-tags"
         try:
-            run("git", *options, "-C", source, "fetch", "--no-tags", repository, commit)
+            run("git", *options, "-C", source, "fetch", tag_option, repository, commit)
         except subprocess.CalledProcessError:
             # Servers that refuse fetching a bare commit id still serve the branches that contain it.
-            run("git", *options, "-C", source, "fetch", "--no-tags", repository,
+            run("git", *options, "-C", source, "fetch", tag_option, repository,
                 "+refs/heads/*:refs/remotes/origin/*")
     if clean:
         run("git", *options, "-C", source, "checkout", "--force", "--detach", commit)
@@ -150,7 +157,7 @@ def checkout_pinned_sdk(sdk, run, config=()):
     later patches change context that earlier ones need to be recognised.
     """
     pinned = lock()
-    checkout_pinned(sdk, pinned["repository"], pinned["commit"], run, config, clean=True)
+    checkout_pinned(sdk, pinned["repository"], pinned["commit"], run, config, clean=True, tags=True)
     return pinned
 
 
@@ -160,12 +167,13 @@ def apply_patch(sdk, patch):
 
 
 def install_sources(sdk):
-    """Copy whole source files this port adds to the SDK (patches/systemlink mirrors the SDK tree)."""
-    source_root = ROOT / "patches/systemlink"
-    for source in sorted(p for p in source_root.rglob("*") if p.is_file()):
-        target = sdk / source.relative_to(source_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+    """Copy whole source files this port adds to the SDK (each of SOURCE_DIRS mirrors the SDK tree)."""
+    for name in SOURCE_DIRS:
+        source_root = ROOT / "patches" / name
+        for source in sorted(p for p in source_root.rglob("*") if p.is_file()):
+            target = sdk / source.relative_to(source_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
 
 
 def apply_common_patches(sdk):

@@ -1,15 +1,8 @@
 # Building the launcher
 
-Two launchers exist. Use the **Tauri launcher** unless you specifically need the legacy one.
+The launcher is a Tauri app (Rust host + WebView page) in [`launcher/tauri/`](../launcher/tauri/README.md). It runs on Windows and Linux. (The earlier PowerShell/WebView2 `Launcher.ps1` has been removed.)
 
-| Launcher | Platforms | Source |
-| --- | --- | --- |
-| Tauri (Rust + WebView) | Windows, Linux | [`launcher/tauri/`](../launcher/tauri/README.md) |
-| PowerShell/WebView2 (legacy) | Windows only | [`launcher/Launcher.ps1`](../launcher/Launcher.ps1) |
-
-Both show the same page (`launcher/v6_borderless_final.html`).
-
-## Tauri launcher (Windows and Linux)
+## Build
 
 ### Requirements
 
@@ -38,7 +31,7 @@ Outputs:
 | Debug | `src-tauri\target\debug\sotr-launcher.exe` | `src-tauri/target/debug/sotr-launcher` |
 | Release | `src-tauri\target\release\sotr-launcher.exe` | `src-tauri/target/release/sotr-launcher` |
 
-`npm run prepare-ui` (run automatically) generates `dist/index.html` and the icons; those and `target/` are git-ignored.
+`npm run icons` (run automatically) generates the icons; they and `target/` are git-ignored. The page itself is served as-is from `src/`.
 
 ### Where to run it
 
@@ -46,28 +39,39 @@ Outputs:
 - **No checkout**: a launcher built from a clean, pushed commit downloads the matching sources into the per-user data folder the first time you build (asking first) and builds from there; see [Without a checkout](../launcher/tauri/README.md#without-a-checkout). Set `SOTR_REPO` when building the launcher if `origin` is not the canonical repository.
 - **Release install**: place the Release executable beside `diablo3` / `diablo3.exe`. The build panel is not shown there.
 
+How the page and host are laid out, and how launcher text is translated, is
+described in the launcher README: [Page layout](../launcher/tauri/README.md#page-layout)
+and [Localization](../launcher/tauri/README.md#localization).
+
 ### Checks
 
 ```sh
-npm test                                          # page tests (jsdom)
-cargo test --manifest-path src-tauri/Cargo.toml   # discovery, validation, arguments
+npm test                                          # tsc type check, then the page tests (jsdom)
+cargo test --manifest-path src-tauri/Cargo.toml   # discovery, validation, arguments, message keys
 ```
 
-## PowerShell launcher (Windows, legacy)
+## Releasing a new stable version
 
-The compiled exe, icon and WebView2 DLLs are not in the repository, so supply them first:
+A launcher outside a checkout builds a stable release by default, and its own
+commit when Development is chosen (see
+[Without a checkout](../launcher/tauri/README.md#without-a-checkout)). Which
+release is stable is embedded when the launcher is built:
 
-1. Download the [`Microsoft.Web.WebView2`](https://www.nuget.org/packages/Microsoft.Web.WebView2) NuGet package and copy `Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll` and `WebView2Loader.dll` into `launcher\lib\`.
-2. Provide your own `launcher\ico_launcher.ico`.
-3. Build:
+- **Release launchers** ([`launcher-release.yml`](../.github/workflows/launcher-release.yml)):
+  publishing a release builds its launchers with `SOTR_STABLE_TAG` /
+  `SOTR_STABLE_COMMIT` set to that release, so nothing needs editing first.
+  A manual run of the workflow does the same unless `stable` is unticked, which
+  keeps the pinned release below (for rebuilding an older release's launcher
+  without changing what it builds, for example).
+- **Every other build** (local, CI) uses [`launcher/stable.json`](../launcher/stable.json).
+  Update it after a release so development launchers follow:
 
-```powershell
-Install-Module ps2exe -Scope CurrentUser -Force   # one-time
-launcher\build_launcher.ps1
-Copy-Item launcher\dist\SoulsOfTheReaper.exe . -Force
-```
+  ```sh
+  git rev-parse beta-1.5^{commit}   # the commit to put in "commit"
+  ```
 
-The script embeds the page, icon and DLLs into a single `SoulsOfTheReaper.exe`. It must sit at the repository/release root, next to `apply_config.ps1`, `game\` and `diablo3.exe`.
+Set both variables or neither; a malformed value or file fails the launcher
+build.
 
 ## Windows installer (optional)
 
@@ -77,4 +81,4 @@ The script embeds the page, icon and DLLs into a single `SoulsOfTheReaper.exe`. 
 ISCC.exe installer\SoulsOfTheReaper.iss
 ```
 
-Note that the installer and `setup.ps1` still package the legacy PowerShell launcher, not the Tauri one.
+The installer packages `launcher\tauri\src-tauri\target\release\sotr-launcher.exe` as `SoulsOfTheReaper.exe`, so run `npm run build` in `launcher/tauri` first (it also generates the installer icon, `src-tauri\icons\icon.ico`).

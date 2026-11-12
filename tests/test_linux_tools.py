@@ -617,9 +617,10 @@ class BuildClientTests(unittest.TestCase):
         (self.root / "prefix/bin/rexglue").touch()
         args = self.args(variants=["base", "update-plain"])
         with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, update_ready=mock.DEFAULT,
-                                 missing_tools=mock.DEFAULT) as mocks:
+                                 missing_tools=mock.DEFAULT, converter_state=mock.DEFAULT) as mocks:
             mocks["base_ready"].return_value = mocks["update_ready"].return_value = True
             mocks["missing_tools"].return_value = []
+            mocks["converter_state"].return_value = "current"
             steps = build_client.plan(args)
         self.assertEqual([title for title, _ in steps],
                          ["Build Base (codegen and compile)", "Build Update (no extras) (codegen and compile)"])
@@ -634,74 +635,89 @@ class BuildClientTests(unittest.TestCase):
             self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
 
 
-class BuildProfileTests(BuildClientTests):
-    """Experimental work is a separate profile: own build folders, flag, tools and steps."""
+class ShaderConverterTests(BuildClientTests):
+    """The Shadow renderer is in every build; its shader converter (XenosRecomp) is a
+    pinned component built once before the game, like the SDK."""
 
-    def plan(self, state="current", staged=True, **overrides):
-        args = self.args(**{"profile": "experimental", **overrides})
-        converter = build_client.shader_converter
+    def plan(self, state="current", sdk=True, **overrides):
+        args = self.args(**overrides)
         with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, sdk_installed=mock.DEFAULT,
-                                 missing_tools=mock.DEFAULT, check_free_space=mock.DEFAULT) as mocks, \
-                mock.patch.object(converter, "state", return_value=state), \
-                mock.patch.object(converter, "staged", return_value=staged), \
-                mock.patch.object(pathlib.Path, "is_dir", return_value=True):
-            mocks["base_ready"].return_value = mocks["sdk_installed"].return_value = True
+                                 missing_tools=mock.DEFAULT, check_free_space=mock.DEFAULT,
+                                 converter_state=mock.DEFAULT) as mocks:
+            mocks["base_ready"].return_value = True
+            mocks["sdk_installed"].return_value = sdk
             mocks["missing_tools"].return_value = []
+            mocks["converter_state"].return_value = state
             return args, [title for title, _ in build_client.plan(args)]
 
-    def test_profile_steps_run_last_and_only_for_their_profile(self):
-        step = "Build shader converter (Experimental)"
-        _, steps = self.plan("missing", False)
-        self.assertEqual(steps, ["Build Base, Experimental (codegen and compile)", step])
-        _, steps = self.plan("current", True)
-        self.assertNotIn(step, steps)
-        _, steps = self.plan("current", False)  # built, but not beside this game yet
-        self.assertIn(step, steps)
-        _, steps = self.plan("missing", False, profile="normal")
+    def test_the_converter_is_built_once_after_the_sdk_and_before_the_game(self):
+        step = "Build shader converter (one-time)"
+        _, steps = self.plan("missing", sdk=False)
+        self.assertEqual(steps, ["Build ReXGlue SDK (one-time)", step, "Build Base (codegen and compile)"])
+        _, steps = self.plan("stale")
+        self.assertEqual(steps, [step, "Build Base (codegen and compile)"])
+        _, steps = self.plan("current")
         self.assertEqual(steps, ["Build Base (codegen and compile)"])
-        _, steps = self.plan("missing", False, data_only=True)
-        self.assertEqual(steps, [])
+        _, steps = self.plan("missing", data_only=True)
+        self.assertEqual(steps, [], "preparing game folders needs no converter")
 
-    def test_profile_builds_get_their_own_folder_and_flag(self):
+    def test_the_converter_download_needs_the_same_approval_as_the_sdk(self):
+        with self.assertRaisesRegex(build_client.BuildError, "XenosRecomp.*not approved"):
+            self.plan("missing", no_sdk_download=True)
+        with self.assertRaisesRegex(build_client.BuildError, "out of date.*not approved"):
+            self.plan("stale", no_sdk_download=True)
+        self.plan("current", no_sdk_download=True)  # nothing to download
+
+    def test_every_build_gets_the_converter_beside_it(self):
+        converter = build_client.shader_converter
+        args = self.args()
+        build = build_client.variant_build_dir(args, "base")
+        with mock.patch.object(build_client, "build_variant") as compile_, \
+                mock.patch.object(converter, "state", return_value="current"), \
+                mock.patch.object(converter, "staged", return_value=False), \
+                mock.patch.object(converter, "stage") as stage, \
+                mock.patch.object(pathlib.Path, "is_dir", return_value=True), \
+                mock.patch("builtins.print"):
+            build_client.build_and_stage(args, "base")
+        compile_.assert_called_once_with(args, "base")
+        stage.assert_called_once_with(build)
+        with mock.patch.object(build_client, "build_variant"), \
+                mock.patch.object(converter, "state", return_value="current"), \
+                mock.patch.object(converter, "staged", return_value=True), \
+                mock.patch.object(converter, "stage") as stage, \
+                mock.patch.object(pathlib.Path, "is_dir", return_value=True):
+            build_client.build_and_stage(args, "base")
+        stage.assert_not_called()
+
+    def test_normal_builds_use_the_plain_folder_names(self):
         profiles = build_client.build_profiles
-        normal, experimental = profiles.get(None), profiles.get("experimental")
+        normal = profiles.get(None)
+        self.assertEqual(list(profiles.PROFILES), ["normal"])
         self.assertEqual(normal.build_name("linux-amd64", True, False), "linux-amd64-update-relwithdebinfo")
-        self.assertEqual(experimental.build_name("win-amd64", True, True),
-                         "win-amd64-update-plain-experimental-relwithdebinfo")
         self.assertEqual(normal.cmake_options, ())
-        self.assertIn("-DSOULS_EXPERIMENTAL=ON", experimental.cmake_options)
-        # No SDK patches of its own: the experimental profile shares the normal SDK.
-        self.assertEqual(experimental.sdk_paths("linux"), normal.sdk_paths("linux"))
-        own = profiles.Profile(id="lab", label="Lab", sdk_patch_dir="lab")
+        own = profiles.Profile(id="lab", label="Lab", suffix="-lab", sdk_patch_dir="lab")
+        self.assertEqual(own.build_name("win-amd64", True, True), "win-amd64-update-plain-lab-relwithdebinfo")
         self.assertEqual(own.sdk_paths("linux")[1].name, "rexglue-install-linux-lab")
-        args = self.args(profile="experimental")
-        with mock.patch.object(build_client.codegen_title_update, "stamp_current", return_value=True), \
-                mock.patch.object(build_client, "run") as run:
-            build_client.build_variant(args, "update")
-        command = [str(a) for a in run.call_args.args]
-        self.assertEqual(command[command.index("--profile") + 1], "experimental")
 
     def test_a_missing_profile_tool_stops_only_that_profile(self):
         profiles = build_client.build_profiles
         lab = profiles.Profile(id="lab", label="Lab", tools={
             build_client.platform.system(): (profiles.Tool("no-such-tool-xyz", "Lab tool"),)})
         with mock.patch.dict(profiles.PROFILES, {"lab": lab}):
-            with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, sdk_installed=mock.DEFAULT,
-                                     missing_tools=mock.DEFAULT, check_free_space=mock.DEFAULT) as mocks:
-                mocks["base_ready"].return_value = mocks["sdk_installed"].return_value = True
-                mocks["missing_tools"].return_value = []
-                with self.assertRaisesRegex(build_client.BuildError, "Lab tool was not found"):
-                    build_client.plan(self.args(profile="lab"))
-                build_client.plan(self.args(profile="normal"))  # unaffected
+            with self.assertRaisesRegex(build_client.BuildError, "Lab tool was not found"):
+                self.plan(profile="lab")
+            self.plan(profile="normal")  # unaffected
 
-    def test_profile_step_failure_is_a_warning_not_a_failed_build(self):
-        converter = build_client.shader_converter
-        error = subprocess.CalledProcessError(1, "cmake")
-        with mock.patch.object(converter, "state", return_value="missing"), \
-                mock.patch.object(converter, "build", side_effect=error), \
-                mock.patch("builtins.print") as printed:
-            build_client.profile_step(self.args(profile="experimental"), build_client.ConverterStep)
-        self.assertTrue(printed.call_args.args[0].startswith("::warning::"))
+    def test_status_reports_the_converter(self):
+        with mock.patch.object(build_client, "converter_state", return_value="stale"), \
+                mock.patch.object(build_client, "sdk_state", return_value="current"), \
+                mock.patch("builtins.print") as printed, \
+                mock.patch("sys.argv", ["build_client.py", "--print-sdk-status"]):
+            build_client.main()
+        status = build_client.json.loads(printed.call_args.args[0])
+        self.assertEqual(status["converter"]["state"], "stale")
+        self.assertEqual(status["converter"]["commit"], build_client.shader_converter.lock()["commit"])
+        self.assertIn("hedge-dev/XenosRecomp", status["converter"]["repository"])
 
     def test_converter_state_follows_the_pinned_commit_and_patch(self):
         converter = build_client.shader_converter

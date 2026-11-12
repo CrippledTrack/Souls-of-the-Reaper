@@ -8,7 +8,7 @@ Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com
 
 ## Option A — Just play (no compilation needed)
 
-Download the latest release from the [Releases](../../releases) page, extract the zip, and run `SoulsOfTheReaper.exe`. On first launch it will ask for your Xbox 360 ISO and set everything up automatically.
+Download the latest release from the [Releases](../../releases) page, extract the zip, and run `SoulsOfTheReaper.exe` (the launcher; the release also attaches it on its own as `sotr-launcher-windows-x64.exe` and, for Linux, `sotr-launcher-linux-x64.tar.gz`). On first launch it will ask for your Xbox 360 ISO and set everything up automatically.
 
 ---
 
@@ -105,7 +105,7 @@ If `game\` is already extracted and the overlay is staged, build just the update
 pwsh -File scripts\run_windows.ps1 -ExtraFeatures
 ```
 
-Pass `-Username "Name"` to set the in-game player name (up to 15 characters).
+Pass `-PlayerProfile <XUID>` to choose player 1's local profile (see [Local profiles](#local-profiles)); without it the game asks player 1 to pick one.
 
 #### Vulkan renderer
 
@@ -145,7 +145,17 @@ launcher\tauri\src-tauri\target\release\sotr-launcher.exe
 
 ## Controls
 
-Keyboard and up to 4 gamepads all work at once — whoever presses/types first at the title screen becomes player 1, the next becomes player 2, and so on (local co-op, up to 4 players). The launcher (`sotr-launcher.exe`) only has one control-related option: whether the mouse also drives the camera.
+Keyboard and up to 4 gamepads all work at once — whoever presses/types first at the title screen becomes player 1 (whichever pad connected first; `patches/common/rexglue-player-one.patch`), the next becomes player 2, and so on (local co-op, up to 4 players, on every platform). The launcher (`sotr-launcher.exe`) only has one control-related option: whether the mouse also drives the camera.
+
+### Local profiles
+
+Every player plays a local profile with its own heroes, so friends who share a PC keep separate saves. A profile is an XUID with a name: the XUID never changes and names the profile's save folder (`<save folder>/<XUID>/`), and the name, kept in `<save folder>/profiles/<XUID>.name`, is only a label. Renaming a profile therefore never moves or hides its saves.
+
+- **Player 1** plays the profile chosen in the launcher's **Profile** row. Its last choice, **Choose in game**, launches without one; then (as with a manual launch) the game asks player 1 to choose when it starts.
+- **Players who join** (press A on another controller) choose in a picker drawn by the game: pick a profile, make a **New profile**, or **Rename** one, using the controller (A choose, Y rename, B cancel; names are typed on an on-screen keyboard) or the keyboard and mouse.
+- **Manage Profiles** in the launcher makes, renames and deletes profiles. Deleting removes that profile's heroes too, so it is only offered there, after a confirmation.
+
+Saves made before profiles become profiles automatically: the old `B13EBABEBABEBABE` folder keeps your player name, and the old Windows co-op guest folders become `Guest2`–`Guest4`. Each Game Version's save folder has its own profiles.
 
 | Mode | Description |
 |------|-------------|
@@ -194,7 +204,7 @@ The generated code needs two game-specific fixes after codegen. Both build scrip
 Diablo III uses EDRAM aliasing in its deferred lighting pass, which historically broke the faster RTV path (world rendered black).
 
 - **ROV** (`render_target_path_d3d12 = "rov"`) — the faithful path. Emulates the EDRAM aliasing correctly out of the box; stable 60fps.
-- **RTV** (`render_target_path_d3d12 = "rtv"`) — the fast path, up to 240fps. Now fully playable once two cvars are set (done automatically by `apply_config.ps1`):
+- **RTV** (`render_target_path_d3d12 = "rtv"`) — the fast path, up to 240fps. Now fully playable once two cvars are set (the launcher passes both when RTV is chosen):
   - `rtv_color_depth_ownership_mode = 8` — cross-map "clear-like" ownership inheritance, restores the ground lighting that D3 seeds via an aliased D24S8 depth clear.
   - `execute_unclipped_draw_vs_on_cpu = true` — runs the vertex shader of unclipped screen-space quads on the CPU to claim only the real EDRAM area, eliminating the lossy round-trips that caused the smoke distortion and the red/blue silhouette lines.
 

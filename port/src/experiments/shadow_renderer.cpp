@@ -616,7 +616,9 @@ class Renderer {
       // thread. It gets no presenter, so ReXGlue never draws into it; this renderer owns its
       // surface.
       context_.CallInUIThreadSynchronous([this] {
-        window_ = rex::ui::Window::Create(context_, kWindowTitle, 1280, 720);
+        window_ = rex::ui::Window::Create(context_, kWindowTitle);
+        if (window_)
+          window_->SetDesiredLogicalSize(1280, 720);
         if (window_ && !window_->Open())
           window_.reset();
       });

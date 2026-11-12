@@ -58,8 +58,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--build-sdk", action="store_true", help="Clone, patch, build and install the pinned SDK")
     parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
-                        help="Build profile (scripts/build_profiles.py): 'experimental' compiles the "
-                             "experimental features into a separate -experimental build folder")
+                        help="Build profile (scripts/build_profiles.py); a non-normal profile builds into its "
+                             "own suffixed build folder")
     parser.add_argument("--arch", choices=sorted(CPU_FLAGS), default=platform.machine(),
                         help="Target architecture; x86_64 runs under Rosetta on Apple Silicon")
     parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
@@ -109,8 +109,6 @@ def main():
                                f"-DSOULS_TITLE_UPDATE={'ON' if update else 'OFF'}"]
             if not args.plain:
                 feature_options.append(f"-DSOULS_BASE_XEX={xex}")
-            # Always passed, so a folder configured for another profile cannot keep its options.
-            feature_options.append("-DSOULS_EXPERIMENTAL=OFF")
             feature_options.extend(profile.cmake_options)
         flags = CPU_FLAGS[args.arch]
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",

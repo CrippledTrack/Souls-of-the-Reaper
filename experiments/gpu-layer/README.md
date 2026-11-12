@@ -1,4 +1,4 @@
-# Shadow renderer: an experimental Vulkan renderer
+# Shadow renderer: a Vulkan renderer (beta)
 
 The Shadow renderer draws Diablo III with Vulkan instead of ReXGlue's emulated Xenos GPU,
 in the style of Unleashed Recompiled's graphics layer. It hooks the game's Direct3D calls,
@@ -7,24 +7,23 @@ captures each frame's draws, and replays them through shaders converted by a for
 first milestone, when it only ran in the shadow of ReXGlue's renderer, drawing the same
 frames side by side.
 
-It is experimental. It has been tested mostly on Windows (on Linux, under Wayland, only the
+It is in beta, and part of every build since it moved out of a separate experimental
+profile. It has been tested mostly on Windows (on Linux, under Wayland, only the
 title screen has been run so far, in both modes; on macOS, through MoltenVK on Apple
 silicon, only `--shadow_renderer_only=true` has been run, from the intro into early Act I
-gameplay, built with `scripts/build_macos.py --profile experimental`), with the verified USA title update
+gameplay, built with `scripts/build_macos.py`), with the verified USA title update
 (title screen through the main menu, the inventory and early Act I gameplay) and the base
 disc (title screen into early Act I gameplay). The hooks use each executable's own addresses
 (`port/src/experiments/guest_addresses.h`); other executables are not supported.
 
 ## Using it
 
-The Shadow renderer is only compiled into **experimental builds**: `--profile experimental`
-on `scripts/build_client.py`, `build_linux.py` or `build_windows.py` (in the launcher: enable
-experimental options, then build with "Experimental build" ticked). They go into their own
-`-experimental` build folders beside the normal builds, which contain none of this code
-(`SOULS_EXPERIMENTAL` in `port/CMakeLists.txt`; profiles are declared in
-`scripts/build_profiles.py`). `scripts/run_linux.py --profile experimental` runs one.
+The Shadow renderer is compiled into every build (`SOULS_SHADOW_RENDERER` in
+`port/CMakeLists.txt`). In the launcher it is the **Shadow (beta)** choice under Render Path
+(Linux) or Renderer (Windows), offered when the build's shader converter is staged beside it.
+On macOS, which the launcher does not support yet, it is the only renderer for now.
 
-In an experimental build both modes are off unless asked for on the command line:
+Both modes are off unless asked for on the command line, so a normal launch is unaffected:
 
 | Option | What it does |
 |---|---|
@@ -60,7 +59,7 @@ automatically when the converter changes.
 **Requirements:** a Vulkan 1.3 GPU with buffer device address, descriptor indexing,
 `shaderInt64` and dynamic rendering; an SDK built with
 `patches/common/rexglue-host-rendering.patch` (the build scripts rebuild the SDK when the
-patch set changes); and the XenosRecomp fork, built by hand as described below.
+patch set changes); and the XenosRecomp fork, which the build makes for you (below).
 
 ## Building the shader converter
 
@@ -68,13 +67,15 @@ The XenosRecomp fork is not stored in this repository, only its changes
 (`xenosrecomp-diablo3.patch`). Without it the game still captures shaders but cannot convert
 them, and the Shadow renderer draws nothing.
 
-**The build does this for you.** `python scripts/build_client.py --profile experimental ...`
-(what the launcher runs for an experimental build)
-fetches the commit pinned in `xenosrecomp.lock.json`, applies the patch, builds the converter
-and copies it into `<build>/xenosrecomp/`. It runs after the game is built and is kept apart
-from it: if it fails, the game build still stands and a warning is printed. It is rebuilt
-when the pin or the patch changes. `build_linux.py` and `build_windows.py` on their own do
-not build it; they stage it into an experimental build when `tools/XenosRecomp/build` exists.
+**The build does this for you.** `python scripts/build_client.py ...` (what the launcher
+runs) treats the converter like the ReXGlue SDK: a pinned component built once, after the
+SDK and before the game ("Build shader converter (one-time)"). It fetches the commit pinned
+in `xenosrecomp.lock.json` with its submodules (about 0.5 GB, including prebuilt DXC),
+applies the patch and builds it, and is refused by `--no-sdk-download` until the download is
+approved. A failure fails the build. It is rebuilt when the pin or the patch changes, and
+every game build gets it copied into `<build>/xenosrecomp/`. `build_linux.py`,
+`build_windows.py` and `build_macos.py` on their own do not build it; they stage it when
+`tools/XenosRecomp/build` exists. On macOS (not driven by `build_client.py`) build it by hand.
 
 To do it by hand instead (note that an automatic build resets `tools/XenosRecomp` to the
 pinned commit plus the patch, discarding local edits there): from
@@ -91,7 +92,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILE
 cmake --build build --target XenosRecomp
 ```
 
-Then rebuild the executable (`python scripts/build_windows.py --profile experimental --skip-codegen` for the base
+Then rebuild the executable (`python scripts/build_windows.py --skip-codegen` for the base
 disc, with `--title-update usa` for the title update; `scripts/build_linux.py` on Linux).
 The build copies `XenosRecomp.exe` (`XenosRecomp` on Linux), its DXC libraries and
 `shader_common.h` into `<build>/xenosrecomp/` when `tools/XenosRecomp/build` exists.

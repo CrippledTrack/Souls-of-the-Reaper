@@ -1,0 +1,81 @@
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index dfd417d..69e5eeb 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -113,6 +113,12 @@ class InputSystem : public system::IInputSystem {
+   std::vector<DeviceInfo> devices_;
+   std::vector<InputDriver*> device_owners_;
+ 
++  /// Until something on player 1 presses a button, the first other pad to
++  /// press takes player 1's place (the pads swap guest users): whoever presses
++  /// first is player 1, whichever pad connected first. True once that is settled.
++  bool player_one_claimed_ = false;
++  bool ClaimPlayerOne(DeviceId id);
++
+   std::bitset<kMaxGuestUsers> connected_users_;
+   uint32_t last_used_user_ = 0;
+   // {left, right} stick maxima, scaling the deadzone percentages.
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index cb8672b..09882ba 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -384,6 +384,43 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+   return result;
+ }
+ 
++bool InputSystem::ClaimPlayerOne(DeviceId id) {
++  player_one_claimed_ = true;
++  auto claimer = std::find_if(devices_.begin(), devices_.end(),
++                              [&](const DeviceInfo& d) { return d.id == id; });
++  if (claimer == devices_.end() || claimer->synthetic || claimer->ordinal == 0) {
++    return false;
++  }
++  // Swap guest users with the pad on player 1, if one is there.
++  for (auto& device : devices_) {
++    if (!device.synthetic && device.ordinal == 0) {
++      device.ordinal = claimer->ordinal;
++      active_devices_.Forget(device.id);
++    }
++  }
++  claimer->ordinal = 0;
++  active_devices_.Forget(id);
++  std::vector<size_t> order(devices_.size());
++  for (size_t i = 0; i < order.size(); i++) {
++    order[i] = i;
++  }
++  std::stable_sort(order.begin(), order.end(),
++                   [&](size_t a, size_t b) { return devices_[a].ordinal < devices_[b].ordinal; });
++  std::vector<DeviceInfo> devices;
++  std::vector<InputDriver*> owners;
++  for (size_t i : order) {
++    devices.push_back(devices_[i]);
++    owners.push_back(device_owners_[i]);
++  }
++  devices_ = std::move(devices);
++  device_owners_ = std::move(owners);
++  if (assignment_) {
++    assignment_->OnDevicesChanged(devices_);
++  }
++  REXLOG_INFO("input: the first pad to press a button is player 1");
++  return true;
++}
++
+ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, X_INPUT_STATE* out_state) {
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_) {
+@@ -405,6 +442,15 @@ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, X_INPUT_STATE* out_stat
+     if (driver->GetDeviceState(id, &state) != X_ERROR_SUCCESS) {
+       continue;
+     }
++    if (!player_one_claimed_ && static_cast<uint16_t>(state.gamepad.buttons) != 0) {
++      if (user_index == 0) {
++        player_one_claimed_ = true;
++      } else if (ClaimPlayerOne(id)) {
++        // This pad is player 1 now: the title sees its press there on its next
++        // poll, and this user answers with whatever pad took its place.
++        return GetStateForUI(user_index, out_state);
++      }
++    }
+     active_devices_.Observe(user_index, id, state.gamepad);
+     if (!any) {
+       merged = state;

@@ -15,18 +15,18 @@ index 52116f1..6e4d98e 100644
      is_active_callback_ = is_active_callback;
    }
 diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
-index 316d089..e7c4406 100644
+index c64ecd8..dfd417d 100644
 --- a/include/rex/input/input_system.h
 +++ b/include/rex/input/input_system.h
-@@ -12,6 +12,7 @@
- 
+@@ -13,6 +13,7 @@
  #include <array>
  #include <atomic>
+ #include <bitset>
 +#include <functional>
  #include <memory>
+ #include <utility>
  #include <vector>
- 
-@@ -55,6 +56,13 @@ class InputSystem : public system::IInputSystem {
+@@ -72,6 +73,13 @@ class InputSystem : public system::IInputSystem {
    enum class PadFamily : uint32_t { kNone = 0, kXbox = 1, kPlayStation = 2 };
    PadFamily ActivePadFamily(uint32_t user_index) const;
  
@@ -38,9 +38,9 @@ index 316d089..e7c4406 100644
 +  bool DialogGamepad(X_INPUT_GAMEPAD* out);
 +
   private:
+   using JoystickValue = std::pair<uint16_t, uint16_t>;
    /// Re-enumerates every driver and notifies the assignment when the set
-   /// changed.
-@@ -66,6 +74,11 @@ class InputSystem : public system::IInputSystem {
+@@ -91,6 +99,11 @@ class InputSystem : public system::IInputSystem {
    rex::ui::Window* window_ = nullptr;
  
    std::vector<std::unique_ptr<InputDriver>> drivers_;
@@ -53,7 +53,7 @@ index 316d089..e7c4406 100644
    std::unique_ptr<DeviceAssignment> assignment_;
    ActiveDeviceTracker active_devices_;
 diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
-index cf0e3d1..0ecc691 100644
+index be1f9b8..99544da 100644
 --- a/include/rex/input/sdl/sdl_input_driver.h
 +++ b/include/rex/input/sdl/sdl_input_driver.h
 @@ -35,6 +35,7 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
@@ -65,10 +65,10 @@ index cf0e3d1..0ecc691 100644
    X_RESULT GetDeviceCapabilities(DeviceId id, uint32_t flags,
                                   X_INPUT_CAPABILITIES* out_caps) override;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 2cc62fc..ef01f81 100644
+index 9203033..cb8672b 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
-@@ -57,6 +57,7 @@ void InputSystem::Shutdown() {
+@@ -71,6 +71,7 @@ void InputSystem::Shutdown() {
  }
  
  void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
@@ -76,7 +76,7 @@ index 2cc62fc..ef01f81 100644
    drivers_.push_back(std::move(driver));
  }
  
-@@ -68,11 +69,46 @@ void InputSystem::AttachWindow(rex::ui::Window* window) {
+@@ -82,11 +83,46 @@ void InputSystem::AttachWindow(rex::ui::Window* window) {
  }
  
  void InputSystem::SetActiveCallback(std::function<bool()> callback) {
@@ -125,10 +125,10 @@ index 2cc62fc..ef01f81 100644
    assignment_ = std::move(assignment);
    if (assignment_) {
 diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
-index c7c440d..2613c5a 100644
+index 57f65c4..da632f7 100644
 --- a/src/input/sdl/sdl_input_driver.cpp
 +++ b/src/input/sdl/sdl_input_driver.cpp
-@@ -17,6 +17,7 @@
+@@ -20,6 +20,7 @@
  #include <rex/cvar.h>
  #include <rex/input/flags.h>
  #include <rex/input/sdl/sdl_input_driver.h>
@@ -136,7 +136,7 @@ index c7c440d..2613c5a 100644
  #include <rex/logging.h>
  #include <rex/ui/virtual_key.h>
  
-@@ -224,6 +225,22 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+@@ -348,6 +349,22 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
    return X_ERROR_SUCCESS;
  }
  
@@ -160,7 +160,7 @@ index c7c440d..2613c5a 100644
    assert(sdl_events_initialized_ && SDL_Gamepad_initialized_);
  
 diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
-index 5a572ce..35d56a6 100644
+index e38cd25..98f3e02 100644
 --- a/src/kernel/xam/xam_ui.cpp
 +++ b/src/kernel/xam/xam_ui.cpp
 @@ -9,6 +9,9 @@
@@ -173,7 +173,7 @@ index 5a572ce..35d56a6 100644
  #include <rex/logging.h>
  #include <rex/runtime.h>
  #include <rex/string.h>
-@@ -16,11 +19,13 @@
+@@ -16,6 +19,7 @@
  #include <rex/system/kernel_state.h>
  
  #include <imgui.h>
@@ -181,13 +181,7 @@ index 5a572ce..35d56a6 100644
  
  REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
                      "Don't display any UI, using defaults for prompts as needed");
- #include <rex/kernel/xam/private.h>
- #include <rex/hook.h>
-+#include <rex/input/input_system.h>
- #include <rex/types.h>
- #include <rex/system/xtypes.h>
- #include <rex/thread.h>
-@@ -339,6 +344,11 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
+@@ -371,6 +375,11 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
    return result;
  }
  
@@ -199,7 +193,7 @@ index 5a572ce..35d56a6 100644
  class KeyboardInputDialog : public XamDialog {
   public:
    KeyboardInputDialog(rex::ui::ImGuiDrawer* imgui_drawer, std::string title,
-@@ -360,6 +370,16 @@ class KeyboardInputDialog : public XamDialog {
+@@ -392,6 +401,16 @@ class KeyboardInputDialog : public XamDialog {
      text_ = default_text;
      text_buffer_.resize(max_length);
      rex::string::copy_truncating(text_buffer_.data(), default_text_, text_buffer_.size());
@@ -216,7 +210,7 @@ index 5a572ce..35d56a6 100644
    }
  
    const std::string& text() const { return text_; }
-@@ -376,30 +396,28 @@ class KeyboardInputDialog : public XamDialog {
+@@ -408,30 +427,28 @@ class KeyboardInputDialog : public XamDialog {
        if (description_.size()) {
          ImGui::TextWrapped("%s", description_.c_str());
        }
@@ -261,7 +255,7 @@ index 5a572ce..35d56a6 100644
        ImGui::EndPopup();
      } else {
        Close();
-@@ -407,6 +425,190 @@ class KeyboardInputDialog : public XamDialog {
+@@ -439,6 +456,190 @@ class KeyboardInputDialog : public XamDialog {
    }
  
   private:
@@ -452,7 +446,7 @@ index 5a572ce..35d56a6 100644
    bool has_opened_ = false;
    std::string title_;
    std::string description_;
-@@ -415,6 +617,15 @@ class KeyboardInputDialog : public XamDialog {
+@@ -447,6 +648,15 @@ class KeyboardInputDialog : public XamDialog {
    std::vector<char> text_buffer_;
    std::string text_ = "";
    bool cancelled_ = true;

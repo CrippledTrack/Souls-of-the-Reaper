@@ -38,6 +38,8 @@ WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
 # Rough upper bounds measured on Linux RelWithDebInfo builds.
 SDK_BYTES, VARIANT_BYTES, CODEGEN_BYTES = 3 * GIB, 1 * GIB, GIB // 2
+# XenosRecomp with its submodules (prebuilt DXC) and build: about 480 MB.
+CONVERTER_BYTES = GIB // 2
 
 
 class BuildError(Exception):
@@ -100,7 +102,8 @@ def missing_tools(args, compile_needed, need_patcher):
         problems.append("CMake 3.25 or newer was not found; install it or choose its path.")
     elif (cmake_version(args.cmake) or (0, 0)) < (3, 25):
         problems.append(f"{args.cmake} is older than CMake 3.25.")
-    for tool in ("ninja", "clang", "clang++"):
+    # clang-cl (part of the LLVM installer) builds the shader converter on Windows.
+    for tool in ("ninja", "clang", "clang++") + (("clang-cl",) if WINDOWS else ()):
         if not shutil.which(tool):
             problems.append(f"{tool} was not found on PATH.")
     if compile_needed and platform.system() not in ("Linux", "Windows"):
@@ -152,7 +155,7 @@ def same_filesystem(a, b):
     return os.stat(existing_ancestor(a)).st_dev == os.stat(existing_ancestor(b)).st_dev
 
 
-def check_free_space(args, need_base, need_separate_update, need_sdk, compile_needed):
+def check_free_space(args, need_base, need_separate_update, need_sdk, compile_needed, need_converter=False):
     """Fail early when a drive the build writes to lacks room for what is still to do."""
     writes = []  # (folder, bytes)
     if need_base:  # an interrupted extraction resumes, so only the rest is needed
@@ -164,6 +167,8 @@ def check_free_space(args, need_base, need_separate_update, need_sdk, compile_ne
         writes.append((args.game_dir_update, disc))
     if need_sdk:
         writes.append((args.sdk_source, SDK_BYTES))
+    if need_converter:
+        writes.append((shader_converter.SOURCE, CONVERTER_BYTES))
     if compile_needed:
         writes.append((ROOT / "port", VARIANT_BYTES * len(args.variants) + CODEGEN_BYTES * 2))
     needed = {}  # device -> [folder, bytes]
@@ -237,41 +242,25 @@ def variant_build_dir(args, variant):
     return ROOT / "port/out/build" / profile_of(args).build_name(f"{HOST}-amd64", update, plain)
 
 
-class ConverterStep:
-    """Profile step "shader_converter": build the Shadow renderer's shader converter
-    (scripts/shader_converter.py) and copy it beside each game built for the profile."""
-    title = "Build shader converter"
-    failure = ("The shader converter was not built ({error}). The game itself is built; the Shadow "
-               "renderer cannot draw until the converter builds.")
-
-    @staticmethod
-    def needed(args):
-        return shader_converter.state() != "current" or not all(
-            variant_build_dir(args, v).is_dir() and shader_converter.staged(variant_build_dir(args, v))
-            for v in args.variants)
-
-    @staticmethod
-    def run(args):
-        if shader_converter.state() != "current":
-            shader_converter.build(args.cmake, args.jobs, run)
-        for variant in args.variants:
-            build = variant_build_dir(args, variant)
-            if build.is_dir() and not shader_converter.staged(build):
-                shader_converter.stage(build)
-                print(f"Staged the shader converter in {build / 'xenosrecomp'}", flush=True)
+def converter_state():
+    """The Shadow renderer's shader converter: "missing", "stale" or "current"."""
+    return shader_converter.state()
 
 
-# Extra steps a build profile can ask for (Profile.steps), run after the game is compiled.
-STEPS = {"shader_converter": ConverterStep}
+def build_converter(args):
+    """Fetch and build the pinned shader converter (XenosRecomp), like the SDK a
+    one-time component that every game build stages beside its executable."""
+    shader_converter.build(args.cmake, args.jobs, run)
 
 
-def profile_step(args, step):
-    """Runs a profile's extra step. It never fails the build: the game itself is complete
-    by now, so a problem here is reported as a warning."""
-    try:
-        step.run(args)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        print("::warning::" + step.failure.format(error=error), flush=True)
+def build_and_stage(args, variant):
+    """Compile a game build, then make sure the shader converter sits beside it. The
+    game's CMake copies it after linking, but only when the executable was relinked."""
+    build_variant(args, variant)
+    build = variant_build_dir(args, variant)
+    if shader_converter.state() == "current" and build.is_dir() and not shader_converter.staged(build):
+        shader_converter.stage(build)
+        print(f"Staged the shader converter in {build / 'xenosrecomp'}", flush=True)
 
 
 def plan(args):
@@ -283,9 +272,9 @@ def plan(args):
     need_update = wanted_update and not update_ready(game_update_dir(args))
     compile_needed = bool(args.variants) and not args.data_only
     need_sdk = compile_needed and not sdk_installed(args)
-    # The profile's own steps and tools: separate from the game build above and run after it.
+    # The Shadow renderer's shader converter, a pinned component built once like the SDK.
+    need_converter = compile_needed and converter_state() != "current"
     profile = profile_of(args)
-    extra_steps = [STEPS[name] for name in profile.steps] if compile_needed else []
 
     if need_base and not args.iso:
         raise BuildError(f"No extracted disc in {args.game_dir}; choose your disc image (ISO).")
@@ -306,13 +295,17 @@ def plan(args):
         raise BuildError("The pinned ReXGlue SDK is not built yet and downloading it was not approved."
                          if sdk_state(args) == "missing" else
                          "The installed ReXGlue SDK is out of date and rebuilding it was not approved.")
+    if need_converter and args.no_sdk_download:
+        raise BuildError("The Shadow renderer's shader converter (XenosRecomp) is not built yet and "
+                         "downloading it was not approved." if converter_state() == "missing" else
+                         "The shader converter (XenosRecomp) is out of date and rebuilding it was not approved.")
 
     if need_base:
         verify_iso(args.iso)
     if need_update:
         verify_package(args.title_update)
 
-    check_free_space(args, need_base, need_update and not overlay, need_sdk, compile_needed)
+    check_free_space(args, need_base, need_update and not overlay, need_sdk, compile_needed, need_converter)
 
     if need_base:
         steps.append(("Extract disc image", lambda: extract_disc.extract(args.iso, args.game_dir)))
@@ -336,13 +329,12 @@ def plan(args):
         else:
             import build_linux
             steps.append(("Build ReXGlue SDK (one-time)", lambda: build_linux.build_sdk(sdk, args.cmake)))
+    if need_converter:
+        steps.append(("Build shader converter (one-time)", lambda: build_converter(args)))
     if compile_needed:
         for variant in args.variants:
             label = LABELS[variant] + (f", {profile.label}" if profile.id != "normal" else "")
-            steps.append((f"Build {label} (codegen and compile)", lambda v=variant: build_variant(args, v)))
-    for extra in extra_steps:
-        if extra.needed(args):
-            steps.append((f"{extra.title} ({profile.label})", lambda e=extra: profile_step(args, e)))
+            steps.append((f"Build {label} (codegen and compile)", lambda v=variant: build_and_stage(args, v)))
     return steps
 
 
@@ -362,9 +354,8 @@ def main(argv=None):
                         help="Stage the update as a complete separate folder here. By default the update is a small "
                              "update/ overlay inside --game-dir (an existing ./game-update is still used)")
     parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
-                        help="Build profile (scripts/build_profiles.py). 'experimental' compiles the experimental "
-                             "features into separate -experimental builds beside the normal ones and runs its "
-                             "extra steps (the Shadow renderer's shader converter) after the game is built")
+                        help="Build profile (scripts/build_profiles.py); a non-normal profile builds into its "
+                             "own suffixed build folders beside the normal ones")
     parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, help="SDK install (default: the profile's, under tools/)")
     parser.add_argument("--patcher", type=pathlib.Path, help="Existing d3-patch executable")
@@ -372,8 +363,8 @@ def main(argv=None):
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
     parser.add_argument("--regenerate", action="store_true", help="Rerun codegen even if sources are current")
     parser.add_argument("--no-sdk-download", action="store_true",
-                        help="Fail instead of cloning and building the pinned SDK when it is missing "
-                             "(the launcher passes this until the user approves the download)")
+                        help="Fail instead of cloning and building the pinned SDK or shader converter when "
+                             "either is missing (the launcher passes this until the user approves the download)")
     parser.add_argument("--print-sdk-status", action="store_true",
                         help="Print the ReXGlue SDK state (pinned commit, missing/stale/current) and the "
                              "profile's own tools as JSON and stop")
@@ -402,7 +393,10 @@ def main(argv=None):
         if WINDOWS:
             build_windows.add_tool_paths()
         profile = profile_of(args)
+        converter = shader_converter.lock()
         print(json.dumps({"state": sdk_state(args), "repository": lock["repository"], "commit": lock["commit"],
+                          "converter": {"state": converter_state(), "repository": converter["repository"],
+                                        "commit": converter["commit"]},
                           "profile": {"id": profile.id, "label": profile.label, "summary": profile.summary,
                                       "tools": profile.tool_status()}}))
         return

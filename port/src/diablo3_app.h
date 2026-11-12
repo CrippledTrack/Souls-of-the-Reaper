@@ -17,7 +17,7 @@
 #include <rex/logging.h>
 
 #include "cache_device.h"
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
 #include "experiments/shadow_renderer.h"
 #endif
 #include "window_features.h"
@@ -48,7 +48,7 @@ class Diablo3App : public rex::ReXApp {
 #endif
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
     d3::shadow::PreSetup();  // experiment: --shadow_renderer_only presents in the game window
 #endif
 #ifdef SOULS_GPU_PLUGIN
@@ -97,7 +97,7 @@ class Diablo3App : public rex::ReXApp {
 #endif
     (void)drawer;
     title_ = CreateWindowTelemetry(app_context(), window());
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
     // ReXGlue's presenter, looked up when a capture is taken (the graphics system is
     // attached to the runtime after the dialogs are created).
     d3::shadow::Initialize(app_context(), user_data_root(), drawer,
@@ -109,14 +109,14 @@ class Diablo3App : public rex::ReXApp {
                            window());  // experiment
 #endif
   }
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
   // Experiment: ReXGlue's overlays for the Vulkan renderer when it owns the game window.
   std::unique_ptr<rex::ui::ImmediateDrawer> OnCreateImmediateDrawer() override {
     return d3::shadow::CreateOverlayDrawer();
   }
 #endif
   void OnShutdown() override {
-#ifdef SOULS_EXPERIMENTAL
+#ifdef SOULS_SHADOW_RENDERER
     d3::shadow::Shutdown();
 #endif
     title_.reset();

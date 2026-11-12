@@ -263,6 +263,23 @@ fn lock_sources(root: &Path, log: &dyn Fn(&str), cancelled: &dyn Fn() -> bool) -
     }
 }
 
+/// Names the fetched commit with its release tag (a shallow fetch brings no tags), so the
+/// game's Extras version label can show it (port/CMakeLists.txt reads `git describe`).
+/// Best effort: the label only loses the tag when this fails, and an existing tag stays.
+pub fn tag_release(root: &Path, git: &Path, tag: &str) {
+    if !root.join(".git").exists() {
+        return;
+    }
+    let _ = Command::new(git)
+        .args(["tag", tag, "HEAD"])
+        .current_dir(root)
+        .envs(GIT_NO_PROMPT)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Makes sure the sources for `commit` are on disk and returns their folder.
 /// `git` is the git executable, if one was found. Progress goes to `log`;
 /// once `cancelled` returns true the fetch stops with [`CANCELLED`]. Fetches

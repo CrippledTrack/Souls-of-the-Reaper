@@ -96,8 +96,8 @@ def main():
                                      allow_abbrev=False)
     parser.add_argument("--build-sdk", action="store_true", help="Clone, patch, build and install the pinned SDK")
     parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
-                        help="Build profile (scripts/build_profiles.py): 'experimental' compiles the "
-                             "experimental features into a separate -experimental build folder")
+                        help="Build profile (scripts/build_profiles.py); a non-normal profile builds into its "
+                             "own suffixed build folder")
     parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, help="SDK install (default: the profile's, under tools/)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
@@ -135,8 +135,7 @@ def main():
                    f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}"]
         if args.extra_features:
             options.append(f"-DSOULS_BASE_XEX={xex}")
-        # Always passed, so a folder configured for another profile cannot keep its options.
-        options += ["-DSOULS_EXPERIMENTAL=OFF", *profile.cmake_options]
+        options += [*profile.cmake_options]
         run("cmake", "-S", ROOT / "port", "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
             "-DCMAKE_CXX_COMPILER=clang++", "-DCMAKE_CXX_FLAGS=-march=x86-64-v2",
             f"-DCMAKE_PREFIX_PATH={args.sdk_prefix}", *options)

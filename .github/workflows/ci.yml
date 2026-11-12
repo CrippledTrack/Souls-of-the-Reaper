@@ -80,7 +80,7 @@ jobs:
 
       - name: Host tests and lints
         run: |
-          # The generated page and icons (gitignored) are needed to compile the host.
-          npm run prepare-ui
+          # The generated icons (gitignored) are needed to compile the host.
+          npm run icons
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

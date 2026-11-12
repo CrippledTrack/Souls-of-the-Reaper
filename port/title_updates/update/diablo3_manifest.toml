@@ -1,7 +1,7 @@
 # Verified USA update, execution version 0x202; kept separate from the base disc.
 [project]
 name = "diablo3"
-sdk_version = "0.10.0"
+sdk_version = "0.10.1"
 game_root = "../../../game-update"
 
 [entrypoint]

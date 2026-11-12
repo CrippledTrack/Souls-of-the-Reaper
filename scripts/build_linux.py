@@ -53,8 +53,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--build-sdk", action="store_true", help="Clone, patch, build and install the pinned SDK")
     parser.add_argument("--profile", choices=sorted(build_profiles.PROFILES), default="normal",
-                        help="Build profile (scripts/build_profiles.py): 'experimental' compiles the "
-                             "experimental features into a separate -experimental build folder")
+                        help="Build profile (scripts/build_profiles.py); a non-normal profile builds into its "
+                             "own suffixed build folder")
     parser.add_argument("--sdk-source", type=pathlib.Path, help="SDK checkout (default: the profile's, under tools/)")
     parser.add_argument("--sdk-prefix", type=pathlib.Path, help="SDK install (default: the profile's, under tools/)")
     parser.add_argument("--game-dir", type=pathlib.Path, default=ROOT / "game")
@@ -105,8 +105,6 @@ def main():
         if args.extra_features:
             feature_options.append(f"-DSOULS_BASE_XEX={xex}")
         if not args.probe:
-            # Always passed, so a folder configured for another profile cannot keep its options.
-            feature_options.append("-DSOULS_EXPERIMENTAL=OFF")
             feature_options.extend(profile.cmake_options)
         run(cmake, "-S", source, "-B", build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_CXX_COMPILER=clang++",

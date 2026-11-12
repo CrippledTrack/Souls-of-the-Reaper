@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Souls of the Reaper</title>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/panels.css">
+  <script type="module" src="js/boot.js"></script>
+</head>
+<body>
+  <div class="stage">
+    <div id="launchStatus" role="status" aria-live="polite"></div>
+    <section id="setup" class="panel" hidden aria-label="Launch settings" data-i18n-attr="aria-label:settings.title">
+      <h2 data-i18n="settings.title">Launch settings</h2>
+      <label><span data-i18n="settings.gameDir">Game folder</span><input id="gameDir" type="text" spellcheck="false"></label>
+      <label><span data-i18n="settings.saveDir">Save folder</span><input id="userDataRoot" type="text" spellcheck="false"></label>
+      <label><span data-i18n="settings.updateSaveDir">Update save folder</span><input id="userDataRootUpdate" type="text" spellcheck="false"></label>
+      <label id="deviceLabel"><span data-i18n="settings.vulkanDevice">Vulkan device (blank = automatic)</span><input id="vulkanDevice" type="number" min="0" max="32"></label>
+      <div id="videoLabel" class="field"><span data-i18n="settings.displayServer">Display server</span><input id="videoDriver" type="hidden"><span class="seg" role="radiogroup" aria-label="Display server" data-i18n-attr="aria-label:settings.displayServer"><button type="button" role="radio" data-video="" data-i18n="value.auto">Auto</button><button type="button" role="radio" data-video="wayland">Wayland</button><button type="button" role="radio" data-video="x11">X11</button></span></div>
+      <fieldset id="developmentBox" hidden><legend data-i18n="settings.development">Development builds</legend>
+        <p data-i18n="settings.development.note">Builds of this launcher's own version keep their saves apart from your normal ones.</p>
+        <label><span data-i18n="settings.saveDir.development">Development save folder</span><input id="userDataRootDevelopment" type="text" spellcheck="false"></label>
+        <label><span data-i18n="settings.updateSaveDir.development">Development update save folder</span><input id="userDataRootUpdateDevelopment" type="text" spellcheck="false"></label>
+      </fieldset>
+      <label><span data-i18n="settings.buildsFound">Builds found</span><pre id="buildList"></pre></label>
+      <p data-i18n="settings.help">Empty fields use the folder shown. The title update uses the same game folder as Base (its update/ folder holds the update) but keeps separate saves. Use the in-game F4 menu for key bindings.</p>
+      <p id="launcherVersion"></p>
+      <div class="acts"><button id="openBuild" type="button" hidden data-i18n="settings.openBuild">Build from disc image…</button><button id="cancelSetup" type="button" data-i18n="common.cancel">Cancel</button><button id="saveSetup" type="button" data-i18n="common.save">Save</button></div>
+    </section>
+    <section id="buildPanel" class="panel" hidden aria-label="Build the game" data-i18n-attr="aria-label:build.title">
+      <h2 data-i18n="build.title">Build the game</h2>
+      <p id="buildIntro"></p>
+      <label><span data-i18n="build.iso">Disc image (ISO)</span><span class="pick"><input id="buildIso" type="text" spellcheck="false"><button type="button" data-pick="iso" aria-label="Browse for disc image" data-i18n-attr="aria-label:build.iso.browse">…</button></span></label>
+      <label><span data-i18n="build.titleUpdate">Title Update package (optional)</span><span class="pick"><input id="buildTitleUpdate" type="text" spellcheck="false" placeholder="Path to the title update package" data-i18n-attr="placeholder:build.titleUpdate.placeholder"><button type="button" data-pick="titleUpdate" aria-label="Browse for title update" data-i18n-attr="aria-label:build.titleUpdate.browse">…</button></span></label>
+      <div id="versionRow" class="field" hidden><span data-i18n="build.version">Version</span><span class="seg" role="radiogroup" aria-label="Version" data-i18n-attr="aria-label:build.version"><button type="button" role="radio" data-channel="stable"></button><button type="button" role="radio" data-channel="development"></button></span></div>
+      <fieldset id="buildVariants"><legend data-i18n="build.what">What to build</legend>
+        <label><input id="optUpdate" type="checkbox"><span data-i18n="build.option.update">Title Update</span></label>
+        <label><input id="optExtras" type="checkbox" checked><span data-i18n="build.option.extras">Optional PC features</span></label>
+        <p id="buildSummary"></p>
+      </fieldset>
+      <label id="cmakeLabel"><span data-i18n="build.cmake">CMake 3.25+ (blank = from PATH)</span><span class="pick"><input id="buildCmake" type="text" spellcheck="false"><button type="button" data-pick="cmake" aria-label="Browse for CMake" data-i18n-attr="aria-label:build.cmake.browse">…</button></span></label>
+      <label id="toolsLabel"><span data-i18n="build.tools">Build tools</span><ul id="toolList"></ul></label>
+      <div id="wingetRow" hidden><button id="installTools" type="button" data-i18n="build.winget.install">Install missing tools with winget</button><small id="wingetNote"></small></div>
+      <pre id="buildLog"></pre>
+      <div id="sdkPrompt" role="alertdialog" aria-label="Download the ReXGlue SDK" data-i18n-attr="aria-label:build.download.title" hidden>
+        <span id="sdkPromptText"></span>
+        <div class="acts"><button id="sdkNo" type="button" data-i18n="build.download.no">Not now</button><button id="sdkYes" type="button" data-i18n="build.download.yes">Download and build</button></div>
+      </div>
+      <div id="buildStep" role="status" aria-live="polite"></div>
+      <div class="acts"><button id="recheckTools" type="button" data-i18n="build.checkTools">Check tools</button><button id="closeBuild" type="button" data-i18n="common.close">Close</button><button id="cancelBuild" type="button" hidden data-i18n="build.cancel">Cancel build</button><button id="startBuild" type="button" data-i18n="build.start">Build</button></div>
+    </section>
+    <section id="savePrompt" class="panel" role="alertdialog" hidden aria-label="Development saves" data-i18n-attr="aria-label:saves.title">
+      <h2 data-i18n="saves.title">Development saves</h2>
+      <p id="savePromptText"></p>
+      <div class="acts"><button id="saveCancel" type="button" data-i18n="common.cancel">Cancel</button><button id="saveFresh" type="button" data-i18n="saves.fresh">Start fresh</button><button id="saveCopy" type="button" data-i18n="saves.copy">Copy my saves</button></div>
+    </section>
+    <section id="profilePrompt" class="panel" role="alertdialog" hidden aria-label="Delete profile" data-i18n-attr="aria-label:profiles.deleteTitle">
+      <h2 data-i18n="profiles.deleteTitle">Delete profile</h2>
+      <p id="profilePromptText"></p>
+      <div class="acts"><button id="profileKeep" type="button" data-i18n="common.cancel">Cancel</button><button id="profileDelete" type="button" data-i18n="profiles.delete">Delete</button></div>
+    </section>
+    <div class="winctl">
+      <button id="setupBtn" class="wbtn" type="button" aria-label="Launch settings" title="Launch settings" data-i18n-attr="aria-label:settings.title;title:settings.title"><span class="wico wico-gear">⚙</span></button>
+      <button id="winClose" class="wbtn" type="button" aria-label="Close" title="Close" data-i18n-attr="aria-label:common.close;title:common.close"><span class="wico wico-close"></span></button>
+    </div>
+    <div class="langctl">
+      <button id="langBtn" class="langbtn" type="button" aria-haspopup="true" aria-expanded="false" title="Language" data-i18n-attr="title:menu.language;aria-label:menu.language"><span id="langBtnLabel"></span></button>
+      <div id="langPopup" class="lang-popup" role="menu"></div>
+    </div>
+    <div class="inner">
+      <div class="head" id="dragHead">
+        <p class="eyebrow">Diablo III · Reaper of Souls</p>
+        <h1 class="title">Souls<i>·</i>of<i>·</i>the<i>·</i>Reaper</h1>
+        <div class="flourish"><span class="gem"></span></div>
+      </div>
+      <div class="midwrap"><div class="plaque" id="menu"></div></div>
+      <div class="foot">
+        <button class="play" id="playBtn">Play</button>
+        <a class="fontlink" href="https://fernandoforeroart.com/old-fenris-diablo-iv-official-font" target="_blank" rel="noopener" title="“Old Fenris” font by Fernando Forero" aria-label="Old Fenris font by Fernando Forero — visit the creator" data-i18n-attr="title:credit.font;aria-label:credit.font.visit"><img src="assets/font-credit.png" alt="Old Fenris — Fernando Forero" draggable="false"></a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

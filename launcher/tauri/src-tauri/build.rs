@@ -3,8 +3,15 @@
 //! report came from. `SOTR_COMMIT` / `SOTR_DIRTY` in the environment win over
 //! git, for CI and source archives without git data. SOTR_REQUIRE_CLEAN=1
 //! fails the build when the revision is unknown or the tree has changes.
+//! It also embeds the release a standalone launcher builds by default
+//! (SOTR_STABLE_TAG, SOTR_STABLE_COMMIT): from those variables when both are
+//! set (the release workflow sets them to the release it builds), otherwise
+//! from launcher/stable.json.
 
-use std::{env, path::PathBuf, process::Command};
+use std::{env, fs, path::PathBuf, process::Command};
+
+#[path = "src/stable_pin.rs"]
+mod stable_pin;
 
 fn git(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
@@ -60,5 +67,21 @@ fn main() {
             if dirty { "modified" } else { "from an unknown revision" }
         );
     }
+    println!("cargo:rerun-if-env-changed=SOTR_STABLE_TAG");
+    println!("cargo:rerun-if-env-changed=SOTR_STABLE_COMMIT");
+    let pin = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default()).join("../../stable.json");
+    println!("cargo:rerun-if-changed={}", pin.display());
+    let given = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let (tag, commit) = match (given("SOTR_STABLE_TAG"), given("SOTR_STABLE_COMMIT")) {
+        (Some(tag), Some(commit)) => stable_pin::check(&tag, &commit)
+            .unwrap_or_else(|e| panic!("SOTR_STABLE_TAG / SOTR_STABLE_COMMIT: {e}")),
+        (None, None) => {
+            let text = fs::read_to_string(&pin).unwrap_or_else(|e| panic!("Unable to read {}: {e}", pin.display()));
+            stable_pin::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", pin.display()))
+        }
+        _ => panic!("Set both SOTR_STABLE_TAG and SOTR_STABLE_COMMIT, or neither (launcher/stable.json is used)."),
+    };
+    println!("cargo:rustc-env=SOTR_STABLE_TAG={tag}");
+    println!("cargo:rustc-env=SOTR_STABLE_COMMIT={commit}");
     tauri_build::build();
 }

@@ -180,7 +180,7 @@ def inspect_source(source, reference=None):
     return source, report, payloads
 
 
-def import_save(source, output, xuid, reference=None):
+def import_save(source, output, xuid, reference=None, name=None):
     source, report, payloads = inspect_source(source, reference)
     if not report["known_update_versions_match"]:
         hero_versions = sorted({(hero["version"], hero["digest_version"]) for hero in report["heroes"]})
@@ -191,6 +191,10 @@ def import_save(source, output, xuid, reference=None):
             "inspection only")
     if not re.fullmatch(r"[0-9a-fA-F]{16}", xuid):
         raise SaveError("XUID must contain exactly 16 hexadecimal digits")
+    if name is not None:
+        name = name.strip()
+        if not name or len(name.encode("utf-8")) > 15:
+            raise SaveError("The profile name must be 1 to 15 bytes of UTF-8")
     output = output.resolve()
     if output == source or output in source.parents or source in output.parents:
         raise SaveError("Output must be separate from the PS3 source directory")
@@ -208,6 +212,12 @@ def import_save(source, output, xuid, reference=None):
                 file.write(raw)
         report["destination_package"] = str(package)
         report["xuid"] = xuid.upper()
+        if name:
+            # The local profile's name (the launcher and the game read it; see
+            # patches/profiles/src/system/xam/profile_store.cpp).
+            (output / "profiles").mkdir()
+            (output / "profiles" / f"{xuid.upper()}.name").write_text(name, encoding="utf-8")
+            report["profile_name"] = name
         with (output / "import-report.json").open("x", encoding="utf-8") as file:
             json.dump(report, file, indent=2)
             file.write("\n")
@@ -224,12 +234,13 @@ def main():
     parser.add_argument("--output-state", type=pathlib.Path,
                         help="Import into a NEW state directory; omitted means inspection only")
     parser.add_argument("--xuid", default=DEFAULT_XUID, help="Destination emulated Xbox profile ID")
+    parser.add_argument("--name", help="Name of the imported local profile (up to 15 characters)")
     parser.add_argument("--reference-save", type=pathlib.Path,
                         help="Read-only Xbox update d3save directory for version/filename comparison")
     args = parser.parse_args()
     try:
         if args.output_state:
-            report = import_save(args.source, args.output_state, args.xuid, args.reference_save)
+            report = import_save(args.source, args.output_state, args.xuid, args.reference_save, args.name)
         else:
             _, report, _ = inspect_source(args.source, args.reference_save)
         print(json.dumps(report, indent=2))

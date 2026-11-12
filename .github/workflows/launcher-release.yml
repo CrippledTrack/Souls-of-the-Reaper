@@ -13,6 +13,10 @@ on:
       tag:
         description: Release tag to build and upload to
         required: true
+      stable:
+        description: Make this release the stable one the launcher builds by default (off keeps launcher/stable.json)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -47,6 +51,17 @@ jobs:
         with:
           ref: ${{ env.TAG }}
 
+      # The launcher of a release builds that release by default (embedded by
+      # src-tauri/build.rs), not the older one pinned in launcher/stable.json,
+      # which only lists the latest release once it is updated after the fact.
+      # A manual run can keep the pinned one (stable: false).
+      - name: Make this release the stable one
+        if: github.event_name == 'release' || inputs.stable
+        working-directory: .
+        run: |
+          echo "SOTR_STABLE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "SOTR_STABLE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -70,8 +85,9 @@ jobs:
 
       - name: Test
         run: |
-          # The generated page and icons (gitignored) are needed to compile the host.
-          npm run prepare-ui
+          # The generated icons (gitignored) are needed to compile the host.
+          npm run icons
+          # Type check (tsc) and the page tests (jsdom).
           npm test
           cargo test --manifest-path src-tauri/Cargo.toml
 

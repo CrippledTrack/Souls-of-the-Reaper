@@ -18,6 +18,7 @@ param(
     [string]$Config = 'RelWithDebInfo',
     [string]$GameDir = (Join-Path $PSScriptRoot '..\game'),
     [string]$Username,
+    [string]$PlayerProfile,
     [string]$UserDataRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'diablo3'),
     [ValidateSet(1, 2, 3)]
     [int]$ResScale = 1,
@@ -106,6 +107,7 @@ if ($PSBoundParameters.ContainsKey('WindowMode')) {
     $arguments += "--fullscreen=$fullscreen"
     if ($ExtraFeatures) { $arguments += '--pc_use_saved_window_mode=false' }
 }
+if ($PlayerProfile) { $env:SOTR_PROFILE = $PlayerProfile }
 if ($Username) { $env:SOTR_USERNAME = $Username }
 $process = Start-Process -FilePath $exe -WorkingDirectory $buildDir -ArgumentList $arguments -PassThru -Wait
 exit $process.ExitCode

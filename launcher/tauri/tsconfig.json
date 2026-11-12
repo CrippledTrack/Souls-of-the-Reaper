@@ -1,0 +1,19 @@
+{
+  // Type-checks the page modules (plain JS with // @ts-check and JSDoc types,
+  // see src/js/types.d.ts). Nothing is compiled: `npm test` runs `tsc` with
+  // noEmit, and the webview loads the .js files as they are.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.js", "src/**/*.d.ts"]
+}

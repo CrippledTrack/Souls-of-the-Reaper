@@ -8,7 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(SOULS_ENABLE_EXTRA_FEATURES "Enable optional PC game features" OFF)
 option(SOULS_TITLE_UPDATE "Build the verified USA update" OFF)
-option(SOULS_EXPERIMENTAL "Compile the experimental features (the Shadow renderer)" OFF)
 
 if(SOULS_ENABLE_EXTRA_FEATURES AND NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
     message(FATAL_ERROR "Extra features support Windows, Linux and macOS base-disc/update builds")
@@ -50,25 +49,21 @@ set(DIABLO3_SOURCES
     src/kernel_overrides.cpp
     src/window_features.cpp
 )
-# Experimental features (src/experiments/): only compiled into experimental builds
-# (scripts/build_profiles.py, `--profile experimental`), which live in their own
-# -experimental build folders. A normal build contains none of this code or its hooks.
-# So far: the Shadow renderer, whose guest addresses are known for the base disc and the
-# USA title update (src/experiments/guest_addresses.h).
-if(SOULS_EXPERIMENTAL)
-    list(APPEND DIABLO3_SOURCES src/experiments/shader_capture.cpp
+# The Shadow renderer (src/experiments/), in every build. It stays off unless launched
+# with --shadow_renderer or --shadow_renderer_only; its guest addresses are known for the
+# base disc and the USA title update (src/experiments/guest_addresses.h).
+list(APPEND DIABLO3_SOURCES src/experiments/shader_capture.cpp
         src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
         src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
         src/experiments/shadow_shaders.cpp src/experiments/shadow_overlay.cpp
         src/experiments/shadow_compare.cpp src/experiments/shadow_aspect.cpp)
-    # rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
-    find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
-        PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
-        NO_DEFAULT_PATH)
-    if(SOULS_RENDERDOC_INCLUDE)
-        set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
-            INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
-    endif()
+# rex/ui/vulkan/instance.h pulls in renderdoc_app.h from the SDK's include/renderdoc.
+find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
+    PATHS "${rexglue_DIR}/../../../include/renderdoc" "${REXSDK_DIR}/thirdparty/renderdoc"
+    NO_DEFAULT_PATH)
+if(SOULS_RENDERDOC_INCLUDE)
+    set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
 endif()
 if(SOULS_TITLE_UPDATE)
     list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp)
@@ -82,14 +77,13 @@ else()
     add_executable(diablo3 ${DIABLO3_SOURCES})
 endif()
 
-# gpu-layer experiment: stage the local XenosRecomp fork (tools/XenosRecomp, git-ignored) next to
-# the executable, so the Vulkan renderer can convert the game's shaders on first run
-# (src/experiments/shadow_shaders.cpp). Skipped when the fork has not been built.
+# The Shadow renderer's shader converter: stage the XenosRecomp build (tools/XenosRecomp,
+# git-ignored; scripts/shader_converter.py builds it before the game) next to the executable,
+# so the renderer can convert the game's shaders on first run (src/experiments/shadow_shaders.cpp).
+# Skipped when it has not been built; scripts/build_client.py also stages it after each build.
 set(SOULS_XENOSRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/XenosRecomp" CACHE PATH
-    "XenosRecomp fork (source tree with build/) staged for the experimental Vulkan renderer")
-if(NOT SOULS_EXPERIMENTAL)
-    # Nothing to stage: only experimental builds use the converter.
-elseif(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
+    "XenosRecomp fork (source tree with build/) staged for the Shadow renderer")
+if(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
     set(_xr_build "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp")
     add_custom_command(TARGET diablo3 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
@@ -97,7 +91,7 @@ elseif(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.
             "${_xr_build}/XenosRecomp.exe" "${_xr_build}/dxcompiler.dll" "${_xr_build}/dxil.dll"
             "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
             "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
-        COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")
+        COMMENT "Staging XenosRecomp for the Shadow renderer")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp")
     # The converter's run path is $ORIGIN, so its DXC libraries sit beside it.
     set(_xr_dxc "${SOULS_XENOSRECOMP_DIR}/thirdparty/dxc-bin/lib/x64")
@@ -108,7 +102,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${SOULS_XENOSRECOMP_DIR}/b
             "${_xr_dxc}/libdxcompiler.so" "${_xr_dxc}/libdxil.so"
             "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
             "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
-        COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")
+        COMMENT "Staging XenosRecomp for the Shadow renderer")
 elseif(APPLE AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp")
     # The converter's run path is @loader_path, so its DXC library sits beside it.
     if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
@@ -123,17 +117,14 @@ elseif(APPLE AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp"
             "${_xr_dxc}/libdxcompiler.dylib"
             "${SOULS_XENOSRECOMP_DIR}/XenosRecomp/shader_common.h"
             "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
-        COMMENT "Staging XenosRecomp for the experimental Vulkan renderer")
+        COMMENT "Staging XenosRecomp for the Shadow renderer")
 endif()
 
 rexglue_setup_target(diablo3)
 if(SOULS_TITLE_UPDATE)
     target_compile_definitions(diablo3 PRIVATE SOULS_TITLE_UPDATE=1)
 endif()
-if(SOULS_EXPERIMENTAL)
-    target_compile_definitions(diablo3 PRIVATE SOULS_EXPERIMENTAL=1)
-    message(STATUS "Experimental features enabled: Shadow renderer")
-endif()
+target_compile_definitions(diablo3 PRIVATE SOULS_SHADOW_RENDERER=1)
 
 if(SOULS_ENABLE_EXTRA_FEATURES)
     if(SOULS_TITLE_UPDATE)
@@ -157,7 +148,24 @@ if(SOULS_ENABLE_EXTRA_FEATURES)
         src/features/pc_features_storage.cpp)
     target_include_directories(diablo3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/souls_generated")
     target_compile_definitions(diablo3 PRIVATE SOULS_ENABLE_EXTRA_FEATURES=1)
-    message(STATUS "Optional PC features enabled: render resolution and window mode menus, PC autosave wording and Extras version label")
+    # The Extras version label names the source: the release tag when this commit has one
+    # (a launcher tags the stable sources it fetches) and the short commit id. Set on that
+    # one file only, so a new commit recompiles nothing else. The build scripts configure
+    # on every build, which keeps them current.
+    set(_souls_build_tag "")
+    set(_souls_build_commit "")
+    find_package(Git QUIET)
+    if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.git")
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=8 HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            OUTPUT_VARIABLE _souls_build_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" describe --tags --exact-match HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            OUTPUT_VARIABLE _souls_build_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    set_source_files_properties(src/features/pc_features.cpp PROPERTIES COMPILE_DEFINITIONS
+        "SOULS_BUILD_TAG=\"${_souls_build_tag}\";SOULS_BUILD_COMMIT=\"${_souls_build_commit}\"")
+    message(STATUS "Optional PC features enabled: render resolution and window mode menus, PC autosave wording and Extras version label (${_souls_build_tag} ${_souls_build_commit})")
 endif()
 
 # When building the SDK from source (REXSDK_DIR -> add_subdirectory), rexglue_configure_target
