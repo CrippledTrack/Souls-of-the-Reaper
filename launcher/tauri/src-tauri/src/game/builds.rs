@@ -144,7 +144,7 @@ fn tree_has_glyphs(root: &Path) -> bool {
 pub(crate) fn converter_staged(executable: &Path, platform: Platform) -> bool {
     let name = match platform {
         Platform::Windows => "XenosRecomp.exe",
-        Platform::Linux => "XenosRecomp",
+        Platform::Linux | Platform::MacOs => "XenosRecomp",
     };
     executable.parent().is_some_and(|dir| dir.join("xenosrecomp").join(name).is_file())
 }
@@ -417,6 +417,27 @@ mod tests {
             .ends_with("linux-amd64-update-plain-relwithdebinfo/diablo3"));
         let windows = discover_builds(Platform::Windows, &root, std::slice::from_ref(&root), &[]);
         assert_eq!(windows.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn macos_finds_its_architecture_folders_with_the_shadow_converter() {
+        let root = scratch("discover-macos");
+        fs::create_dir_all(root.join("port/src/experiments")).unwrap();
+        fs::write(root.join("port/CMakeLists.txt"), "").unwrap();
+        fs::write(root.join("port/src/experiments/shadow_renderer.cpp"), "").unwrap();
+        let prefix = Platform::MacOs.build_prefix();
+        assert!(prefix == "macos-arm64" || prefix == "macos-x86_64");
+        for name in [format!("{prefix}-update-relwithdebinfo"), "linux-amd64-relwithdebinfo".into()] {
+            let dir = root.join("port/out/build").join(name);
+            fs::create_dir_all(dir.join("xenosrecomp")).unwrap();
+            fs::write(dir.join("diablo3"), "").unwrap();
+            fs::write(dir.join("xenosrecomp/XenosRecomp"), "").unwrap();
+        }
+        let builds = discover_builds(Platform::MacOs, &root, std::slice::from_ref(&root), &[]);
+        let listed: Vec<_> = builds.iter().map(|b| (b.id.as_str(), b.shadow)).collect();
+        assert_eq!(listed, [("update", true), ("update-extras", true)], "Linux folders are not listed");
+        assert!(builds[0].executable.ends_with(format!("{prefix}-update-relwithdebinfo/diablo3")));
         fs::remove_dir_all(root).unwrap();
     }
 

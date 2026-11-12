@@ -96,12 +96,13 @@ pub struct Defaults {
     pub user_data_root_update_development: PathBuf,
 }
 
-/// Linux matches run_linux.py ($XDG_DATA_HOME/souls-of-the-reaper[-update]).
+/// Linux matches run_linux.py ($XDG_DATA_HOME/souls-of-the-reaper[-update]); macOS uses
+/// the same names under ~/Library/Application Support.
 /// Windows matches run_windows.ps1 and the SDK default (Documents\diablo3).
 /// Development builds add `-development` to either.
 pub fn default_folders(platform: Platform, base: &Path, user_base: &Path) -> Defaults {
     let name = match platform {
-        Platform::Linux => "souls-of-the-reaper",
+        Platform::Linux | Platform::MacOs => "souls-of-the-reaper",
         Platform::Windows => "diablo3",
     };
     let folder = |suffix: &str| user_base.join(format!("{name}{suffix}"));
@@ -299,6 +300,9 @@ mod tests {
             windows.user_data_root.ends_with("diablo3")
                 && windows.user_data_root_update.ends_with("diablo3-update")
         );
+        let support = Path::new("/Users/me/Library/Application Support");
+        let mac = default_folders(Platform::MacOs, Path::new("/r"), support);
+        assert_eq!(mac.user_data_root_update, support.join("souls-of-the-reaper-update"));
     }
 
     #[test]

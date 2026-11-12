@@ -1,6 +1,6 @@
 //! Saving the settings and starting the game.
 
-use crate::game::{self, GameOptions, Settings};
+use crate::game::{self, GameOptions, Platform, Settings};
 use crate::host::{write_settings, Host};
 use crate::message::{msg, Message};
 use std::{
@@ -55,6 +55,13 @@ pub async fn launch_game(
     // The Shadow renderer needs its shader converter staged beside the executable
     // (and releases before it was built in do not have it at all).
     options.shadow = options.shadow && build.shadow;
+    if host.platform == Platform::MacOs {
+        // Shadow is the only renderer on macOS, whatever the menu last sent.
+        if !build.shadow {
+            return Err(msg!("err.launch.macosShadowOnly"));
+        }
+        options.shadow = true;
+    }
     // Native resolution and Auto aspect ratio follow the display the launcher is on.
     // The toolkit rounds fractional display scales up, so its size is checked against
     // the displays' native modes.

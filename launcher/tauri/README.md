@@ -1,7 +1,8 @@
 # Cross-platform launcher
 
-The game's launcher, a Tauri 2 app for Linux and Windows (it replaced the
+The game's launcher, a Tauri 2 app for Linux, Windows and macOS (it replaced the
 earlier PowerShell/WebView2 `Launcher.ps1`, which has been removed). Linux has been built and run on a desktop.
+macOS (Apple Silicon) support is new and experimental; see [macOS](#macos).
 On Windows 11 a Release launcher outside a source checkout has fetched its
 sources, built the SDK and compiled the game through the Build panel (the same
 `scripts/build_client.py` as Linux), then started the game with Play.
@@ -39,7 +40,8 @@ sources, built the SDK and compiled the game through the Build panel (the same
   command processor. VSync does not sync presentation to the monitor; On also
   holds the game to 60 FPS. `Auto` (the default) turns it on for caps up to
   60 FPS and off above that, which is what Direct3D 12 always did. Vulkan, which
-  has no ROV path, offers the RTV frame rates (60–240).
+  has no ROV path, offers the RTV frame rates (30, 60, 120, 144, 240; ROV stops
+  at 144). The default is 120 FPS.
 - **Linux** shows the Vulkan render path (FSI, or the experimental Host path)
   and Image Scaling (`Off`, `FSR` or `CAS`, passed as
   `--present_effect=bilinear|fsr|cas`). The spatial effects only change how the
@@ -73,8 +75,8 @@ sources, built the SDK and compiled the game through the Build panel (the same
   text and menus stay at the full resolution. The window title shows the frames
   the Shadow renderer actually presents (and the game's own rate beside it) and
   the resolution it is drawing at. Frame Rate, VSync and Display still apply.
-  On macOS, which the launcher does not support yet, Shadow is the only
-  renderer for now.
+  On macOS Shadow is the only renderer: it is always on, and there is no
+  Renderer or Render Path row.
 - **Windows** offers a Renderer choice. Direct3D 12 keeps ROV/RTV and FSR/CAS.
   Vulkan (`--gpu_backend=vulkan`) shows the same render path, device and Image
   Scaling options as Linux.
@@ -82,6 +84,34 @@ sources, built the SDK and compiled the game through the Build panel (the same
   staged update). For update it also checks the four update CPKs and mounts the folder
   as `update:`. It then starts the game and closes the launcher. If the game
   exits during startup, the launcher stays open and shows the error.
+
+## macOS
+
+macOS runs the game through MoltenVK with the Shadow renderer only, so the menu
+has no Renderer or Render Path row and every launch passes
+`--shadow_renderer_only=true` with the Vulkan options Linux uses (no Display
+server). A build without the Shadow renderer (a basic build) does not start
+there. Builds come from [`scripts/build_macos.py`](../../scripts/build_macos.py)
+(driven by `scripts/build_client.py` from the Build panel) and are found under
+`port/out/build/macos-arm64[-update][-plain]-relwithdebinfo` (`macos-x86_64-…`
+for a launcher built for Intel).
+
+- **Tools**: the Xcode command line tools (`xcode-select --install`: Apple
+  clang 16+, git) and, from Homebrew, `brew install cmake ninja vulkan-loader
+  molten-vk`. A launcher opened from Finder starts with a short `PATH`, so it
+  also looks in `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin` and
+  hands those folders to the build. Until the command line tools are installed,
+  `/usr/bin/git`, `clang` and `python3` are only installer stubs and are not
+  counted. The Build panel warns when no `MoltenVK_icd.json` is found under
+  `/opt/homebrew/etc/vulkan/icd.d` (or the `/usr/local` and `share` versions).
+- **Folders**: saves go to `~/Library/Application Support/souls-of-the-reaper[-update]`,
+  settings to `~/Library/Application Support/org.soulsofthereaper.launcher/launcher.json`,
+  and fetched sources (when the launcher's own folder is read-only) to
+  `~/Library/Application Support/SoulsOfTheReaper/sources`.
+- **Packaging**: the release asset (`sotr-launcher-macos-arm64.tar.gz`) is the
+  bare executable, not a signed `.app`. Gatekeeper blocks a downloaded copy until
+  the quarantine flag is cleared: `xattr -d com.apple.quarantine sotr-launcher`,
+  or right-click > Open.
 
 Options are passed as command-line arguments; `diablo3.toml` and F4 keybinds
 are never modified. Launch rules mirror `scripts/run_linux.py` and
@@ -154,9 +184,10 @@ builds and selects the best of what was just built: Update over Base, and the
 launcher picks the same way among the builds it finds, the update only when its
 files are installed.
 
-The Clang found must be new enough (18+ on Linux, 22+ on Windows). Warnings
-that do not block Build are listed too: no Vulkan driver, no X11 or Wayland
-development files (Linux), and under 15 GiB free where the build runs.
+The Clang found must be new enough (18+ on Linux, 22+ on Windows, Apple clang
+16+ on macOS). Warnings that do not block Build are listed too: no Vulkan driver,
+no X11 or Wayland development files (Linux), no MoltenVK (macOS), and under 15 GiB
+free where the build runs.
 
 The SDK state comes from `scripts/build_client.py --print-sdk-status`, so the
 install paths live in one place. An SDK counts as built only when it matches the
@@ -195,7 +226,7 @@ launchers, is still used). So Stable and Development builds live in two
 folders, each with its own SDK (about 3 GB and 12+ minutes to build once) and
 shader converter, while both use the same game folders. A launcher in a folder it cannot write to uses
 `SoulsOfTheReaper/sources/<commit>` under the per-user data folder instead
-(`~/.local/share` on Linux, `%LOCALAPPDATA%` on Windows). Without git it
+(`~/.local/share` on Linux, `%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS). Without git it
 downloads GitHub's archive of that commit with `curl` and `tar` instead; git is
 still required afterwards, because the build script clones the SDK with it. The
 SDK, XenonRecomp, XenosRecomp and `port/out` live inside each folder. Delete a commit's
@@ -220,17 +251,19 @@ packages. On Windows install Visual Studio 2022 with the C++ and CMake
 workloads and LLVM Clang 22+; the usual install folders of Clang, CMake and
 Ninja are added to `PATH` automatically, and the build runs
 `scripts/build_windows.py` (the one-time SDK build and the compile both happen
-in the panel). Allow about 15 GiB of free space for a first build with update. A
+in the panel). On macOS install the Xcode command line tools and Homebrew's
+`cmake ninja vulkan-loader molten-vk`; the build runs `scripts/build_macos.py`
+with Apple clang. Allow about 15 GiB of free space for a first build with update. A
 release install beside `diablo3` has no sources and no panel.
 
 ## Launch settings (⚙)
 
-Game folder, save folders for base, update and Development builds, and the Vulkan device (Linux, and Windows when the Vulkan renderer is selected). The title update has no game folder of its own: it uses the base game folder, whose `update/` folder holds the update (an older full `game-update/` copy is still used if present).
+Game folder, save folders for base, update and Development builds, and the Vulkan device (Linux, macOS, and Windows when the Vulkan renderer is selected). The title update has no game folder of its own: it uses the base game folder, whose `update/` folder holds the update (an older full `game-update/` copy is still used if present).
 Empty fields use these defaults:
 
 | | Game folder | Save folder |
 | --- | --- | --- |
-| Base / extras | `game/` | Linux: `$XDG_DATA_HOME/souls-of-the-reaper`; Windows: `Documents\diablo3` |
+| Base / extras | `game/` | Linux: `$XDG_DATA_HOME/souls-of-the-reaper`; macOS: `~/Library/Application Support/souls-of-the-reaper`; Windows: `Documents\diablo3` |
 | update | same as Base (`game/update/` overlay; or `game-update/` if that older full copy exists) | `…/souls-of-the-reaper-update`; Windows: `Documents\diablo3-update` |
 | Development (base) | same as Base | `…/souls-of-the-reaper-development`; Windows: `Documents\diablo3-development` |
 | Development (update) | same as update | `…/souls-of-the-reaper-update-development`; Windows: `Documents\diablo3-update-development` |
@@ -259,9 +292,9 @@ Rebuild once so the executables are named `…-update-…`.
 Game folders sit at the repository root for a source checkout, or beside the
 launcher for an install. Settings and the last menu choices are saved in
 `launcher.json` under Tauri's app config directory
-(`~/.config/org.soulsofthereaper.launcher` on Linux). Settings from the
+(`~/.config/org.soulsofthereaper.launcher` on Linux, `~/Library/Application Support/org.soulsofthereaper.launcher` on macOS). Settings from the
 first prototype move to the update fields when it was set to the update. The game's
-output goes to `launcher-stdio.log` in the save folder; on Linux the game log
+output goes to `launcher-stdio.log` in the save folder; on Linux and macOS the game log
 is `diablo3.log` there.
 
 ## Run and build
@@ -269,7 +302,8 @@ is `diablo3.log` there.
 Install Rust, Node.js/npm and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Linux needs
 the GTK 3 and WebKitGTK 4.1 development packages; Windows needs the MSVC build
-tools and the WebView2 runtime (included with Edge on Windows 10/11).
+tools and the WebView2 runtime (included with Edge on Windows 10/11); macOS needs
+the Xcode command line tools.
 
 ```sh
 cd launcher/tauri
@@ -345,7 +379,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # discovery, validation, argum
 ```
 
 The page tests (`test/*.test.mjs`) run the page in jsdom with a stubbed host.
-The Rust tests cover both platforms' arguments on any host.
+The Rust tests cover every platform's arguments on any host.
 
 ## Known gaps
 
@@ -363,7 +397,10 @@ The Rust tests cover both platforms' arguments on any host.
   now package and start this launcher (as `SoulsOfTheReaper.exe`); neither has
   been rebuilt and run on Windows since the switch.
 - Building needs Python 3 and git, from a source checkout or via the fetched
-  sources above. Compiling is automated on Linux and Windows, and only the
+  sources above. Compiling is automated on Linux, Windows and macOS, and only the
   USA disc and USA update are accepted.
+- macOS: the launcher has been built and its tests run on Apple Silicon; a full
+  build from the Build panel, a launcher opened from Finder, and fetching sources
+  there have not been tried yet. The release asset is unsigned and not notarized.
 - Fetching sources has been tried on Linux and Windows. An SDK built before
   stamps existed is rebuilt once.

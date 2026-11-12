@@ -107,7 +107,7 @@ pub(crate) fn discover(platform: Platform, launcher_dir: &Path, search: &[PathBu
 pub struct Caps<'a> {
     pub(crate) platform: &'static str,
     /// Renderers the page may offer: both on Windows (one executable holds
-    /// them), Vulkan only on Linux.
+    /// them), Vulkan only on Linux and macOS (where only the Shadow renderer draws).
     pub(crate) backends: &'static [&'static str],
     pub(crate) builds: &'a [Build],
     pub(crate) defaults: &'a Defaults,

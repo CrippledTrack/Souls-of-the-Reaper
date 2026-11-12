@@ -120,7 +120,7 @@ mod tests {
         let run = |platform, variants: &[&str]| {
             build_client_arguments(platform, Path::new("/r"), &request(variants), folders.0, folders.1)
         };
-        for platform in [Platform::Linux, Platform::Windows] {
+        for platform in [Platform::Linux, Platform::Windows, Platform::MacOs] {
             assert!(run(platform, &[]).is_err());
             assert!(run(platform, &["base;rm"]).is_err());
         }

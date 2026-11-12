@@ -1,5 +1,5 @@
-# Builds the Tauri launcher for Windows and Linux when a release is published
-# and attaches both to the release. The launcher embeds the release commit and
+# Builds the Tauri launcher for Windows, Linux and macOS (Apple Silicon) when a
+# release is published and attaches them to the release. The launcher embeds the release commit and
 # this repository, so outside a source checkout it can fetch the matching
 # sources to build the game (launcher/tauri/README.md, "Without a checkout").
 name: Launcher release
@@ -36,6 +36,10 @@ jobs:
           # binary also runs on older distributions.
           - os: ubuntu-22.04
             asset: sotr-launcher-linux-x64.tar.gz
+          # Apple Silicon. A bare, unsigned executable like Linux's: the first run
+          # needs the quarantine flag removed (launcher/tauri/README.md).
+          - os: macos-14
+            asset: sotr-launcher-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}
     defaults:
       run:

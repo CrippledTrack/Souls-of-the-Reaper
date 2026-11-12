@@ -39,7 +39,7 @@ export interface Build {
 
 /** Injected as window.LAUNCHER_CAPS (Rust: host::Caps). */
 export interface Caps {
-  platform: 'linux' | 'windows';
+  platform: 'linux' | 'windows' | 'macos';
   /** Renderers the page may offer. */
   backends?: string[];
   builds: Build[];
@@ -91,6 +91,8 @@ export interface UiState {
   path: number;
   /** Index into the frame-rate list of the current renderer (state.js FPS). */
   fps: number;
+  /** state.js FPS_VERSION when `fps` was saved; older saves are moved up one (migrateFps). */
+  fpsVersion?: number;
   /** D3D12 image scaling: 0 FSR, 1 CAS, 2 off. */
   scale: number;
   /** Vulkan image scaling: 0 off, 1 FSR, 2 CAS. */
@@ -226,9 +228,11 @@ export interface Host {
 /** Rules derived from the caps and the menu state (state.js createRules). */
 export interface Rules {
   linux: boolean;
+  /** macOS: Vulkan through MoltenVK, Shadow renderer only. */
+  mac: boolean;
   /** Windows with both renderers in one executable: a Renderer row. */
   winVk(): boolean;
-  /** The Vulkan rows apply (always on Linux). */
+  /** The Vulkan rows apply (always on Linux and macOS). */
   vk(): boolean;
   curBuild(): Build | null;
   extras(): boolean;

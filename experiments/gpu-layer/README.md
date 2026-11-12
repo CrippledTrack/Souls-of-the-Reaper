@@ -21,7 +21,7 @@ disc (title screen into early Act I gameplay). The hooks use each executable's o
 The Shadow renderer is compiled into every build (`SOULS_SHADOW_RENDERER` in
 `port/CMakeLists.txt`). In the launcher it is the **Shadow (beta)** choice under Render Path
 (Linux) or Renderer (Windows), offered when the build's shader converter is staged beside it.
-On macOS, which the launcher does not support yet, it is the only renderer for now.
+On macOS it is the only renderer: the launcher always passes it and shows no choice.
 
 Both modes are off unless asked for on the command line, so a normal launch is unaffected:
 
@@ -75,7 +75,7 @@ applies the patch and builds it, and is refused by `--no-sdk-download` until the
 approved. A failure fails the build. It is rebuilt when the pin or the patch changes, and
 every game build gets it copied into `<build>/xenosrecomp/`. `build_linux.py`,
 `build_windows.py` and `build_macos.py` on their own do not build it; they stage it when
-`tools/XenosRecomp/build` exists. On macOS (not driven by `build_client.py`) build it by hand.
+`tools/XenosRecomp/build` exists. On macOS `build_client.py` (and so the launcher) builds it too.
 
 To do it by hand instead (note that an automatic build resets `tools/XenosRecomp` to the
 pinned commit plus the patch, discarding local edits there): from

@@ -39,7 +39,8 @@ optional PC features), compiled without the Shadow renderer, so the launcher off
 `build_windows.py` and `build_macos.py` take `--basic` too).
 
 A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existing
-interface on Linux and Windows and selects base, extras and update builds.
+interface on Linux, Windows and macOS (Apple Silicon, Shadow renderer only) and selects base,
+extras and update builds.
 
 ### Linux (Vulkan)
 

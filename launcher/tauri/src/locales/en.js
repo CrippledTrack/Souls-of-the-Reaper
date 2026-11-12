@@ -132,6 +132,7 @@ export default {
   "build.title": "Build the game",
   "build.intro": "Builds the game from your own copy: the USA Ultimate Evil Edition disc image, plus the USA Title Update package for update builds. The first build takes a while; later builds reuse finished steps.",
   "build.intro.windows": "Builds the game from your disc image and, optionally, the USA Title Update package. Needs Visual Studio 2022 (C++ and CMake workload), LLVM Clang, Git and Python.",
+  "build.intro.macos": "Builds the game from your disc image and, optionally, the USA Title Update package. Needs the Xcode command line tools, Python 3, and from Homebrew: cmake, ninja, vulkan-loader and molten-vk.",
   "build.iso": "Disc image (ISO)",
   "build.iso.browse": "Browse for disc image",
   "build.titleUpdate": "Title Update package (optional)",
@@ -198,10 +199,13 @@ export default {
   // Build tool notes and warnings sent by the host (Rust: tools/detect.rs).
   "note.python": "Runs the build scripts.",
   "note.python.windows": "Runs the build scripts. Tick 'Add python.exe to PATH' in the installer.",
+  "note.python.macos": "Runs the build scripts. The python.org installer or Homebrew (brew install python).",
   "note.git": "Fetches the ReXGlue SDK and the update patch tool.",
+  "note.git.macos": "Fetches the ReXGlue SDK and the update patch tool. Comes with the Xcode command line tools.",
   "note.msvc": "Free Build Tools or Community edition with the 'Desktop development with C++' workload.",
   "note.clang.old": "Found Clang {found}, which is older than {min}.",
   "note.clang.windows": "Installer: LLVM-<version>-win64.exe.",
+  "note.clang.macos": "Install the command line tools: run xcode-select --install in Terminal.",
   "note.cmake.old": "Found, but older than CMake 3.25.",
   "note.visualStudioCmake": "Also included with the Visual Studio 'C++ CMake tools' component.",
   "note.packageHint": "Install it with your package manager (for example: {packages}).",
@@ -209,9 +213,11 @@ export default {
   "warn.diskSpace": "Only {free} GiB is free where the build runs; a first build wants about 15 GiB.",
   "warn.vulkanDriver": "No Vulkan driver was found (no files in /usr/share/vulkan/icd.d). The game needs one to run.",
   "warn.windowingPackages": "X11 or Wayland development packages were not found (pkg-config x11 / wayland-client); building the SDK may fail. See docs/building-the-game.md.",
+  "warn.moltenvk": "MoltenVK was not found (no MoltenVK_icd.json under /opt/homebrew/etc/vulkan/icd.d). The game needs it to run: brew install vulkan-loader molten-vk.",
 
   // Errors sent by the host (Rust: msg!("err.…")); err.other carries untranslated detail.
   "err.other": "{detail}",
+  "err.launch.macosShadowOnly": "This build has no Shadow renderer (basic builds leave it out), and on macOS the Shadow renderer is the only one that draws.",
   "err.launch.noBuild": "No game build found. Build the game or place the launcher next to diablo3.",
   "err.launch.gameFolder": "Game folder {folder}: {detail}",
   "err.launch.saveFolder": "Save folder {folder}: {detail}",

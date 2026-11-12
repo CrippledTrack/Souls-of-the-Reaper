@@ -100,3 +100,6 @@ launcher/tauri/src-tauri/gen/
 # ignored above.
 !launcher/tauri/src-tauri/src/game/
 !launcher/tauri/src-tauri/src/tools/
+
+# macOS Finder metadata
+.DS_Store

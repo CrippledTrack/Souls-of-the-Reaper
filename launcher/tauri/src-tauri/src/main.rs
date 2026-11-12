@@ -58,7 +58,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| launcher_dir.clone());
     let user_base = match platform {
         Platform::Windows => app.path().document_dir()?,
-        Platform::Linux => app.path().data_dir()?,
+        Platform::Linux | Platform::MacOs => app.path().data_dir()?,
     };
     let defaults = game::default_folders(platform, &base, &user_base);
     let settings_file = app.path().app_config_dir()?.join("launcher.json");
@@ -76,7 +76,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         platform: platform.name(),
         backends: match platform {
             Platform::Windows => &["d3d12", "vulkan"],
-            Platform::Linux => &["vulkan"],
+            Platform::Linux | Platform::MacOs => &["vulkan"],
         },
         builds: &builds,
         defaults: &defaults,

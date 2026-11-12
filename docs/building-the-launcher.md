@@ -1,6 +1,6 @@
 # Building the launcher
 
-The launcher is a Tauri app (Rust host + WebView page) in [`launcher/tauri/`](../launcher/tauri/README.md). It runs on Windows and Linux. (The earlier PowerShell/WebView2 `Launcher.ps1` has been removed.)
+The launcher is a Tauri app (Rust host + WebView page) in [`launcher/tauri/`](../launcher/tauri/README.md). It runs on Windows, Linux and macOS (Apple Silicon; the game runs there with the Shadow renderer only). (The earlier PowerShell/WebView2 `Launcher.ps1` has been removed.)
 
 ## Build
 
@@ -11,11 +11,12 @@ The launcher is a Tauri app (Rust host + WebView page) in [`launcher/tauri/`](..
 - Linux: GTK 3 and WebKitGTK 4.1 development packages, e.g.
   - Debian/Ubuntu: `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev`
   - Fedora: `sudo dnf install gtk3-devel webkit2gtk4.1-devel openssl-devel librsvg2-devel`
+- macOS: the Xcode command line tools (`xcode-select --install`); the WebView is part of the system
 - See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other setups
 
 ### Build and run
 
-The commands are the same on both platforms:
+The commands are the same on every platform:
 
 ```sh
 cd launcher/tauri
@@ -26,16 +27,20 @@ npm run build     # Release build, no installer bundle
 
 Outputs:
 
-| Build | Windows | Linux |
+| Build | Windows | Linux and macOS |
 | --- | --- | --- |
 | Debug | `src-tauri\target\debug\sotr-launcher.exe` | `src-tauri/target/debug/sotr-launcher` |
 | Release | `src-tauri\target\release\sotr-launcher.exe` | `src-tauri/target/release/sotr-launcher` |
+
+On macOS the output is a bare executable, not a `.app` bundle, and it is not signed. A downloaded copy is
+quarantined by Gatekeeper; clear that once with `xattr -d com.apple.quarantine sotr-launcher` (or
+right-click > Open).
 
 `npm run icons` (run automatically) generates the icons; they and `target/` are git-ignored. The page itself is served as-is from `src/`.
 
 ### Where to run it
 
-- **Source checkout**: run it from anywhere inside the checkout. It finds `port/out/build/...` variants and offers **Build from disc image…** (in the ⚙ menu), which drives [`scripts/build_client.py`](../scripts/build_client.py) exactly as described in [Building the game](building-the-game.md). It needs Python, Git, CMake 3.25+, Ninja and Clang available (see that guide).
+- **Source checkout**: run it from anywhere inside the checkout. It finds `port/out/build/...` variants and offers **Build from disc image…** (in the ⚙ menu), which drives [`scripts/build_client.py`](../scripts/build_client.py) exactly as described in [Building the game](building-the-game.md). It needs Python, Git, CMake 3.25+, Ninja and Clang available (see that guide). On macOS that is the Xcode command line tools (Apple clang) plus `brew install cmake ninja vulkan-loader molten-vk`; it builds with [`scripts/build_macos.py`](../scripts/build_macos.py).
 - **No checkout**: a launcher built from a clean, pushed commit downloads the matching sources into the per-user data folder the first time you build (asking first) and builds from there; see [Without a checkout](../launcher/tauri/README.md#without-a-checkout). Set `SOTR_REPO` when building the launcher if `origin` is not the canonical repository.
 - **Release install**: place the Release executable beside `diablo3` / `diablo3.exe`. The build panel is not shown there.
 

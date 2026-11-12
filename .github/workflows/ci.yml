@@ -43,7 +43,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest]
+        # macos-14 is Apple Silicon (arm64), the Mac the launcher targets.
+        os: [ubuntu-22.04, windows-latest, macos-14]
     runs-on: ${{ matrix.os }}
     defaults:
       run:

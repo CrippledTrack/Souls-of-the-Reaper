@@ -36,6 +36,9 @@ VARIANTS = {"base": (False, False), "update": (True, False),
             "base-plain": (False, True), "update-plain": (True, True)}
 LABELS = {"base": "Base", "update": "Update", "base-plain": "Base (no extras)", "update-plain": "Update (no extras)"}
 WINDOWS = platform.system() == "Windows"
+MACOS = platform.system() == "Darwin"
+# Apple Silicon builds arm64; an x86_64 Python (Rosetta) builds the Intel binary.
+MACOS_ARCH = "x86_64" if platform.machine() == "x86_64" else "arm64"
 GIB = 1024 ** 3
 # Rough upper bounds measured on Linux RelWithDebInfo builds.
 SDK_BYTES, VARIANT_BYTES, CODEGEN_BYTES = 3 * GIB, 1 * GIB, GIB // 2
@@ -107,18 +110,28 @@ def missing_tools(args, compile_needed, need_patcher):
     for tool in ("ninja", "clang", "clang++") + (("clang-cl",) if WINDOWS else ()):
         if not shutil.which(tool):
             problems.append(f"{tool} was not found on PATH.")
-    if compile_needed and platform.system() not in ("Linux", "Windows"):
-        problems.append("Automated compilation supports Linux and Windows only; use --data-only to prepare "
-                        "the game folders.")
+    if compile_needed and platform.system() not in ("Linux", "Windows", "Darwin"):
+        problems.append("Automated compilation supports Linux, Windows and macOS only; use --data-only to "
+                        "prepare the game folders.")
     return problems
 
 
-HOST = "win" if WINDOWS else "linux"
+HOST = "win" if WINDOWS else "macos" if MACOS else "linux"
+# Prefix of the game build folders under port/out/build.
+BUILD_PREFIX = f"macos-{MACOS_ARCH}" if MACOS else f"{HOST}-amd64"
 
 
 def profile_of(args):
     """The build profile (scripts/build_profiles.py); the normal one unless asked otherwise."""
     return build_profiles.get(getattr(args, "profile", None))
+
+
+def default_sdk_paths(profile):
+    """(SDK checkout, SDK install) the build scripts use for `profile` on this machine."""
+    if MACOS:
+        import build_macos
+        return build_macos.sdk_paths(profile, MACOS_ARCH)
+    return profile.sdk_paths(HOST)
 
 
 def sdk_state(args):
@@ -134,7 +147,7 @@ def sdk_state(args):
         built = (args.sdk_prefix / "bin/rexglue").is_file()
     if not built:
         return "missing"
-    if args.sdk_prefix != profile_of(args).sdk_paths(HOST)[1].resolve():
+    if args.sdk_prefix != default_sdk_paths(profile_of(args))[1].resolve():
         return "current"
     return sdk_patches.stamp_state(args.sdk_prefix, HOST, profile_of(args).sdk_patch_dirs())
 
@@ -240,13 +253,16 @@ def basic_variants(args):
 def build_variant(args, variant):
     update, plain = VARIANTS[variant]
     game = game_update_dir(args) if update else args.game_dir
-    command = [sys.executable, SCRIPTS / ("build_windows.py" if WINDOWS else "build_linux.py"),
+    script = "build_windows.py" if WINDOWS else "build_macos.py" if MACOS else "build_linux.py"
+    command = [sys.executable, SCRIPTS / script,
                "--game-dir", game, "--sdk-prefix", args.sdk_prefix, "--jobs", args.jobs]
     command += ["--profile", profile_of(args).id]
     if WINDOWS:
         command += ["--sdk-source", args.sdk_source]  # CMake, Ninja and Clang come from PATH
     else:
         command += ["--cmake", args.cmake]
+    if MACOS:
+        command += ["--arch", MACOS_ARCH]
     if update:
         command += ["--title-update", "usa"]
     if plain:
@@ -260,9 +276,9 @@ def build_variant(args, variant):
 
 
 def variant_build_dir(args, variant):
-    """Where build_linux.py / build_windows.py put a variant's executable for this profile."""
+    """Where build_linux.py / build_windows.py / build_macos.py put a variant's executable for this profile."""
     update, plain = VARIANTS[variant]
-    return ROOT / "port/out/build" / profile_of(args).build_name(f"{HOST}-amd64", update, plain)
+    return ROOT / "port/out/build" / profile_of(args).build_name(BUILD_PREFIX, update, plain)
 
 
 def converter_state():
@@ -356,6 +372,10 @@ def plan(args):
                                  profile=profile.id)
         if WINDOWS:
             steps.append(("Build ReXGlue SDK (one-time)", lambda: build_windows.build_sdk(sdk)))
+        elif MACOS:
+            import build_macos
+            sdk.arch = MACOS_ARCH
+            steps.append(("Build ReXGlue SDK (one-time)", lambda: build_macos.build_sdk(sdk, args.cmake)))
         else:
             import build_linux
             steps.append(("Build ReXGlue SDK (one-time)", lambda: build_linux.build_sdk(sdk, args.cmake)))
@@ -419,7 +439,7 @@ def main(argv=None):
     for legacy in (ROOT / "game-update", ROOT / "game-tu2"):  # game-tu2 predates the rename
         if args.game_dir_update is None and legacy.exists() and update_ready(legacy):
             args.game_dir_update = legacy
-    source, prefix = profile_of(args).sdk_paths(HOST)
+    source, prefix = default_sdk_paths(profile_of(args))
     args.sdk_source, args.sdk_prefix = args.sdk_source or source, args.sdk_prefix or prefix
     for name in ("iso", "title_update", "game_dir", "game_dir_update", "sdk_source", "sdk_prefix", "patcher"):
         value = getattr(args, name)

@@ -189,6 +189,12 @@ test('Windows offers build choices and finds CMake by itself', () => {
   assert.notEqual(doc.getElementById('startBuild').textContent, 'Prepare');
 });
 
+test('macOS asks for CMake (Homebrew) and names its own toolchain', () => {
+  const { doc } = tauriPage({ platform: 'macos', builds: [] });
+  assert.equal(doc.getElementById('cmakeLabel').hidden, false);
+  assert.match(doc.getElementById('buildIntro').textContent, /Xcode command line tools.*molten-vk/);
+});
+
 const TOOL = (id, found) => ({ id, label: id.toUpperCase(), found, path: '', url: found ? '' : `https://example.test/${id}`, note: '' });
 
 const SDK = installed => ({ installed, repository: 'https://example.test/sdk.git', commit: 'c94f5ebdcb3c9d1a460ca48e04f9758448f8d518' });

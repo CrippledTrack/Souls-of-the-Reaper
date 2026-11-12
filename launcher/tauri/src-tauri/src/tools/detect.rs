@@ -17,6 +17,23 @@ pub(crate) const MIN_CLANG_LINUX: u32 = 18;
 
 pub(crate) const MIN_CLANG_WINDOWS: u32 = 22;
 
+/// Apple numbers its Clang by Xcode release (Xcode 16's Apple clang 16 is LLVM 17
+/// based); build_macos.py always compiles with /usr/bin/clang.
+pub(crate) const MIN_CLANG_MACOS: u32 = 16;
+
+/// Where Homebrew (Apple Silicon, then Intel) and MacPorts install. A launcher
+/// opened from Finder gets a PATH without them.
+pub(crate) const MACOS_TOOL_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+
+/// Folders the MoltenVK driver file (MoltenVK_icd.json) is installed to by
+/// Homebrew and the LunarG Vulkan SDK.
+pub(crate) const MACOS_ICD_DIRS: [&str; 4] = [
+    "/opt/homebrew/etc/vulkan/icd.d",
+    "/opt/homebrew/share/vulkan/icd.d",
+    "/usr/local/etc/vulkan/icd.d",
+    "/usr/local/share/vulkan/icd.d",
+];
+
 /// Free space a first build wants: SDK, two variants and codegen, with headroom
 /// (scripts/build_client.py computes the exact need and stops if it is short).
 pub(crate) const WARN_FREE_BYTES: u64 = 15 << 30;
@@ -26,8 +43,19 @@ pub(crate) const VS_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools
 pub(crate) fn exe(name: &str, platform: Platform) -> String {
     match platform {
         Platform::Windows => format!("{name}.exe"),
-        Platform::Linux => name.to_string(),
+        Platform::Linux | Platform::MacOs => name.to_string(),
     }
+}
+
+/// On a Mac without the command line tools, /usr/bin/git, clang and python3 are
+/// stubs that only offer to install them (and open a dialog when run).
+pub(crate) fn is_apple_stub_dir(dir: &Path) -> bool {
+    dir == Path::new("/usr/bin")
+}
+
+/// `xcode-select -p` succeeds once the command line tools (or Xcode) are installed.
+pub(crate) fn command_line_tools_installed() -> bool {
+    output_of(Path::new("/usr/bin/xcode-select"), &["-p"]).is_some_and(|p| Path::new(p.trim()).is_dir())
 }
 
 /// First `name` found in `dirs`.
@@ -181,7 +209,14 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
             }
         }
     }
+    let apple_tools = platform == Platform::MacOs && command_line_tools_installed();
+    if platform == Platform::MacOs && !apple_tools {
+        dirs.retain(|d| !is_apple_stub_dir(d));
+    }
     let mut extra = Vec::new();
+    if platform == Platform::MacOs {
+        extra.extend(MACOS_TOOL_DIRS.map(PathBuf::from));
+    }
     let studio = (platform == Platform::Windows).then(visual_studio).flatten();
     if platform == Platform::Windows {
         let program_files = std::env::var_os("ProgramFiles")
@@ -206,12 +241,21 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         find_program(name, platform, &dirs).or_else(|| find_program(name, platform, &extra))
     };
 
-    let python = find_python(platform, &dirs);
+    let python = find_python(platform, &dirs).or_else(|| find_python(platform, &extra));
     let git = lookup("git");
-    let min_clang = if platform == Platform::Windows { MIN_CLANG_WINDOWS } else { MIN_CLANG_LINUX };
+    let min_clang = match platform {
+        Platform::Windows => MIN_CLANG_WINDOWS,
+        Platform::Linux => MIN_CLANG_LINUX,
+        Platform::MacOs => MIN_CLANG_MACOS,
+    };
     // clang-cl (part of the LLVM installer) builds the shader converter on Windows.
     let clang_cl = platform != Platform::Windows || lookup("clang-cl").is_some();
-    let clang_found = lookup("clang").zip(lookup("clang++")).map(|(_, plus)| plus).filter(|_| clang_cl);
+    let clang_found = if platform == Platform::MacOs {
+        // build_macos.py compiles with Apple's clang, whatever else is on PATH.
+        Some(PathBuf::from("/usr/bin/clang++")).filter(|p| apple_tools && p.is_file())
+    } else {
+        lookup("clang").zip(lookup("clang++")).map(|(_, plus)| plus).filter(|_| clang_cl)
+    };
     let clang_version = clang_found
         .as_deref()
         .and_then(|p| output_of(p, &["--version"]))
@@ -227,21 +271,25 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         .filter(|p| output_of(p, &["--version"]).and_then(|v| parse_version(&v)).is_some_and(|v| v >= MIN_CMAKE));
     let ninja = lookup("ninja");
 
-    let linux = platform == Platform::Linux;
+    let (linux, mac) = (platform == Platform::Linux, platform == Platform::MacOs);
     let mut tools = vec![
         tool(
             "python",
             "Python 3",
             python.as_deref(),
             "https://www.python.org/downloads/",
-            if linux { msg!("note.python") } else { msg!("note.python.windows") },
+            match platform {
+                Platform::Windows => msg!("note.python.windows"),
+                Platform::Linux => msg!("note.python"),
+                Platform::MacOs => msg!("note.python.macos"),
+            },
         ),
         tool(
             "git",
             "Git",
             git.as_deref(),
             "https://git-scm.com/downloads",
-            msg!("note.git"),
+            if mac { msg!("note.git.macos") } else { msg!("note.git") },
         ),
     ];
     if platform == Platform::Windows {
@@ -255,18 +303,24 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
     }
     tools.push(tool(
         "clang",
-        if linux { "Clang 18+" } else { "LLVM Clang 22+" },
+        match platform {
+            Platform::Windows => "LLVM Clang 22+",
+            Platform::Linux => "Clang 18+",
+            Platform::MacOs => "Xcode command line tools (Apple clang 16+)",
+        },
         clang.as_deref(),
-        if linux { "" } else { "https://github.com/llvm/llvm-project/releases/latest" },
+        if platform == Platform::Windows { "https://github.com/llvm/llvm-project/releases/latest" } else { "" },
         match (clang_version, clang.is_some()) {
             (Some((major, _)), false) => msg!("note.clang.old", found = major, min = min_clang),
             _ if linux => package_hint("apt install clang, pacman -S clang"),
+            _ if mac => msg!("note.clang.macos"),
             _ => msg!("note.clang.windows"),
         },
     ));
     let cmake_note = match (&cmake, &cmake_ok) {
         (Some(_), None) => msg!("note.cmake.old"),
         _ if linux => package_hint("apt install cmake, pacman -S cmake"),
+        _ if mac => package_hint("brew install cmake"),
         _ => msg!("note.visualStudioCmake"),
     };
     tools.push(tool(
@@ -281,7 +335,11 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
         "Ninja",
         ninja.as_deref(),
         "https://github.com/ninja-build/ninja/releases/latest",
-        if linux { package_hint("apt install ninja-build, pacman -S ninja") } else { msg!("note.visualStudioCmake") },
+        match platform {
+            Platform::Linux => package_hint("apt install ninja-build, pacman -S ninja"),
+            Platform::MacOs => package_hint("brew install ninja"),
+            Platform::Windows => msg!("note.visualStudioCmake"),
+        },
     ));
 
     if platform == Platform::Windows {
@@ -304,6 +362,9 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
     let mut warnings = Vec::new();
     if linux {
         warnings.extend(linux_warnings(Path::new("/usr/share/vulkan/icd.d"), Path::new("/etc/vulkan/icd.d"), &dirs));
+    }
+    if mac {
+        warnings.extend(macos_warnings(&MACOS_ICD_DIRS.map(PathBuf::from)));
     }
     if let Some(free) = free_bytes(repo).filter(|free| *free < WARN_FREE_BYTES) {
         warnings.push(msg!("warn.diskSpace", free = format!("{:.1}", free as f64 / (1u64 << 30) as f64)));
@@ -349,6 +410,17 @@ pub(crate) fn linux_warnings(icd_dir: &Path, etc_icd_dir: &Path, path: &[PathBuf
         warnings.push(msg!("warn.windowingPackages"));
     }
     warnings
+}
+
+/// The game draws through MoltenVK; without its driver file the Vulkan loader
+/// finds no device.
+pub(crate) fn macos_warnings(icd_dirs: &[PathBuf]) -> Vec<Message> {
+    let has_moltenvk = icd_dirs.iter().any(|dir| {
+        fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| e.file_name().to_string_lossy().to_ascii_lowercase().contains("moltenvk"))
+        })
+    });
+    if has_moltenvk { vec![] } else { vec![msg!("warn.moltenvk")] }
 }
 
 /// Free bytes on the volume holding `path` (or its nearest existing parent).
@@ -433,6 +505,27 @@ mod tests {
         assert!(!linux.ready);
         let windows = detect(Platform::Windows, &repo, "");
         assert!(windows.tools.iter().any(|t| t.id == "msvc" && t.url.starts_with("https://")));
+    }
+
+    #[test]
+    fn macos_lists_the_apple_toolchain_and_needs_moltenvk() {
+        let repo = scratch("report-macos");
+        let mac = detect(Platform::MacOs, &repo, "/no/such/cmake");
+        let ids: Vec<_> = mac.tools.iter().map(|t| t.id).collect();
+        assert_eq!(ids, ["python", "git", "clang", "cmake", "ninja"]);
+        assert!(mac.tools.iter().all(|t| t.winget.is_empty()) && !mac.winget);
+        assert!(!mac.warnings.iter().any(|w| w.key == "warn.vulkanDriver" || w.key == "warn.windowingPackages"));
+        let dir = scratch("icd-macos");
+        assert_eq!(macos_warnings(std::slice::from_ref(&dir))[0].key, "warn.moltenvk");
+        fs::write(dir.join("MoltenVK_icd.json"), "{}").unwrap();
+        assert!(macos_warnings(&[dir.join("missing"), dir]).is_empty());
+    }
+
+    #[test]
+    fn only_usr_bin_holds_the_apple_install_stubs() {
+        assert!(is_apple_stub_dir(Path::new("/usr/bin")));
+        assert!(!is_apple_stub_dir(Path::new("/opt/homebrew/bin")));
+        assert!(!is_apple_stub_dir(Path::new("/usr/local/bin")));
     }
 
     #[test]

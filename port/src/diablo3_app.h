@@ -43,7 +43,8 @@ class Diablo3App : public rex::ReXApp {
   // ...]"). GetName() ("diablo3") is untouched on purpose - it also names the
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
-#if !defined(__linux__) && !defined(SOULS_TITLE_UPDATE)
+// The hook comes from patches/windows/rexglue-windows.patch; Linux and macOS SDKs lack it.
+#if defined(_WIN32) && !defined(SOULS_TITLE_UPDATE)
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
 #endif
 

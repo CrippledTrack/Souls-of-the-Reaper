@@ -336,7 +336,8 @@ export function createBuildPanel(ctx, settingsPanel) {
 
   // Text this panel sets itself, again in a new language.
   ctx.onLanguage(() => {
-    el('buildIntro').textContent = t(caps.platform === 'windows' ? 'build.intro.windows' : 'build.intro');
+    el('buildIntro').textContent = t(caps.platform === 'windows' ? 'build.intro.windows'
+      : caps.platform === 'macos' ? 'build.intro.macos' : 'build.intro');
     channelButtons.forEach(b => {
       b.textContent = b.dataset.channel === 'development'
         ? t('build.version.development', { commit: caps.version?.label ?? '' })

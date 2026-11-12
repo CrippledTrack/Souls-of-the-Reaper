@@ -14,7 +14,7 @@ import { createProfiles } from './profiles.js';
 import { createRemapView } from './remap.js';
 import { createSavePrompt } from './save-prompt.js';
 import { createSettingsPanel } from './settings-panel.js';
-import { createRules, createState, uiState } from './state.js';
+import { createRules, createState, migrateFps, uiState } from './state.js';
 
 /** @param {Window & typeof globalThis} win */
 export function start(win) {
@@ -25,6 +25,7 @@ export function start(win) {
   const saved = win.SAVED_STATE;
   const state = createState(saved, LANGS.length);
   const rules = createRules(caps, state);
+  migrateFps(state, rules, saved);
   const status = /** @type {HTMLElement} */ (doc.getElementById('launchStatus'));
   const playBtn = /** @type {HTMLButtonElement} */ (doc.getElementById('playBtn'));
 

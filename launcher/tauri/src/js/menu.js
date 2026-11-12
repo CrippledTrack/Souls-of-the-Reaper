@@ -41,8 +41,10 @@ export function createMainView(ctx) {
     if (rules.winVk())
       rows.push({ key: 'backend', label: t('menu.renderer'), opts: opts(['D3D12', 'Vulkan'].concat(shadowOk ? ['Shadow (beta)'] : [])),
         tip: shadow ? t('menu.shadow.tip') : t('menu.renderer.tip') });
-    // The Shadow renderer has no render paths of its own (Windows: it is the Renderer).
-    if (rules.vk() || rules.linux)
+    // The Shadow renderer has no render paths of its own (Windows: it is the Renderer;
+    // macOS: it is the only one, so there is nothing to choose).
+    if (rules.mac) { /* no Renderer or Render Path row */ }
+    else if (rules.vk() || rules.linux)
       rows.push({ key: 'vkpath', label: t('menu.renderPath'), opts: opts(['FSI', 'Host'].concat(shadowOk && rules.linux ? ['Shadow (beta)'] : [])),
         tip: shadow ? t('menu.shadow.tip') : t('menu.renderPath.vulkanTip') });
     else if (!shadow)

@@ -15,6 +15,9 @@ test('Linux Display Server is a launch setting, saved from the settings panel an
   await tick();
   assert.equal(calls.find(c => c.command === 'save_settings').args.settings.videoDriver, 'wayland');
   assert.equal(tauriPage({ platform: 'windows' }).doc.getElementById('videoLabel').hidden, true);
+  const mac = tauriPage({ platform: 'macos' }).doc;
+  assert.equal(mac.getElementById('videoLabel').hidden, true, 'no display server on macOS');
+  assert.equal(mac.getElementById('deviceLabel').hidden, false, 'the Vulkan device still applies');
 });
 
 test('Development builds are listed beside stable ones, and there is no experimental switch', async () => {

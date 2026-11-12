@@ -634,6 +634,26 @@ class BuildClientTests(unittest.TestCase):
             self.assertEqual(command[command.index("--title-update") + 1], "usa")
             self.assertEqual("--skip-codegen" in command, stamped and not regenerate)
 
+    def test_macos_builds_with_build_macos_into_the_arch_folder(self):
+        args = self.args()
+        with mock.patch.multiple(build_client, WINDOWS=False, MACOS=True, MACOS_ARCH="arm64",
+                                 BUILD_PREFIX="macos-arm64"), \
+                mock.patch.object(build_client.codegen_title_update, "stamp_current", return_value=False), \
+                mock.patch.object(build_client, "run") as run:
+            build_client.build_variant(args, "update")
+            folder = build_client.variant_build_dir(args, "update")
+            paths = build_client.default_sdk_paths(build_client.build_profiles.get(None))
+        command = [str(arg) for arg in run.call_args.args]
+        self.assertTrue(command[1].endswith("build_macos.py"))
+        self.assertEqual(command[command.index("--arch") + 1], "arm64")
+        self.assertEqual(command[command.index("--cmake") + 1], "cmake")
+        self.assertNotIn("--sdk-source", command)
+        self.assertEqual(folder.name, "macos-arm64-update-relwithdebinfo")
+        self.assertEqual(paths[1].name, "rexglue-install-macos")
+        with mock.patch.multiple(build_client, MACOS=True, MACOS_ARCH="x86_64"):
+            self.assertEqual(build_client.default_sdk_paths(build_client.build_profiles.get(None))[1].name,
+                             "rexglue-install-macos-x86_64")
+
 
 class ShaderConverterTests(BuildClientTests):
     """The Shadow renderer is in every build; its shader converter (XenosRecomp) is a

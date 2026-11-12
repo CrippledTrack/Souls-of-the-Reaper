@@ -74,6 +74,11 @@ pub fn sdk_status(platform: Platform, repo: &Path) -> Sdk {
                 && tools.join("rexglue-sdk-win/out/win-amd64/RelWithDebInfo/rexgluerd.exe").is_file()
         }
         Platform::Linux => tools.join("rexglue-install-linux/bin/rexglue").is_file(),
+        // build_macos.py: a Rosetta (x86_64) launcher looks for the Intel SDK install.
+        Platform::MacOs if cfg!(target_arch = "x86_64") => {
+            tools.join("rexglue-install-macos-x86_64/bin/rexglue").is_file()
+        }
+        Platform::MacOs => tools.join("rexglue-install-macos/bin/rexglue").is_file(),
     };
     Sdk {
         installed,

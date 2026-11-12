@@ -13,6 +13,18 @@ test('Linux shows Vulkan rows and hides D3D12-only options', () => {
   assert.equal(rows()[4].value, 'Off');
 });
 
+test('macOS always runs the Shadow renderer, with no Renderer or Render Path row', async () => {
+  const { rows, doc, click, calls } = tauriPage({ platform: 'macos', builds: [SHADOW_BUILD], saved: { res: -1, display: -1, vkpath: 0 } });
+  const labels = rows().map(r => r.label);
+  assert.ok(!labels.includes('Renderer') && !labels.includes('Render Path'));
+  assert.ok(labels.includes('Render Resolution') && !labels.includes('Image Scaling'), labels.join());
+  click(doc.getElementById('playBtn'));
+  await tick();
+  const options = calls.find(c => c.command === 'launch_game').args.options;
+  assert.equal(options.shadow, true);
+  assert.equal(options.backend, 'vulkan');
+});
+
 test('Windows keeps the D3D12 rows and adds the build selector', () => {
   const { rows } = tauriPage({ platform: 'windows' });
   assert.deepEqual(rows().map(r => r.label).slice(0, 6),
@@ -35,6 +47,28 @@ test('Windows can switch to Vulkan, which swaps in the Vulkan rows and is sent o
   assert.equal(options.fps, 120);
   assert.equal(options.vsync, false);
   assert.equal(calls.find(c => c.command === 'launch_game').args.settings.uiState.backend, 1);
+});
+
+test('30 FPS is offered on every renderer, and older saved frame rates keep their value', async () => {
+  for (const platform of ['linux', 'windows', 'macos']) {
+    const builds = platform === 'macos' ? [SHADOW_BUILD] : BUILDS;
+    const launchWith = async saved => {
+      const page = tauriPage({ platform, builds, saved: { res: -1, display: -1, ...saved } });
+      page.click(page.doc.getElementById('playBtn'));
+      await tick();
+      return page.calls.find(c => c.command === 'launch_game').args;
+    };
+    const at30 = await launchWith({ fps: 0, fpsVersion: 2 });
+    assert.equal(at30.options.fps, 30, platform);
+    assert.equal(at30.options.vsync, true, `${platform}: Auto VSync is on at 30 FPS`);
+    assert.equal(at30.settings.uiState.fpsVersion, 2);
+    // Saved before 30 FPS was added: index 1 was 120 there, and still is.
+    assert.equal((await launchWith({ fps: 1 })).options.fps, 120, `${platform}: older save`);
+    assert.equal((await launchWith({ fps: 3 })).options.fps, 240, `${platform}: older 240 save`);
+  }
+  // D3D12 ROV always started at 30: its saved index is left alone.
+  const rov = tauriPage({ platform: 'windows', saved: { res: -1, display: -1, path: 0, fps: 1 } });
+  assert.equal(rov.row('Frame Rate').value, '60 FPS');
 });
 
 test('VSync Auto follows the frame cap on both renderers; On and Off override it', async () => {

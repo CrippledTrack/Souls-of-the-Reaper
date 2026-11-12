@@ -27,7 +27,7 @@ pub struct GameOptions {
     /// "xbox" or absent keeps the game's Xbox prompts.
     #[serde(default)]
     pub glyphs: String,
-    /// Windows renderer: "d3d12" (also when absent) or "vulkan". Linux is always Vulkan.
+    /// Windows renderer: "d3d12" (also when absent) or "vulkan". Linux and macOS are always Vulkan.
     #[serde(default)]
     pub backend: String,
     /// Linux display server, filled from the saved settings (the page does not send it).
@@ -108,8 +108,12 @@ pub fn launch_arguments(
     }
     args.push(format!("--d3_frame_limit={}", options.fps));
     args.push(format!("--vsync={}", options.vsync));
+    if platform == Platform::MacOs && !options.shadow {
+        // MoltenVK runs the Shadow renderer only; the SDK's own Vulkan renderer does not draw there.
+        return Err(msg!("err.launch.macosShadowOnly"));
+    }
     match platform {
-        Platform::Linux => {
+        Platform::Linux | Platform::MacOs => {
             if !["fsi", "host"].contains(&options.vk_path.as_str()) {
                 return Err(msg!("err.option.vulkanPath"));
             }
@@ -121,6 +125,8 @@ pub fn launch_arguments(
                 args.push(format!("--vulkan_device={vulkan_device}"));
             }
             match options.video_driver.as_str() {
+                // No display server choice on macOS (the setting is hidden there).
+                _ if platform == Platform::MacOs => {}
                 "" => {}
                 driver @ ("wayland" | "x11") => args.push(format!("--video_driver={driver}")),
                 _ => return Err(msg!("err.option.displayServer")),
@@ -273,8 +279,8 @@ mod tests {
         assert!(wide.contains(&"--shadow_render_height=1440".to_string()));
         assert!(wide.contains(&"--shadow_guest_width=1680".to_string()));
         assert!(run(2160, "16:10").unwrap().contains(&"--shadow_guest_height=800".to_string()));
-        // The chosen Vulkan device reaches the renderer on both platforms, once.
-        for platform in [Platform::Linux, Platform::Windows] {
+        // The chosen Vulkan device reaches the renderer on every platform, once.
+        for platform in [Platform::Linux, Platform::Windows, Platform::MacOs] {
             let mut o = options();
             o.shadow = true;
             let args = launch_arguments(platform, &build(false, false), Path::new("/g"), Path::new("/s"), &o, 1).unwrap();
@@ -293,6 +299,24 @@ mod tests {
         assert!(run(200, "16:9").is_err());
         assert!(run(3000, "16:9").is_err());
         assert!(run(1080, "4:3").is_err());
+    }
+
+    #[test]
+    fn macos_runs_the_shadow_renderer_with_the_vulkan_options() {
+        let run = |shadow, driver: &str| {
+            let mut o = options();
+            o.shadow = shadow;
+            o.video_driver = driver.into();
+            launch_arguments(Platform::MacOs, &build(true, false), Path::new("/g"), Path::new("/s"), &o, -1)
+        };
+        let args = run(true, "wayland").unwrap();
+        assert!(args.contains(&"--shadow_renderer_only=true".to_string()));
+        assert!(args.contains(&"--render_target_path_vulkan=fsi".to_string()));
+        assert!(args.iter().any(|a| a.starts_with("--present_effect=")));
+        assert!(args.iter().any(|a| a.starts_with("--log_file=")) && args.iter().any(|a| a.starts_with("--cache_root=")));
+        assert!(!args.iter().any(|a| a.starts_with("--video_driver")), "no display server on macOS");
+        assert!(!args.iter().any(|a| a.starts_with("--gpu_backend") || a.starts_with("--render_target_path_d3d12")));
+        assert_eq!(run(false, "").unwrap_err().key, "err.launch.macosShadowOnly");
     }
 
     #[test]
