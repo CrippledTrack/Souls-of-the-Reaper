@@ -1,7 +1,7 @@
 {
   "name": "souls-of-the-reaper-launcher",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "icons": "tauri icon icon.svg --output src-tauri/icons",
