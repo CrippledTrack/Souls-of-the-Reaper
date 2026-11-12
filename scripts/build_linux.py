@@ -64,6 +64,9 @@ def main():
                         help="Compile without the optional PC features (separate -plain directory). "
                              "By default they are built in and switched on at launch with --extra_features")
     parser.add_argument("--extra-features", action="store_true", help=argparse.SUPPRESS)  # now the default
+    parser.add_argument("--basic", action="store_true",
+                        help="Basic build: the game without the optional PC features or the Shadow renderer "
+                             "(implies --no-extra-features)")
     parser.add_argument("--skip-codegen", action="store_true", help="Reuse previously generated Linux sources")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cmake", default="cmake")
@@ -72,6 +75,7 @@ def main():
         parser.error("--jobs must be positive")
     if args.title_update and args.probe:
         parser.error("--title-update cannot be combined with --probe")
+    args.plain = args.plain or args.basic
     args.extra_features = not args.plain and not args.probe
     profile = build_profiles.get(args.profile)
     if args.probe and profile.id != "normal":
@@ -101,7 +105,8 @@ def main():
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [
             f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",
-            f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}"]
+            f"-DSOULS_TITLE_UPDATE={'ON' if args.title_update else 'OFF'}",
+            f"-DSOULS_BASIC={'ON' if args.basic else 'OFF'}"]
         if args.extra_features:
             feature_options.append(f"-DSOULS_BASE_XEX={xex}")
         if not args.probe:

@@ -24,7 +24,8 @@ import extract_update
 import sdk_patches
 import shader_converter
 from stage_title_update import USA_UPDATE_PACKAGE_SHA256, stage, stage_overlay
-from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
+from title_updates import DISC_SHA256, USA_UPDATE_SHA256, basic_only, update_layout
+import title_updates as title_updates_module
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -216,6 +217,26 @@ def build_patcher(args):
     return build / ("d3-patch.exe" if os.name == "nt" else "d3-patch")
 
 
+def basic_variants(args):
+    """Turn the requested builds into basic ones where they must be: with --basic, or for an
+    executable whose PC features and Shadow renderer are not verified (title_updates.EXECUTABLES).
+    A basic build is the plain variant built without the Shadow renderer. Returns the notices."""
+    notices = []
+    variants, basic = [], set()
+    for variant in args.variants:
+        update, plain = VARIANTS[variant]
+        if args.basic or basic_only(USA_UPDATE_SHA256 if update else DISC_SHA256):
+            variant = "update-plain" if update else "base-plain"
+            basic.add(variant)
+            if not plain:
+                notices.append(f"{LABELS[variant.removesuffix('-plain')]}: basic build, without the optional PC "
+                               "features or the Shadow renderer.")
+        if variant not in variants:
+            variants.append(variant)
+    args.variants, args.basic_variants = variants, basic
+    return notices
+
+
 def build_variant(args, variant):
     update, plain = VARIANTS[variant]
     game = game_update_dir(args) if update else args.game_dir
@@ -230,6 +251,8 @@ def build_variant(args, variant):
         command += ["--title-update", "usa"]
     if plain:
         command.append("--no-extra-features")
+    if variant in getattr(args, "basic_variants", ()):
+        command.append("--basic")
     # Reuse sources generated earlier from the same executable, hints and SDK code generator.
     if not args.regenerate and codegen_title_update.stamp_current("update" if update else "base"):
         command.append("--skip-codegen")
@@ -258,6 +281,11 @@ def build_and_stage(args, variant):
     game's CMake copies it after linking, but only when the executable was relinked."""
     build_variant(args, variant)
     build = variant_build_dir(args, variant)
+    if variant in getattr(args, "basic_variants", ()):
+        # No Shadow renderer: drop a converter an earlier plain build of this folder staged.
+        if (build / "xenosrecomp").is_dir():
+            shutil.rmtree(build / "xenosrecomp")
+        return
     if shader_converter.state() == "current" and build.is_dir() and not shader_converter.staged(build):
         shader_converter.stage(build)
         print(f"Staged the shader converter in {build / 'xenosrecomp'}", flush=True)
@@ -273,7 +301,9 @@ def plan(args):
     compile_needed = bool(args.variants) and not args.data_only
     need_sdk = compile_needed and not sdk_installed(args)
     # The Shadow renderer's shader converter, a pinned component built once like the SDK.
-    need_converter = compile_needed and converter_state() != "current"
+    # Basic builds have no Shadow renderer, so they do not need it.
+    need_converter = (compile_needed and converter_state() != "current"
+                      and any(v not in getattr(args, "basic_variants", ()) for v in args.variants))
     profile = profile_of(args)
 
     if need_base and not args.iso:
@@ -333,7 +363,9 @@ def plan(args):
         steps.append(("Build shader converter (one-time)", lambda: build_converter(args)))
     if compile_needed:
         for variant in args.variants:
-            label = LABELS[variant] + (f", {profile.label}" if profile.id != "normal" else "")
+            label = (LABELS[variant.removesuffix("-plain")] + " (basic)"
+                     if variant in getattr(args, "basic_variants", ()) else LABELS[variant])
+            label += f", {profile.label}" if profile.id != "normal" else ""
             steps.append((f"Build {label} (codegen and compile)", lambda v=variant: build_and_stage(args, v)))
     return steps
 
@@ -369,6 +401,9 @@ def main(argv=None):
                         help="Print the ReXGlue SDK state (pinned commit, missing/stale/current) and the "
                              "profile's own tools as JSON and stop")
     parser.add_argument("--check", action="store_true", help="Validate inputs and tools, list the steps, and stop")
+    parser.add_argument("--basic", action="store_true",
+                        help="Build basic: the game without the optional PC features or the Shadow renderer. "
+                             "Executables without a verified port of those always build this way")
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -379,6 +414,8 @@ def main(argv=None):
         unknown = [v for v in args.variants if v not in VARIANTS]
         if unknown:
             parser.error(f"unknown variant(s): {', '.join(unknown)}")
+    for notice in basic_variants(args):
+        print(notice, flush=True)
     for legacy in (ROOT / "game-update", ROOT / "game-tu2"):  # game-tu2 predates the rename
         if args.game_dir_update is None and legacy.exists() and update_ready(legacy):
             args.game_dir_update = legacy

@@ -8,6 +8,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(SOULS_ENABLE_EXTRA_FEATURES "Enable optional PC game features" OFF)
 option(SOULS_TITLE_UPDATE "Build the verified USA update" OFF)
+# Basic builds are for executables whose optional PC features and Shadow renderer have not
+# been verified (scripts/title_updates.py EXECUTABLES, or build_client.py --basic): the game
+# alone, without either.
+option(SOULS_BASIC "Basic build: no optional PC features and no Shadow renderer" OFF)
+if(SOULS_BASIC AND SOULS_ENABLE_EXTRA_FEATURES)
+    message(FATAL_ERROR "SOULS_BASIC builds cannot enable SOULS_ENABLE_EXTRA_FEATURES")
+endif()
 
 if(SOULS_ENABLE_EXTRA_FEATURES AND NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
     message(FATAL_ERROR "Extra features support Windows, Linux and macOS base-disc/update builds")
@@ -49,9 +56,10 @@ set(DIABLO3_SOURCES
     src/kernel_overrides.cpp
     src/window_features.cpp
 )
-# The Shadow renderer (src/experiments/), in every build. It stays off unless launched
-# with --shadow_renderer or --shadow_renderer_only; its guest addresses are known for the
-# base disc and the USA title update (src/experiments/guest_addresses.h).
+# The Shadow renderer (src/experiments/), in every build but basic ones. It stays off unless
+# launched with --shadow_renderer or --shadow_renderer_only; its guest addresses are known for
+# the base disc and the USA title update (src/experiments/guest_addresses.h).
+if(NOT SOULS_BASIC)
 list(APPEND DIABLO3_SOURCES src/experiments/shader_capture.cpp
         src/experiments/draw_trace.cpp src/experiments/shadow_renderer.cpp
         src/experiments/shadow_snapshot.cpp src/experiments/shadow_textures.cpp
@@ -64,6 +72,7 @@ find_path(SOULS_RENDERDOC_INCLUDE renderdoc_app.h
 if(SOULS_RENDERDOC_INCLUDE)
     set_source_files_properties(src/experiments/shadow_renderer.cpp PROPERTIES
         INCLUDE_DIRECTORIES "${SOULS_RENDERDOC_INCLUDE}")
+endif()
 endif()
 if(SOULS_TITLE_UPDATE)
     list(APPEND DIABLO3_SOURCES src/title_update_exit.cpp)
@@ -81,9 +90,11 @@ endif()
 # git-ignored; scripts/shader_converter.py builds it before the game) next to the executable,
 # so the renderer can convert the game's shaders on first run (src/experiments/shadow_shaders.cpp).
 # Skipped when it has not been built; scripts/build_client.py also stages it after each build.
+# Basic builds have no Shadow renderer, so nothing is staged for them.
 set(SOULS_XENOSRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/XenosRecomp" CACHE PATH
     "XenosRecomp fork (source tree with build/) staged for the Shadow renderer")
-if(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
+if(SOULS_BASIC)
+elseif(WIN32 AND EXISTS "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp/XenosRecomp.exe")
     set(_xr_build "${SOULS_XENOSRECOMP_DIR}/build/XenosRecomp")
     add_custom_command(TARGET diablo3 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:diablo3>/xenosrecomp"
@@ -124,7 +135,9 @@ rexglue_setup_target(diablo3)
 if(SOULS_TITLE_UPDATE)
     target_compile_definitions(diablo3 PRIVATE SOULS_TITLE_UPDATE=1)
 endif()
-target_compile_definitions(diablo3 PRIVATE SOULS_SHADOW_RENDERER=1)
+if(NOT SOULS_BASIC)
+    target_compile_definitions(diablo3 PRIVATE SOULS_SHADOW_RENDERER=1)
+endif()
 
 if(SOULS_ENABLE_EXTRA_FEATURES)
     if(SOULS_TITLE_UPDATE)

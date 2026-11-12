@@ -70,10 +70,14 @@ def main():
     parser.add_argument("--title-update", choices=["usa"], help="Build the verified USA update executable separately")
     parser.add_argument("--no-extra-features", dest="plain", action="store_true",
                         help="Compile without the optional PC features (they are built in by default)")
+    parser.add_argument("--basic", action="store_true",
+                        help="Basic build: the game without the optional PC features or the Shadow renderer "
+                             "(implies --no-extra-features)")
     parser.add_argument("--skip-codegen", action="store_true", help="Reuse previously generated sources")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cmake", default="cmake")
     args = parser.parse_args()
+    args.plain = args.plain or args.basic
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if args.title_update and args.probe:
@@ -106,7 +110,8 @@ def main():
             source = ROOT / "port"
             build = ROOT / "port/out/build" / profile.build_name(f"macos-{args.arch}", update, args.plain)
             feature_options = [f"-DSOULS_ENABLE_EXTRA_FEATURES={'OFF' if args.plain else 'ON'}",
-                               f"-DSOULS_TITLE_UPDATE={'ON' if update else 'OFF'}"]
+                               f"-DSOULS_TITLE_UPDATE={'ON' if update else 'OFF'}",
+                               f"-DSOULS_BASIC={'ON' if args.basic else 'OFF'}"]
             if not args.plain:
                 feature_options.append(f"-DSOULS_BASE_XEX={xex}")
             feature_options.extend(profile.cmake_options)

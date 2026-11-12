@@ -26,6 +26,18 @@ python3 scripts/build_client.py --iso /path/to/disc.iso [--title-update /path/to
 The matching USA update can also be built separately; see the
 [title update setup](port/title_updates/update/README.md).
 
+#### Supported game files and basic builds
+
+Only the USA *Ultimate Evil Edition* disc and the USA Title Update are supported: the build checks
+each executable (`Default.xex`) by SHA-256 and refuses anything else, since the recompilation data in
+`port/base` and `port/title_updates` is made for those exact files. For each supported executable,
+`scripts/title_updates.py` (`EXECUTABLES`) also records what has been verified on top of the game
+itself: the optional PC features and the Shadow renderer, which both rely on knowing where things
+are in that executable. An executable without both builds in **basic mode**: the plain build (no
+optional PC features), compiled without the Shadow renderer, so the launcher offers neither. Pass
+`--basic` to `build_client.py` to build any executable this way (`build_linux.py`,
+`build_windows.py` and `build_macos.py` take `--basic` too).
+
 A [cross-platform launcher](launcher/tauri/README.md) (Tauri) reuses the existing
 interface on Linux and Windows and selects base, extras and update builds.
 
@@ -213,3 +225,4 @@ Diablo III uses EDRAM aliasing in its deferred lighting pass, which historically
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — recompiler + runtime (based on [Xenia](https://xenia.jp/))
+- [XenosRecomp](https://github.com/hedge-dev/XenosRecomp) by hedge-dev and contributors — the shader converter the Shadow renderer uses to turn the game's Xbox 360 shaders into host shaders (MIT License)

@@ -560,7 +560,7 @@ class BuildClientTests(unittest.TestCase):
         values = dict(iso=None, title_update=None, variants=["base"], data_only=False,
                       game_dir=self.root / "game", game_dir_update=self.root / "game-update",
                       sdk_source=self.root / "sdk", sdk_prefix=self.root / "prefix", patcher=None,
-                      cmake="cmake", jobs=2, regenerate=False, no_sdk_download=False)
+                      cmake="cmake", jobs=2, regenerate=False, no_sdk_download=False, basic=False)
         values.update(overrides)
         return argparse.Namespace(**values)
 
@@ -734,6 +734,58 @@ class ShaderConverterTests(BuildClientTests):
         converter.stage(game, source)
         self.assertTrue(converter.staged(game, source))
         self.assertTrue((game / "xenosrecomp" / converter.EXECUTABLE).is_file())
+
+
+class BasicModeTests(ShaderConverterTests):
+    """Executables without a verified PC-features and Shadow port build basic: plain, with no
+    Shadow renderer (title_updates.EXECUTABLES); --basic asks for that for any executable."""
+
+    def basic(self, *variants, basic=False, verified=None):
+        args = self.args(variants=list(variants), basic=basic)
+        table = {sha: dict(entry, verified=set(entry["verified"]))
+                 for sha, entry in build_client.title_updates_module.EXECUTABLES.items()}
+        for sha, checked in (verified or {}).items():
+            table[sha]["verified"] = checked
+        with mock.patch.dict(build_client.title_updates_module.EXECUTABLES, table):
+            notices = build_client.basic_variants(args)
+        return args, notices
+
+    def test_verified_executables_build_as_asked(self):
+        args, notices = self.basic("base", "update-plain")
+        self.assertEqual((args.variants, args.basic_variants, notices), (["base", "update-plain"], set(), []))
+
+    def test_basic_builds_are_plain_and_without_the_shadow_renderer(self):
+        args, notices = self.basic("base", "base-plain", "update", basic=True)
+        self.assertEqual(args.variants, ["base-plain", "update-plain"])
+        self.assertEqual(args.basic_variants, {"base-plain", "update-plain"})
+        self.assertEqual(len(notices), 2)
+        # An executable whose Shadow port is unverified is basic without asking.
+        args, _ = self.basic("base", "update", verified={build_client.USA_UPDATE_SHA256: {"extras"}})
+        self.assertEqual((args.variants, args.basic_variants), (["base", "update-plain"], {"update-plain"}))
+
+    def test_basic_builds_need_no_converter_and_drop_a_staged_one(self):
+        args = self.args(variants=["base-plain"], basic=True)
+        args.basic_variants = {"base-plain"}
+        with mock.patch.multiple(build_client, base_ready=mock.DEFAULT, sdk_installed=mock.DEFAULT,
+                                 missing_tools=mock.DEFAULT, check_free_space=mock.DEFAULT,
+                                 converter_state=mock.DEFAULT) as mocks:
+            mocks["base_ready"].return_value = mocks["sdk_installed"].return_value = True
+            mocks["missing_tools"].return_value = []
+            mocks["converter_state"].return_value = "missing"
+            steps = [title for title, _ in build_client.plan(args)]
+        self.assertEqual(steps, ["Build Base (basic) (codegen and compile)"])
+        with mock.patch.object(build_client.codegen_title_update, "stamp_current", return_value=False), \
+                mock.patch.object(build_client, "run") as run:
+            build_client.build_variant(args, "base-plain")
+        self.assertIn("--basic", [str(a) for a in run.call_args.args])
+        build = build_client.variant_build_dir(args, "base-plain")
+        with mock.patch.object(build_client, "build_variant"), \
+                mock.patch.object(build_client.shader_converter, "stage") as stage, \
+                mock.patch.object(pathlib.Path, "is_dir", return_value=True), \
+                mock.patch.object(build_client.shutil, "rmtree") as rmtree:
+            build_client.build_and_stage(args, "base-plain")
+        rmtree.assert_called_once_with(build / "xenosrecomp")
+        stage.assert_not_called()
 
 
 class SdkStampTests(unittest.TestCase):
